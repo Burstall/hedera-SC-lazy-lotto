@@ -1,0 +1,15 @@
+node_modules
+.env
+coverage
+coverage.json
+typechain
+env
+.env.old
+typechain-types
+
+#Hardhat files
+cache
+artifacts
+yarn.lock
+logs/*
+.DS_Store

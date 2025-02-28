@@ -1,0 +1,47 @@
+{
+  "name": "lsh-smart-contracts",
+  "version": "1.0.0",
+  "description": "Lazy Superheroes smart contracts",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx hardhat test",
+    "test-trade": "npx hardhat test test/LazySecureTrade.test.js",
+    "test-lazy": "npx hardhat test test/LAZYTokenCreator.test.js",
+    "test-delegate": "npx hardhat test test/LazyDelegateRegistry.test.js"
+  },
+  "author": "Stowerling <stowerling@hbarbarians.co.uk>",
+  "contributors": [
+    "Baptiste <lazysuperheroes@protonmail.com>"
+  ],
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.2",
+    "@nomicfoundation/hardhat-ethers": "^3.0.4",
+    "@nomicfoundation/hardhat-network-helpers": "^1.0.9",
+    "@nomicfoundation/hardhat-verify": "^1.1.1",
+    "@typechain/ethers-v6": "^0.5.0",
+    "@typechain/hardhat": "^9.0.0",
+    "@types/chai": "^4.3.4",
+    "eslint": "8.7.0",
+    "hardhat": "^2.22.7",
+    "hardhat-gas-reporter": "^1.0.9",
+    "prettier": "^2.5.1",
+    "solidity-coverage": "^0.8.5"
+  },
+  "dependencies": {
+    "@directus/sdk": "^15",
+    "@hashgraph/sdk": "^2.18.3",
+    "@nomicfoundation/hardhat-toolbox": "^3.0.0",
+    "@openzeppelin/contracts": "^4.6.0",
+    "@openzeppelin/test-helpers": "^0.5.16",
+    "abi-decoder": "^2.4.0",
+    "axios": "^1.5.0",
+    "chai": "^4.3.6",
+    "dotenv": "^16.0.3",
+    "ethers": "^6.7.1",
+    "hardhat-contract-sizer": "^2.10.0",
+    "hardhat-docgen": "^1.3.0",
+    "readline-sync": "^1.4.10",
+    "solhint": "^4.1.1"
+  }
+}
