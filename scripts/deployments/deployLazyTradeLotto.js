@@ -10,7 +10,6 @@ const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { contractDeployFunction, contractExecuteFunction } = require('../../utils/solidityHelpers');
-// const { hethers } = require('@hashgraph/hethers');
 require('dotenv').config();
 
 // Get operator from .env file
@@ -24,6 +23,7 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
+// Contract names and configuration
 const lazyContractCreator = 'LAZYTokenCreator';
 const lazyGasStationName = 'LazyGasStation';
 const contractName = 'LazyTradeLotto';
@@ -31,20 +31,20 @@ const lazyDelegateRegistryName = 'LazyDelegateRegistry';
 const prngName = 'PrngSystemContract';
 const env = process.env.ENVIRONMENT ?? null;
 const LAZY_BURN_PERCENT = process.env.LAZY_BURN_PERCENT ?? 25;
-const LAZY_DECIMAL = process.env.LAZY_DECIMALS ?? 1;
+const LAZY_DECIMAL = Number(process.env.LAZY_DECIMALS ?? 1);
 const LAZY_MAX_SUPPLY = process.env.LAZY_MAX_SUPPLY ?? 250_000_000;
 
-
+// Variables used throughout the deployment process
 let ldrId, prngId, signingWallet;
 let lazyTokenId;
 let client;
 let lazySCT;
 let lazyGasStationId;
 let lazyIface, lazyGasStationIface;
-let initialLotoJackpot, lottoLossIncrement;
+let initialLottoJackpot, lottoLossIncrement;
 
 const main = async () => {
-	// configure the client object
+	// Configure the client object
 	if (
 		operatorKey === undefined ||
 		operatorKey == null ||
@@ -57,36 +57,37 @@ const main = async () => {
 		process.exit(1);
 	}
 
-	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using ENVIRONMENT:', env);
 
-	if (env.toUpperCase() == 'TEST') {
+	// Set up the appropriate network client
+	if (env?.toUpperCase() == 'TEST') {
 		client = Client.forTestnet();
-		console.log('testing in *TESTNET*');
+		console.log('Deploying to *TESTNET*');
 	}
-	else if (env.toUpperCase() == 'MAIN') {
+	else if (env?.toUpperCase() == 'MAIN') {
 		client = Client.forMainnet();
-		console.log('testing in *MAINNET*');
+		console.log('Deploying to *MAINNET*');
 	}
-	else if (env.toUpperCase() == 'PREVIEW') {
+	else if (env?.toUpperCase() == 'PREVIEW') {
 		client = Client.forPreviewnet();
-		console.log('testing in *PREVIEWNET*');
+		console.log('Deploying to *PREVIEWNET*');
 	}
-	else if (env.toUpperCase() == 'LOCAL') {
+	else if (env?.toUpperCase() == 'LOCAL') {
 		const node = { '127.0.0.1:50211': new AccountId(3) };
 		client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
-		console.log('testing in *LOCAL*');
+		console.log('Deploying to *LOCAL*');
 	}
 	else {
 		console.log(
-			'ERROR: Must specify either MAIN or TEST or LOCAL as environment in .env file',
+			'ERROR: Must specify either MAIN, TEST, PREVIEW or LOCAL as environment in .env file',
 		);
 		return;
 	}
 
 	client.setOperator(operatorId, operatorKey);
-	// deploy the contract
 	console.log('\n-Using Operator:', operatorId.toString());
 
+	// Step 1: Set up LAZY token creator and token
 	if (process.env.LAZY_SCT_CONTRACT_ID && process.env.LAZY_TOKEN_ID) {
 		console.log(
 			'\n-Using existing LAZY SCT:',
@@ -134,14 +135,15 @@ const main = async () => {
 			'Test_Lazy',
 			'TLazy',
 			'Test Lazy FT',
-			LAZY_MAX_SUPPLY * 10 ** LAZY_DECIMAL,
+			LAZY_MAX_SUPPLY * (10 ** LAZY_DECIMAL),
 			LAZY_DECIMAL,
-			LAZY_MAX_SUPPLY * 10 ** LAZY_DECIMAL,
+			LAZY_MAX_SUPPLY * (10 ** LAZY_DECIMAL),
 			30,
 		);
 		console.log('$LAZY Token minted:', lazyTokenId.toString());
 	}
 
+	// Step 2: Set up Lazy Gas Station
 	const lazyGasStationJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${lazyGasStationName}.sol/${lazyGasStationName}.json`,
@@ -194,6 +196,7 @@ const main = async () => {
 		);
 	}
 
+	// Step 3: Set up Lazy Delegate Registry
 	if (process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) {
 		console.log(
 			'\n-Using existing Lazy Delegate Registry:',
@@ -231,6 +234,7 @@ const main = async () => {
 		);
 	}
 
+	// Step 4: Set up PRNG System Contract
 	if (process.env.PRNG_CONTRACT_ID) {
 		console.log('\n-Using existing PRNG:', process.env.PRNG_CONTRACT_ID);
 		prngId = ContractId.fromString(process.env.PRNG_CONTRACT_ID);
@@ -261,9 +265,20 @@ const main = async () => {
 		);
 	}
 
+	// Step 5: Set up signing wallet for message signatures
 	if (process.env.SIGNING_WALLET) {
-		console.log('\n-Using existing SIGNING_WALLET from file');
-		signingWallet = PrivateKey.fromStringECDSA(process.env.SIGNING_WALLET);
+		try {
+			console.log('\n-Using existing SIGNING_WALLET from file');
+			signingWallet = PrivateKey.fromStringECDSA(process.env.SIGNING_WALLET);
+		}
+		catch (error) {
+			console.log('ERROR: Invalid SIGNING_WALLET format. Must be an ECDSA private key.');
+			console.log('Creating a new signing wallet instead.');
+
+			signingWallet = PrivateKey.generateECDSA();
+			console.log('\nREMEMBER THIS KEY HAS VALUE - PROTECT IT');
+			console.log('Consider adding it to your .env file as SIGNING_WALLET=', signingWallet.toString());
+		}
 	}
 	else {
 		let proceed = readlineSync.keyInYNStrict('No SIGNING_WALLET found, do you want to create one?');
@@ -275,7 +290,7 @@ const main = async () => {
 
 		signingWallet = PrivateKey.generateECDSA();
 
-		console.log('REMEMBER THIS KEY HAS VALUE - PROTECT IT');
+		console.log('\nREMEMBER THIS KEY HAS VALUE - PROTECT IT');
 
 		proceed = readlineSync.keyInYNStrict('Do you want to print the SIGNING_WALLET to a console?');
 
@@ -287,15 +302,16 @@ const main = async () => {
 
 			if (proceed) {
 				fs.writeFileSync('./signingWallet.key', signingWallet.toString());
+				console.log('Signing wallet saved to ./signingWallet.key');
 			}
 		}
 	}
 
 	console.log(
-		`Off-chain signing wallet created: 0x${signingWallet.publicKey.toEvmAddress()}`,
+		`Off-chain signing wallet address: 0x${signingWallet.publicKey.toEvmAddress()}`,
 	);
 
-	// check the LSH Gen 1 / 2 Tokens + Mutants are in the .env file
+	// Step 6: Verify LSH tokens exist
 	let LSH_GEN1, LSH_GEN2, LSH_GEN1_MUTANT;
 	if (process.env.LSH_GEN1_TOKEN_ID) {
 		LSH_GEN1 = TokenId.fromString(process.env.LSH_GEN1_TOKEN_ID);
@@ -327,18 +343,23 @@ const main = async () => {
 		return;
 	}
 
-	// get the initial Jackpot amount
+	// Step 7: Get jackpot configuration
 	if (process.env.INITIAL_LOTTO_JACKPOT) {
 		console.log('INITIAL_LOTTO_JACKPOT -> ', process.env.INITIAL_LOTTO_JACKPOT);
-		initialLotoJackpot = Number(process.env.INITIAL_LOTTO_JACKPOT);
+		initialLottoJackpot = Number(process.env.INITIAL_LOTTO_JACKPOT);
 	}
 	else {
 		// take input from user
-		initialLotoJackpot = readlineSync.questionInt('Enter the initial Lotto Jackpot amount: ');
-		console.log(`INITIAL_LOTTO_JACKPOT: ${initialLotoJackpot}`);
+		initialLottoJackpot = readlineSync.questionInt('Enter the initial Lotto Jackpot amount: ');
+		console.log(`INITIAL_LOTTO_JACKPOT: ${initialLottoJackpot}`);
 	}
 
-	// get the lotto loss increment
+	// Validate initial jackpot
+	if (isNaN(initialLottoJackpot) || initialLottoJackpot <= 0) {
+		console.log('ERROR: Initial jackpot must be a positive number');
+		return;
+	}
+
 	if (process.env.LOTTO_LOSS_INCREMENT) {
 		console.log('LOTTO_LOSS_INCREMENT -> ', process.env.LOTTO_LOSS_INCREMENT);
 		lottoLossIncrement = Number(process.env.LOTTO_LOSS_INCREMENT);
@@ -349,9 +370,33 @@ const main = async () => {
 		console.log(`LOTTO_LOSS_INCREMENT: ${lottoLossIncrement}`);
 	}
 
+	// Validate loss increment
+	if (isNaN(lottoLossIncrement) || lottoLossIncrement <= 0) {
+		console.log('ERROR: Lotto loss increment must be a positive number');
+		return;
+	}
+
+	// Validate burn percentage
+	if (isNaN(LAZY_BURN_PERCENT) || LAZY_BURN_PERCENT < 0 || LAZY_BURN_PERCENT > 100) {
+		console.log('ERROR: LAZY_BURN_PERCENT must be a number between 0 and 100');
+		return;
+	}
+
 	console.log(`BURN_PERCENT: ${LAZY_BURN_PERCENT}%`);
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to deploy Lazy Trade Lotto Contract?');
+	// Convert jackpot values to account for decimals
+	const initialJackpotWithDecimals = initialLottoJackpot * (10 ** LAZY_DECIMAL);
+	const lossIncrementWithDecimals = lottoLossIncrement * (10 ** LAZY_DECIMAL);
+
+	// Step 8: Final confirmation before deploying LazyTradeLotto
+	console.log('\n----- LazyTradeLotto Configuration Summary -----');
+	console.log('Initial Jackpot: ', initialJackpotWithDecimals, '$LAZY');
+	console.log('Loss Increment: ', lossIncrementWithDecimals, '$LAZY');
+	console.log('Burn Percentage: ', LAZY_BURN_PERCENT, '%');
+	console.log('$LAZY Decimals: ', LAZY_DECIMAL);
+	console.log('System Wallet: ', `0x${signingWallet.publicKey.toEvmAddress()}`);
+
+	const proceed = readlineSync.keyInYNStrict('Do you want to deploy Lazy Trade Lotto Contract with these parameters?');
 
 	if (!proceed) {
 		console.log('Aborting');
@@ -360,7 +405,7 @@ const main = async () => {
 
 	const gasLimit = 2_500_000;
 
-	// now deploy main contract
+	// Step 9: Deploy the LazyTradeLotto contract
 	const lazyTradeLottoJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
@@ -384,11 +429,11 @@ const main = async () => {
 		.addAddress(LSH_GEN2.toSolidityAddress())
 		.addAddress(LSH_GEN1_MUTANT.toSolidityAddress())
 		.addAddress(signingWallet.publicKey.toEvmAddress())
-		.addUint256(initialLotoJackpot)
-		.addUint256(lottoLossIncrement)
+		.addUint256(initialJackpotWithDecimals)
+		.addUint256(lossIncrementWithDecimals)
 		.addUint256(LAZY_BURN_PERCENT);
 
-	const [lstContractId, lstContractAddress] = await contractDeployFunction(
+	const [ltlContractId, ltlContractAddress] = await contractDeployFunction(
 		client,
 		contractBytecode,
 		gasLimit,
@@ -396,36 +441,46 @@ const main = async () => {
 	);
 
 	console.log(
-		`Lazy Trade Lotto Contract created with ID: ${lstContractId} / ${lstContractAddress}`,
+		`Lazy Trade Lotto Contract created with ID: ${ltlContractId} / ${ltlContractAddress}`,
 	);
 
-	// add the Mission Factory to the lazy gas station as an authorizer
+	// Step 10: Add the contract as a user of the Gas Station
+	console.log('\n- Adding LazyTradeLotto as a contract user of LazyGasStation...');
 	const rslt = await contractExecuteFunction(
 		lazyGasStationId,
 		lazyGasStationIface,
 		client,
 		null,
 		'addContractUser',
-		[lstContractId.toSolidityAddress()],
+		[ltlContractId.toSolidityAddress()],
 	);
 
 	if (rslt[0]?.status.toString() != 'SUCCESS') {
-		console.log('ERROR adding LNS to LGS:', rslt);
+		console.log('ERROR adding LazyTradeLotto to LazyGasStation:', rslt);
+	}
+	else {
+		console.log('LazyTradeLotto added to LazyGasStation:', rslt[2].transactionId.toString());
 	}
 
-	console.log('Lazy Secure Trade added to Lazy Gas Station:', rslt[2].transactionId.toString());
-
+	// Final summary
+	console.log('\n----- Deployment Complete -----');
+	console.log('LazyTradeLotto Contract ID:', ltlContractId.toString());
+	console.log('LazyTradeLotto Contract Address:', ltlContractAddress);
+	console.log('\nNext steps:');
+	console.log('1. Save these details for future reference');
+	console.log('2. Send $LAZY tokens to the LazyGasStation for payouts');
+	console.log('3. Consider using the helper scripts to manage your contract');
 };
 
 /**
- * Helper function to encpapsualte minting an FT
- * @param {string} tokenName
- * @param {string} tokenSymbol
- * @param {string} tokenMemo
- * @param {number} tokenInitalSupply
- * @param {number} tokenDecimal
- * @param {number} tokenMaxSupply
- * @param {number} payment
+ * Helper function to encapsulate minting an FT
+ * @param {string} tokenName - Name of the token
+ * @param {string} tokenSymbol - Symbol of the token
+ * @param {string} tokenMemo - Memo for the token
+ * @param {number} tokenInitalSupply - Initial supply (with decimals)
+ * @param {number} decimal - Number of decimals
+ * @param {number} tokenMaxSupply - Maximum supply (with decimals)
+ * @param {number} payment - Payment amount for the transaction
  */
 async function mintLazy(
 	tokenName,
