@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "npx hardhat test",
-    "test-trade": "npx hardhat test test/LazySecureTrade.test.js",
+    "test-lotto": "npx hardhat test test/LazyTradeLotto.test.js",
     "test-lazy": "npx hardhat test test/LAZYTokenCreator.test.js",
     "test-delegate": "npx hardhat test test/LazyDelegateRegistry.test.js"
   },

@@ -15,6 +15,7 @@ module.exports = {
 				enabled: true,
 				runs: 200,
 			},
+			viaIR: true,
 		},
 	},
 	contractSizer: {

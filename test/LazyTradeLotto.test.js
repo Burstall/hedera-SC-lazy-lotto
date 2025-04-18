@@ -1,7 +1,7 @@
 const fs = require('fs');
 const { ethers } = require('ethers');
 const { expect } = require('chai');
-const { describe, it } = require('mocha');
+const { describe, it, before } = require('mocha');
 const {
 	Client,
 	AccountId,
@@ -25,20 +25,12 @@ const {
 	accountCreator,
 	associateTokensToAccount,
 	mintNFT,
-	sendNFT,
-	clearNFTAllowances,
-	clearFTAllowances,
-	setNFTAllowanceAll,
 	sendHbar,
-	setHbarAllowance,
-	setFTAllowance,
 	sweepHbar,
-	sendNFTDefeatRoyalty,
 } = require('../utils/hederaHelpers');
 const { fail } = require('assert');
 const {
 	checkLastMirrorEvent,
-	checkFTAllowances,
 	checkMirrorBalance,
 	checkMirrorHbarBalance,
 } = require('../utils/hederaMirrorHelpers');
@@ -67,8 +59,8 @@ const LAZY_MAX_SUPPLY = process.env.LAZY_MAX_SUPPLY ?? 250_000_000;
 const addressRegex = /(\d+\.\d+\.[1-9]\d+)/i;
 
 // reused variables
-let ltlContractAddress, lstContractId, ldrAddress;
-let lazyIface, lazyGasStationIface, lazyTradeLottoIface, lazyDelegateRegistryIface;
+let ltlContractAddress, ltlContractId, ldrAddress;
+let lazyIface, lazyGasStationIface, lazyTradeLottoIface;
 let lazyTokenId;
 let alicePK, aliceId;
 let client;
@@ -79,6 +71,9 @@ let LSHGen1_TokenId,
 	LSHMutant_TokenId;
 const prngName = 'PrngSystemContract';
 let signingKey;
+const initialJackpot = 100;
+const lottoLossIncrement = 50;
+const LAZY_BURN_PERCENT = process.env.LOTTO_LAZY_BURN_PERCENT ?? 50;
 
 describe('Deployment', () => {
 	it('Should deploy the contract and setup conditions', async () => {
@@ -143,13 +138,13 @@ describe('Deployment', () => {
 
 			// check if Alice has hbars
 			const hbarBalance = await checkMirrorHbarBalance(env, aliceId);
-			if (hbarBalance < Number(new Hbar(200, HbarUnit.Hbar).toTinybars())) {
-				await sendHbar(client, operatorId, aliceId, 200, HbarUnit.Hbar);
+			if (hbarBalance < Number(new Hbar(100, HbarUnit.Hbar).toTinybars())) {
+				await sendHbar(client, operatorId, aliceId, 100, HbarUnit.Hbar);
 			}
 		}
 		else {
 			alicePK = PrivateKey.generateED25519();
-			aliceId = await accountCreator(client, alicePK, 200);
+			aliceId = await accountCreator(client, alicePK, 100);
 			console.log(
 				'Alice account ID:',
 				aliceId.toString(),
@@ -264,39 +259,6 @@ describe('Deployment', () => {
 				.true;
 		}
 
-		const ldrJson = JSON.parse(
-			fs.readFileSync(
-				`./artifacts/contracts/${lazyDelegateRegistryName}.sol/${lazyDelegateRegistryName}.json`,
-			),
-		);
-
-		const ldrBytecode = ldrJson.bytecode;
-
-		lazyDelegateRegistryIface = ethers.Interface.from(ldrJson.abi);
-
-		if (process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) {
-			console.log(
-				'\n-Using existing Lazy Delegate Registry:',
-				process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID,
-			);
-			ldrAddress = ContractId.fromString(
-				process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID,
-			);
-		}
-		else {
-			const gasLimit = 500_000;
-
-			console.log('\n- Deploying contract...', lazyDelegateRegistryName, '\n\tgas@', gasLimit);
-
-			[ldrAddress] = await contractDeployFunction(client, ldrBytecode, gasLimit);
-
-			console.log(
-				`Lazy Delegate Registry contract created with ID: ${ldrAddress} / ${ldrAddress.toSolidityAddress()}`,
-			);
-
-			expect(ldrAddress.toString().match(addressRegex).length == 2).to.be.true;
-		}
-
 		// deploy PRNG
 		if (process.env.PRNG_CONTRACT_ID) {
 			console.log('\n-Using existing PRNG:', process.env.PRNG_CONTRACT_ID);
@@ -322,13 +284,45 @@ describe('Deployment', () => {
 
 		expect(prngId.toString().match(addressRegex).length == 2).to.be.true;
 
+		if (process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) {
+			console.log(
+				'\n-Using existing Lazy Delegate Registry:',
+				process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID,
+			);
+			ldrAddress = ContractId.fromString(
+				process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID,
+			);
+		}
+		else {
+			const gasLimit = 500_000;
+
+			const ldrJson = JSON.parse(
+				fs.readFileSync(
+					`./artifacts/contracts/${lazyDelegateRegistryName}.sol/${lazyDelegateRegistryName}.json`,
+				),
+			);
+
+			const ldrBytecode = ldrJson.bytecode;
+
+			console.log('\n- Deploying contract...', lazyDelegateRegistryName, '\n\tgas@', gasLimit);
+
+			[ldrAddress] = await contractDeployFunction(client, ldrBytecode, gasLimit);
+
+			console.log(
+				`Lazy Delegate Registry contract created with ID: ${ldrAddress} / ${ldrAddress.toSolidityAddress()}`,
+			);
+
+			expect(ldrAddress.toString().match(addressRegex).length == 2).to.be.true;
+		}
+
 		// mint NFTs from the 3rd party Alice Account
 		// ensure royalties in place
+		// Operator has no NFT so will be subject to burn
 		/*
-					3 x Different NFTs of size 10 each
+					3 x Different NFTs of size 3 each
 				*/
 
-		const nftSize = 10;
+		const nftSize = 3;
 
 		client.setOperator(aliceId, alicePK);
 		let [result, tokenId] = await mintNFT(
@@ -385,6 +379,45 @@ describe('Deployment', () => {
 			gasLimit,
 		);
 
+		// check if a signing wallet has been provided and if not create one and print to console.
+		if (process.env.SIGNING_KEY) {
+			try {
+				signingKey = PrivateKey.fromStringECDSA(process.env.SIGNING_KEY);
+			}
+			catch (err) {
+				console.log('ERROR: SIGNING_KEY is not valid ECDSA:', err);
+
+				try {
+					signingKey = PrivateKey.fromStringED25519(process.env.SIGNING_KEY);
+
+					console.log('Ed25519 keys unsupported, using ECDSA instead.');
+					signingKey = PrivateKey.generateECDSA();
+					console.log(
+						'Fresh key:',
+						signingKey.toString(),
+					);
+				}
+				catch (err) {
+					console.log('ERROR: BAD KEY - GENERATING NEW:', err);
+					signingKey = PrivateKey.generateECDSA();
+					console.log(
+						'Fresh key:',
+						signingKey.toString(),
+					);
+				}
+			}
+			console.log('Using existing signing key (public key):', signingKey.publicKey.toString());
+		}
+		else {
+			signingKey = PrivateKey.generateECDSA();
+			console.log(
+				'No signing key provided, generating new one:',
+				signingKey.toString(),
+			);
+		}
+
+		console.log(`Using signing key (public key): 0x${signingKey.publicKey.toEvmAddress()}`, '/', signingKey.publicKey.toStringDer());
+
 		const constructorParams = new ContractFunctionParameters()
 			.addAddress(prngId.toSolidityAddress())
 			.addAddress(lazyGasStationId.toSolidityAddress())
@@ -392,23 +425,42 @@ describe('Deployment', () => {
 			.addAddress(LSHGen1_TokenId.toSolidityAddress())
 			.addAddress(LSHGen2_TokenId.toSolidityAddress())
 			.addAddress(LSHMutant_TokenId.toSolidityAddress())
-			.addUint256(LAZY_COST_FOR_TRADE)
+			.addAddress(signingKey.publicKey.toEvmAddress())
+			.addUint256(initialJackpot * 10 ** LAZY_DECIMAL)
+			.addUint256(lottoLossIncrement * 10 ** LAZY_DECIMAL)
 			.addUint256(LAZY_BURN_PERCENT);
 
-		[lstContractId, ltlContractAddress] = await contractDeployFunction(
+		[ltlContractId, ltlContractAddress] = await contractDeployFunction(
 			client,
 			contractBytecode,
 			gasLimit,
 			constructorParams,
 		);
 
-		expect(lstContractId.toString().match(addressRegex).length == 2).to.be.true;
+		expect(ltlContractId.toString().match(addressRegex).length == 2).to.be.true;
 
 		console.log(
-			`Lazy Secure Trade Contract created with ID: ${lstContractId} / ${ltlContractAddress}`,
+			`Lazy Lotto Contract created with ID: ${ltlContractId} / ${ltlContractAddress}`,
 		);
 
 		console.log('\n-Testing:', contractName);
+
+		// ensure the contract is set as a contract user of the Lazy Gas Station
+		result = await contractExecuteFunction(
+			lazyGasStationId,
+			lazyGasStationIface,
+			client,
+			null,
+			'addContractUser',
+			[ltlContractId.toSolidityAddress()],
+		);
+		if (result[0]?.status.toString() != 'SUCCESS') {
+			console.log('ERROR adding LTL to LGS:', result);
+			fail();
+		}
+		else {
+			console.log('LTL added to LGS:', result[0]?.status.toString(), result[2]?.transactionId?.toString());
+		}
 
 		// associate the FTs & NFT to operator
 		client.setOperator(operatorId, operatorKey);
@@ -449,36 +501,11 @@ describe('Deployment', () => {
 			expect(result).to.be.equal('SUCCESS');
 		}
 
-		// check the balance of lazy tokens for Bob from mirror node
-		const bobLazyBalance = await checkMirrorBalance(env, bobId, lazyTokenId);
-
-		const bobTokensToAssociate = [];
-		if (!bobLazyBalance) {
-			bobTokensToAssociate.push(lazyTokenId);
-		}
-
-		bobTokensToAssociate.push(
-			LSHGen1_TokenId,
-			LSHGen2_TokenId,
-			LSHMutant_TokenId,
-		);
-
-		// associate the tokens for Bob
-		result = await associateTokensToAccount(
-			client,
-			bobId,
-			bobPK,
-			bobTokensToAssociate,
-		);
-		expect(result).to.be.equal('SUCCESS');
-
 		// send $LAZY to all accounts
 		client.setOperator(operatorId, operatorKey);
 		result = await sendLazy(operatorId, 600);
 		expect(result).to.be.equal('SUCCESS');
 		result = await sendLazy(aliceId, 900);
-		expect(result).to.be.equal('SUCCESS');
-		result = await sendLazy(bobId, 900);
 		expect(result).to.be.equal('SUCCESS');
 		result = await sendHbar(client, operatorId, AccountId.fromString(lazyGasStationId.toString()), 1, HbarUnit.Hbar);
 		expect(result).to.be.equal('SUCCESS');
@@ -495,7 +522,7 @@ describe('Deployment', () => {
 			client,
 			null,
 			'addContractUser',
-			[lstContractId.toSolidityAddress()],
+			[ltlContractId.toSolidityAddress()],
 		);
 
 		if (result[0]?.status.toString() != 'SUCCESS') {
@@ -514,39 +541,8 @@ describe('Deployment', () => {
 		);
 
 		expect(lgsEvent.toSolidityAddress().toLowerCase()).to.be.equal(
-			lstContractId.toSolidityAddress(),
+			ltlContractId.toSolidityAddress(),
 		);
-
-		client.setOperator(aliceId, alicePK);
-
-		// send NFTs 1-5 to Operator
-		const serials = [...Array(nftSize).keys()].map((x) => ++x);
-		result = await sendNFT(
-			client,
-			aliceId,
-			operatorId,
-			LSHGen1_TokenId,
-			serials.slice(0, 5),
-		);
-		expect(result).to.be.equal('SUCCESS');
-
-		result = await sendNFT(
-			client,
-			aliceId,
-			operatorId,
-			LSHGen2_TokenId,
-			serials.slice(0, 5),
-		);
-		expect(result).to.be.equal('SUCCESS');
-
-		result = await sendNFT(
-			client,
-			aliceId,
-			operatorId,
-			LSHMutant_TokenId,
-			serials.slice(0, 5),
-		);
-		expect(result).to.be.equal('SUCCESS');
 	});
 });
 
@@ -554,58 +550,9 @@ describe('Check Contract Deployment', () => {
 	it('Should check the contract configuration', async () => {
 		client.setOperator(operatorId, operatorKey);
 
-		// get tradeNonce
-		const tradeNonceResult = await contractExecuteQuery(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			null,
-			'tradeNonce',
-		);
-		expect(Number(tradeNonceResult[0])).to.be.equal(
-			0,
-		);
-
-		// get lazyBurnPercentage
-		const burnPercentageResult = await contractExecuteQuery(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			null,
-			'lazyBurnPercentage',
-		);
-		expect(Number(burnPercentageResult[0])).to.be.equal(
-			Number(LAZY_BURN_PERCENT),
-		);
-
-		// get lazyCostForTrade
-		const lazyCostForTradeResult = await contractExecuteQuery(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			null,
-			'lazyCostForTrade',
-		);
-		expect(Number(lazyCostForTradeResult[0])).to.be.equal(
-			Number(LAZY_COST_FOR_TRADE),
-		);
-
-		// get contractSunset
-		const contractSunsetResult = await contractExecuteQuery(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			null,
-			'contractSunset',
-		);
-		// expect the reult to be > 88 days from now
-		expect(Number(contractSunsetResult[0])).to.be.greaterThan(
-			Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 88,
-		);
-
 		// get LSH_GEN1
 		const lshGen1Result = await contractExecuteQuery(
-			lstContractId,
+			ltlContractId,
 			lazyTradeLottoIface,
 			client,
 			null,
@@ -613,7 +560,7 @@ describe('Check Contract Deployment', () => {
 		);
 
 		expect(lshGen1Result[0].slice(2).toLowerCase()).to.be.equal(
-			LSHGen2_TokenId.toSolidityAddress().toLowerCase(),
+			LSHGen1_TokenId.toSolidityAddress().toLowerCase(),
 		);
 
 		// get LSH_GEN2 from the mirror nodes
@@ -623,7 +570,7 @@ describe('Check Contract Deployment', () => {
 
 		const lshGen2 = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
+			ltlContractId,
 			encodedCommand,
 			operatorId,
 			false,
@@ -635,8 +582,141 @@ describe('Check Contract Deployment', () => {
 		);
 
 		expect(lshGenResult[0].slice(2).toLowerCase()).to.be.equal(
+			LSHGen2_TokenId.toSolidityAddress().toLowerCase(),
+		);
+
+		// get LSH_GEN1_MUTANT from the mirror nodes
+		const lshGen1Mutant = lazyTradeLottoIface.encodeFunctionData(
+			'LSH_GEN1_MUTANT',
+		);
+
+		const lshGen1MutantResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lshGen1Mutant,
+			operatorId,
+			false,
+		);
+
+		const lshGen1MutantResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'LSH_GEN1_MUTANT',
+			lshGen1MutantResult,
+		);
+
+		expect(lshGen1MutantResultDecoded[0].slice(2).toLowerCase()).to.be.equal(
 			LSHMutant_TokenId.toSolidityAddress().toLowerCase(),
 		);
+
+		// get prngSystemContract
+
+		const prngResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('prngSystemContract'),
+			operatorId,
+			false,
+		);
+
+		const prngResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'prngSystemContract',
+			prngResult,
+		);
+
+		expect(prngResultDecoded[0].slice(2).toLowerCase()).to.be.equal(
+			prngId.toSolidityAddress().toLowerCase(),
+		);
+
+		// lazyGasStation
+		const lazyGasStationResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('lazyGasStation'),
+			operatorId,
+			false,
+		);
+
+		const lazyGasStationResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'lazyGasStation',
+			lazyGasStationResult,
+		);
+
+		expect(lazyGasStationResultDecoded[0].slice(2).toLowerCase()).to.be.equal(
+			lazyGasStationId.toSolidityAddress().toLowerCase(),
+		);
+
+		// lazyDelegateRegistry
+		const lazyDelegateRegistryResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('lazyDelegateRegistry'),
+			operatorId,
+			false,
+		);
+
+		const lazyDelegateRegistryResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'lazyDelegateRegistry',
+			lazyDelegateRegistryResult,
+		);
+
+		expect(lazyDelegateRegistryResultDecoded[0].slice(2).toLowerCase()).to.be.equal(
+			ldrAddress.toSolidityAddress().toLowerCase(),
+		);
+
+		// systemWallet
+		const systemWalletResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('systemWallet'),
+			operatorId,
+			false,
+		);
+
+		const systemWalletResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'systemWallet',
+			systemWalletResult,
+		);
+
+		expect(systemWalletResultDecoded[0].slice(2).toLowerCase()).to.be.equal(
+			signingKey.publicKey.toEvmAddress().toLowerCase(),
+		);
+
+		// burnPercentage
+		const burnPercentageResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('burnPercentage'),
+			operatorId,
+			false,
+		);
+
+		const burnPercentageResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'burnPercentage',
+			burnPercentageResult,
+		);
+
+		expect(Number(burnPercentageResultDecoded[0])).to.be.equal(LAZY_BURN_PERCENT);
+
+		// getLottoStats
+		const lottoStatsResult = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('getLottoStats'),
+			operatorId,
+			false,
+		);
+
+		const lottoStatsResultDecoded = lazyTradeLottoIface.decodeFunctionResult(
+			'getLottoStats',
+			lottoStatsResult,
+		);
+
+		expect(Number(lottoStatsResultDecoded[0])).to.be.equal(initialJackpot * 10 ** LAZY_DECIMAL);
+		expect(Number(lottoStatsResultDecoded[1])).to.be.equal(0);
+		expect(Number(lottoStatsResultDecoded[2])).to.be.equal(0);
+		expect(Number(lottoStatsResultDecoded[3])).to.be.equal(0);
+		expect(Number(lottoStatsResultDecoded[4])).to.be.equal(0);
+		expect(Number(lottoStatsResultDecoded[5])).to.be.equal(0);
+		expect(Number(lottoStatsResultDecoded[6])).to.be.equal(lottoLossIncrement * 10 ** LAZY_DECIMAL);
 	});
 
 	it('Should check access controls', async () => {
@@ -646,14 +726,66 @@ describe('Check Contract Deployment', () => {
 		// ALICE is not owner so expect failures
 		client.setOperator(aliceId, alicePK);
 
-		// setLazyCostForTrade
+		// boostJackpot
 		try {
 			const result = await contractExecuteFunction(
-				lstContractId,
+				ltlContractId,
 				lazyTradeLottoIface,
 				client,
 				null,
-				'setLazyCostForTrade',
+				'boostJackpot',
+				[1 * 10 ** LAZY_DECIMAL],
+			);
+			if (
+				result[0].status.toString() ==
+				'REVERT: Ownable: caller is not the owner'
+			) {
+				expectedErrors++;
+			}
+			else {
+				console.log('Unexpected Result (boostJackpot):', result);
+				unexpectedErrors++;
+			}
+		}
+		catch (err) {
+			console.log(err);
+			unexpectedErrors++;
+		}
+
+		// updateJackpotLossIncrement
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				null,
+				'updateJackpotLossIncrement',
+				[1 * 10 ** LAZY_DECIMAL],
+			);
+			if (
+				result[0].status.toString() ==
+				'REVERT: Ownable: caller is not the owner'
+			) {
+				expectedErrors++;
+			}
+			else {
+				console.log('Unexpected Result (updateJackpotLossIncrement):', result);
+				unexpectedErrors++;
+			}
+		}
+		catch (err) {
+			console.log(err);
+			unexpectedErrors++;
+		}
+
+		// updateBurnPercentage
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				null,
+				'updateBurnPercentage',
 				[1],
 			);
 			if (
@@ -663,7 +795,7 @@ describe('Check Contract Deployment', () => {
 				expectedErrors++;
 			}
 			else {
-				console.log('Unexpected Result (setLazyCostForTrade):', result);
+				console.log('Unexpected Result (updateBurnPercentage):', result);
 				unexpectedErrors++;
 			}
 		}
@@ -672,15 +804,15 @@ describe('Check Contract Deployment', () => {
 			unexpectedErrors++;
 		}
 
-		// setLazyBurnPercentage
+		// updateSystemWallet
 		try {
 			const result = await contractExecuteFunction(
-				lstContractId,
+				ltlContractId,
 				lazyTradeLottoIface,
 				client,
 				null,
-				'setLazyBurnPercentage',
-				[11],
+				'updateSystemWallet',
+				[aliceId.toSolidityAddress()],
 			);
 			if (
 				result[0].status.toString() ==
@@ -689,83 +821,8 @@ describe('Check Contract Deployment', () => {
 				expectedErrors++;
 			}
 			else {
-				console.log('Unexpected Result (setLazyBurnPercentage):', result);
+				console.log('Unexpected Result (updateSystemWallet):', result);
 				unexpectedErrors++;
-			}
-		}
-		catch (err) {
-			console.log(err);
-			unexpectedErrors++;
-		}
-
-		// extendSunset
-		try {
-			const result = await contractExecuteFunction(
-				lstContractId,
-				lazyTradeLottoIface,
-				client,
-				null,
-				'extendSunset',
-				[1],
-			);
-			if (
-				result[0].status.toString() ==
-				'REVERT: Ownable: caller is not the owner'
-			) {
-				expectedErrors++;
-			}
-			else {
-				console.log('Unexpected Result (extendSunset):', result);
-				unexpectedErrors++;
-			}
-		}
-		catch (err) {
-			console.log(err);
-			unexpectedErrors++;
-		}
-
-		// transferHbar
-		try {
-			const result = await contractExecuteFunction(
-				lstContractId,
-				lazyTradeLottoIface,
-				client,
-				null,
-				'transferHbar',
-				[aliceId.toSolidityAddress(), 1],
-			);
-			if (
-				result[0].status.toString() ==
-				'REVERT: Ownable: caller is not the owner'
-			) {
-				expectedErrors++;
-			}
-			else {
-				console.log('Unexpected Result (transferHbar):', result);
-				unexpectedErrors++;
-			}
-		}
-		catch (err) {
-			console.log(err);
-			unexpectedErrors++;
-		}
-
-		// retrieveLazy
-		try {
-			const result = await contractExecuteFunction(
-				lstContractId,
-				lazyTradeLottoIface,
-				client,
-				null,
-				'retrieveLazy',
-				[aliceId.toSolidityAddress(), 1],
-			);
-			if (
-				result[0].status.toString() ==
-				'REVERT: Ownable: caller is not the owner'
-			) {
-				console.log('Expected Result (retrieveLazy):', result);
-				expectedErrors++;
 			}
 		}
 		catch (err) {
@@ -776,1372 +833,1058 @@ describe('Check Contract Deployment', () => {
 		console.log('Expected errors:', expectedErrors);
 		console.log('Unexpected errors:', unexpectedErrors);
 
-		expect(expectedErrors).to.be.equal(5);
+		expect(expectedErrors).to.be.equal(4);
 		expect(unexpectedErrors).to.be.equal(0);
 	});
 });
 
-describe('Secure Trades are go...', () => {
-	it('Operator Creates a trade for Bob (hbar only)', async () => {
+describe('Check Burn Percentage Functionality', () => {
+	it('Should check for a LSH NFT Holder', async () => {
 		client.setOperator(operatorId, operatorKey);
 
-		// set an NFT allowance for the operator to the contract
-		const nftAllowanceResult = await setNFTAllowanceAll(
-			client,
-			[LSHGen1_TokenId],
-			operatorId,
-			AccountId.fromString(lstContractId.toString()),
-		);
-
-		operatorNftAllowances.push({
-			tokenId: LSHGen1_TokenId,
-			owner: operatorId,
-			spender: AccountId.fromString(lstContractId.toString()),
-		});
-
-		expect(nftAllowanceResult).to.be.equal('SUCCESS');
-
-		// create a trade for Bob
-		const tradeResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			950_000 + 500_000,
-			'createTrade',
-			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				bobId.toSolidityAddress(),
-				1,
-				Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
-				0,
-				0,
-			],
-		);
-
-		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
-
-		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
-	});
-
-	it('Check Alice/Operator can not accept the trade', async () => {
-		// let mirror node catch up
-		await sleep(5000);
-
-		client.setOperator(aliceId, alicePK);
-		// query trades available to Alice (expect 0) via mirror node
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getUserTrades',
+		// check for Alice
+		// getBurnForUser from the mirror node
+		const encodedCommand = lazyTradeLottoIface.encodeFunctionData(
+			'getBurnForUser',
 			[aliceId.toSolidityAddress()],
 		);
 
-		let userTrades = await readOnlyEVMFromMirrorNode(
+		const burnForUser = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
+			ltlContractId,
 			encodedCommand,
 			operatorId,
 			false,
 		);
 
-		let userTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getUserTrades',
-			userTrades,
+		const burnForUserResult = lazyTradeLottoIface.decodeFunctionResult(
+			'getBurnForUser',
+			burnForUser,
 		);
 
-		expect(userTradesResult[0].length).to.be.equal(0);
+		expect(Number(burnForUserResult[0])).to.be.equal(0);
+	});
 
-		// execute getUserTrades for Bob via mirror node
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getUserTrades',
-			[bobId.toSolidityAddress()],
-		);
-
-		userTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		userTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getUserTrades',
-			userTrades,
-		);
-
-		expect(userTradesResult[0].length).to.be.equal(1);
-
-		const bobTrade = userTradesResult[0][0];
-
-		// make sure the token is not in getTokenTrades for StkNFTA
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getTokenTrades',
-			[LSHGen1_TokenId.toSolidityAddress()],
-		);
-
-		const tokenTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tokenTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getTokenTrades',
-			tokenTrades,
-		);
-
-		expect(tokenTradesResult[0].length).to.be.equal(0);
-
-		// check isTradeValid for address(0) expect true
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[bobTrade, ethers.ZeroAddress],
-		);
-
-		const tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
-
-		expect(tradeValidResult[0]).to.be.true;
-
-		// executeTrade for Alice expect failure with TradeNotFoundOrInvalid
-		let tradeExecutionResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			650_000,
-			'executeTrade',
-			[bobTrade],
-			new Hbar(1, HbarUnit.Hbar),
-		);
-
-		if (tradeExecutionResult[0]?.status?.name != 'TradeNotFoundOrInvalid') {
-			console.log('ERROR expecting TradeNotFoundOrInvalid:', tradeExecutionResult);
-			fail();
-		}
-
-		// now try as operator
+	it('Should check for a *NON* LSH NFT Holder', async () => {
 		client.setOperator(operatorId, operatorKey);
 
-		// check isTradeValid for Operator expect true (as operator is the seeller)
-
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[bobTrade, operatorId.toSolidityAddress()],
+		// check for Alice
+		// getBurnForUser from the mirror node
+		const encodedCommand = lazyTradeLottoIface.encodeFunctionData(
+			'getBurnForUser',
+			[operatorId.toSolidityAddress()],
 		);
 
-		const tradeValidOperator = await readOnlyEVMFromMirrorNode(
+		const burnForUser = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
+			ltlContractId,
 			encodedCommand,
 			operatorId,
 			false,
 		);
 
-		const tradeValidOperatorResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValidOperator,
+		const burnForUserResult = lazyTradeLottoIface.decodeFunctionResult(
+			'getBurnForUser',
+			burnForUser,
 		);
 
-		expect(tradeValidOperatorResult[0]).to.be.true;
-
-		// valid trade but not executable
-		// executeTrade for Operator expect failure TradeNotFoundOrInvalid
-
-		tradeExecutionResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			650_000,
-			'executeTrade',
-			[bobTrade],
-			new Hbar(1, HbarUnit.Hbar),
-		);
-
-		if (tradeExecutionResult[0]?.status?.name != 'SellerCannotBeBuyer') {
-			console.log('ERROR expecting SellerCannotBeBuyer:', tradeExecutionResult);
-			fail();
-		}
+		expect(Number(burnForUserResult[0])).to.be.equal(LAZY_BURN_PERCENT);
 	});
+});
 
-	it('Bob accepts the trade', async () => {
-		client.setOperator(bobId, bobPK);
-		// Query the trades available to Bob
-		// execute getUserTrades for Bob via mirror node
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getUserTrades',
-			[bobId.toSolidityAddress()],
-		);
+describe('Time to roll the lotto', () => {
+	let userNonce;
+	let lottoRoundNumber;
+	let burnPercentage;
+	let token;
+	let serial;
+	let winRateThreshold;
+	let minWinAmt;
+	let maxWinAmt;
+	let jackpotThreshold;
 
-		const userTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const userTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getUserTrades',
-			userTrades,
-		);
-
-		expect(userTradesResult[0].length).to.be.equal(1);
-
-		const bobTrade = userTradesResult[0][0];
-
-		console.log('Bob trade:', bobTrade);
-
-		// check the trade details
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getTrade',
-			[bobTrade],
-		);
-
-		const trade = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tradeResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getTrade',
-			trade,
-		);
-
-		console.log('Bob trade details:', tradeResult);
-
-		// check isTradeValid for Bob expect true
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[bobTrade, bobId.toSolidityAddress()],
-		);
-
-		const tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
-
-		console.log('Bob trade valid:', tradeValidResult);
-
-		expect(tradeValidResult[0]).to.be.true;
-
-		// set a 1 tinybar allowance to LST
-		const allowanceResult = await setHbarAllowance(
-			client,
-			bobId,
-			AccountId.fromString(lstContractId.toString()),
-			1,
-			HbarUnit.Tinybar,
-		);
-
-		expect(allowanceResult).to.be.equal('SUCCESS');
-
-		// executeTrade
-		// sending > 1 hbar to check the additional value is returned
-		const tradeExecutionResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			650_000,
-			'executeTrade',
-			[bobTrade],
-			new Hbar(2, HbarUnit.Hbar),
-		);
-
-		if (tradeExecutionResult[0].status.toString() != 'SUCCESS') {
-			console.log('Trade Execution Error:', tradeExecutionResult);
-			fail();
-		}
-
-		console.log('Bob Trade Execution tx:', tradeExecutionResult[2]?.transactionId?.toString());
-	});
-
-	it('Operator creates a listing for Alice for $LAZY (0 hbar), Alice Accepts', async () => {
+	before(async () => {
 		client.setOperator(operatorId, operatorKey);
 
-		// set an NFT allowance for the operator to the contract
-		const nftAllowanceResult = await setNFTAllowanceAll(
-			client,
-			[LSHGen2_TokenId],
-			operatorId,
-			AccountId.fromString(lstContractId.toString()),
-		);
-
-		operatorNftAllowances.push({
-			tokenId: LSHGen2_TokenId,
-			owner: operatorId,
-			spender: AccountId.fromString(lstContractId.toString()),
-		});
-
-		expect(nftAllowanceResult).to.be.equal('SUCCESS');
-
-		// create a trade for Alice
-		let tradeResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			950_000 + 500_000,
-			'createTrade',
-			[
-				LSHGen2_TokenId.toSolidityAddress(),
-				aliceId.toSolidityAddress(),
-				1,
-				0,
-				23,
-				0,
-			],
-		);
-
-		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
-
-		// let mirror node catch up
-		await sleep(5000);
-
-		client.setOperator(aliceId, alicePK);
-
-		// query trades available to Alice (expect 1) via mirror node
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getUserTrades',
-			[aliceId.toSolidityAddress()],
-		);
-
-		const userTrades = await readOnlyEVMFromMirrorNode(
+		// Get the current lotto stats for validation
+		// Get lotto stats from the mirror node
+		const encodedLottoStatsCommand = lazyTradeLottoIface.encodeFunctionData('getLottoStats');
+		const lottoStatsResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			encodedLottoStatsCommand,
 			operatorId,
 			false,
 		);
+		const lottoStatsResult = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsResponse);
+		lottoRoundNumber = Number(lottoStatsResult[2]);
 
-		const userTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getUserTrades',
-			userTrades,
-		);
-
-		expect(userTradesResult[0].length).to.be.equal(1);
-
-		const aliceTrade = userTradesResult[0][0];
-
-		// trade hash should be the keccak256 of token and serial
-		const tradeHashToCheck = ethers.solidityPackedKeccak256(
-			['address', 'uint256'],
-			[LSHGen2_TokenId.toSolidityAddress(), 1],
-		);
-
-		expect(aliceTrade).to.be.equal(tradeHashToCheck);
-
-		// check the trade details
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getTrade',
-			[aliceTrade],
-		);
-
-		const trade = await readOnlyEVMFromMirrorNode(
+		// Get burn percentage from the mirror node
+		const encodedBurnPercentageCommand = lazyTradeLottoIface.encodeFunctionData('burnPercentage');
+		const burnPercentageResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			encodedBurnPercentageCommand,
 			operatorId,
 			false,
 		);
+		const burnPercentageResult = lazyTradeLottoIface.decodeFunctionResult('burnPercentage', burnPercentageResponse);
+		burnPercentage = Number(burnPercentageResult[0]);
 
-		tradeResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getTrade',
-			trade,
-		);
+		// Setup parameters for lotto rolls
+		token = LSHGen1_TokenId.toSolidityAddress();
+		serial = 1;
+		// Random nonce
+		userNonce = Math.floor(Math.random() * 1000000);
+		// 50% chance of winning (out of 100_000_000)
+		winRateThreshold = 50_000_000;
+		minWinAmt = 5 * 10 ** LAZY_DECIMAL;
+		maxWinAmt = 20 * 10 ** LAZY_DECIMAL;
+		// 5% chance of jackpot (out of 100_000_000)
+		jackpotThreshold = 50_000_000;
 
-		console.log('Alice trade details:', tradeResult);
-
-		// check isTradeValid for Alice expect true
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[aliceTrade, aliceId.toSolidityAddress()],
-		);
-
-		const tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
-
-		console.log('Alice trade valid:', tradeValidResult);
-
-		expect(tradeValidResult[0]).to.be.true;
-
-		// set a 1 tinybar allowance to LST
-		const allowanceResult = await setFTAllowance(
-			client,
-			lazyTokenId,
-			aliceId,
-			AccountId.fromString(lazyGasStationId.toString()),
-			23,
-		);
-
-		// set a 1 tinybar allowance to LST
-		const hbarAllowanceResult = await setHbarAllowance(
-			client,
-			aliceId,
-			AccountId.fromString(lstContractId.toString()),
-			1,
-			HbarUnit.Tinybar,
-		);
-
-		expect(hbarAllowanceResult).to.be.equal('SUCCESS');
-
-		expect(allowanceResult).to.be.equal('SUCCESS');
-
-		// executeTrade
-		// sending 0 hbar
-		const tradeExecutionResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			650_000,
-			'executeTrade',
-			[aliceTrade],
-			0,
-		);
-
-		if (tradeExecutionResult[0].status.toString() != 'SUCCESS') {
-			console.log('Trade Execution Error (Operator creates a listing for Alice for $LAZY):', tradeExecutionResult);
-			fail();
-		}
-
-		console.log('Alice Trade Execution tx:', tradeExecutionResult[2]?.transactionId?.toString());
+		console.log('Lotto parameters set up:');
+		console.log('- Token:', token);
+		console.log('- Serial:', serial);
+		console.log('- Nonce:', userNonce);
+		console.log('- Win rate threshold:', winRateThreshold, '(50%)');
+		console.log('- Min/max win amounts:', minWinAmt / 10 ** LAZY_DECIMAL, '-', maxWinAmt / 10 ** LAZY_DECIMAL, '$LAZY');
+		console.log('- Jackpot threshold:', jackpotThreshold, '(5%)');
 	});
 
-	it('Operator creates a listing with zero address as user for 11 $LAZY (2 hbar), Bob Accepts', async () => {
+	it('Should fail to roll lotto with invalid token address', async () => {
+		userNonce++;
 		client.setOperator(operatorId, operatorKey);
 
-		// Allowance should be in place for the StkA NFT
-
-		// user owns an LSH Gen1 or Gen2 NFT so no $LAZY cost to list
-
-		// create a trade for null user
-		const tradeResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			500_000,
-			'createTrade',
-			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				ethers.ZeroAddress,
-				2,
-				Number(new Hbar(2, HbarUnit.Hbar).toTinybars()),
-				11,
-				0,
-			],
-		);
-
-		if (tradeResult[0].status.toString() != 'SUCCESS') {
-			console.log('Trade Creation Error (buyer = zero):', tradeResult);
-			fail();
-		}
-
-		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
-
-		// let mirror node catch up
-		await sleep(5500);
-
-		// expect to see this in the getTokenTrades method
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getTokenTrades',
-			[LSHGen1_TokenId.toSolidityAddress()],
-		);
-
-		let tokenTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
+		// Sign the hash with the system wallet
+		const signature = await createSignature(
 			operatorId,
-			false,
+			ethers.ZeroAddress,
+			serial,
+			userNonce,
+			true,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
 		);
 
-		let tokenTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getTokenTrades',
-			tokenTrades,
-		);
-
-		if (tokenTradesResult[0].length != 1) {
-			console.log('ERROR: Trade not found in getTokenTrades:', tokenTradesResult);
-			fail();
-		}
-
-		const listingTrade = tokenTradesResult[0][0];
-
-		client.setOperator(bobId, bobPK);
-
-		// query trades available to Bob (expect 0) via mirror node
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getUserTrades',
-			[bobId.toSolidityAddress()],
-		);
-
-		const userTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const userTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getUserTrades',
-			userTrades,
-		);
-
-		expect(userTradesResult[0].length).to.be.equal(0);
-
-		// check isTradeValid for Bob expect true
-
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[listingTrade, bobId.toSolidityAddress()],
-		);
-
-		const tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
-
-		expect(tradeValidResult[0]).to.be.true;
-
-		// set a 1 tinybar allowance to LST
-		const allowanceResult = await setHbarAllowance(
-			client,
-			bobId,
-			AccountId.fromString(lstContractId.toString()),
-			1,
-			HbarUnit.Tinybar,
-		);
-
-		// set a 11 $LAZY allowance to LGS
-		const lazyAllowanceResult = await setFTAllowance(
-			client,
-			lazyTokenId,
-			bobId,
-			AccountId.fromString(lazyGasStationId.toString()),
-			11,
-		);
-
-		expect(lazyAllowanceResult).to.be.equal('SUCCESS');
-
-		expect(allowanceResult).to.be.equal('SUCCESS');
-
-		// executeTrade
-		// sending 2 hbar as tinybars
-
-		const tradeExecutionResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			650_000,
-			'executeTrade',
-			[listingTrade],
-			new Hbar(2, HbarUnit.Hbar),
-		);
-
-		if (tradeExecutionResult[0].status.toString() != 'SUCCESS') {
-			console.log('Trade Execution Error:', tradeExecutionResult);
-			fail();
-		}
-
-		console.log('Bob Executes Listing Trade tx:', tradeExecutionResult[2]?.transactionId?.toString());
-
-		// let mirror node catch up
-		await sleep(5000);
-
-		// check getTokenTrades for StkNFTC expect 0
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getTokenTrades',
-			[LSHGen1_TokenId.toSolidityAddress()],
-		);
-
-		tokenTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		tokenTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getTokenTrades',
-			tokenTrades,
-		);
-
-		expect(tokenTradesResult[0].length).to.be.equal(0);
-	});
-
-	it('Bob creates a listing with zero address as user, pays $LAZY to list, Alice Accepts', async () => {
-		// Bob creates a listing for Zero address, has to pay $LAZY to list [initially does not set allowance, thus expect failure]
-		client.setOperator(bobId, bobPK);
-
-		// set allowance for StkNFTC from Bob to LST
-		const nftAllowanceResult = await setNFTAllowanceAll(
-			client,
-			[LSHGen1_TokenId],
-			bobId,
-			AccountId.fromString(lstContractId.toString()),
-		);
-
-		expect(nftAllowanceResult).to.be.equal('SUCCESS');
-
-		// create a trade for null user
-		let tradeResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			500_000,
-			'createTrade',
-			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				ethers.ZeroAddress,
-				2,
-				Number(new Hbar(1.5, HbarUnit.Hbar).toTinybars()),
-				0,
-				0,
-			],
-		);
-
-		if (tradeResult[0]?.status?.toString() == 'SUCCESS') {
-			console.log('ERROR: Trade Creation should have failed');
-			console.log('Trade [Bob creates a listing with zero address] Create Result:', tradeResult);
-			fail();
-		}
-
-		// set a $LAZY allowance for LAZY_COST_FOR_TRADE to LGS
-		const lazyAllowanceResult = await setFTAllowance(
-			client,
-			lazyTokenId,
-			bobId,
-			AccountId.fromString(lazyGasStationId.toString()),
-			LAZY_COST_FOR_TRADE,
-		);
-
-		if (lazyAllowanceResult != 'SUCCESS') {
-			console.log('ERROR: $LAZY allowance failed', lazyAllowanceResult);
-			fail();
-		}
-
-		// create a trade for null user - now expect success
-		tradeResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			500_000,
-			'createTrade',
-			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				ethers.ZeroAddress,
-				2,
-				Number(new Hbar(1.5, HbarUnit.Hbar).toTinybars()),
-				0,
-				0,
-			],
-		);
-
-		if (tradeResult[0]?.status?.toString() != 'SUCCESS') {
-			console.log('ERROR: Trade Creation failed');
-			console.log('Trade Create Result:', tradeResult);
-			fail();
-		}
-
-		console.log('Bob Trade Creation tx:', tradeResult[2]?.transactionId?.toString());
-		console.log('Bob Trade Hash:', tradeResult[1]);
-
-		// let mirror node catch up
-		await sleep(5000);
-
-		client.setOperator(aliceId, alicePK);
-
-		// query trades available to Alice (expect 0) via mirror node
-
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getUserTrades',
-			[aliceId.toSolidityAddress()],
-		);
-
-		const userTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const userTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getUserTrades',
-			userTrades,
-		);
-
-		expect(userTradesResult[0].length).to.be.equal(0);
-
-		// query trades available for getTokenTrades for StkNFTA
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'getTokenTrades',
-			[LSHGen1_TokenId.toSolidityAddress()],
-		);
-
-		const tokenTrades = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		const tokenTradesResult = lazyTradeLottoIface.decodeFunctionResult(
-			'getTokenTrades',
-			tokenTrades,
-		);
-
-		console.log('Token Trades:', tokenTradesResult[0], 'compare to:', tradeResult[1]);
-
-		expect(tokenTradesResult[0].length).to.be.equal(1);
-
-		// Alice sets a tinybar allowance to LST
-		const allowanceResult = await setHbarAllowance(
-			client,
-			aliceId,
-			AccountId.fromString(lstContractId.toString()),
-			1,
-			HbarUnit.Tinybar,
-		);
-
-		expect(allowanceResult).to.be.equal('SUCCESS');
-
-		// executeTrade for Alice
-		const tradeExecutionResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			650_000,
-			'executeTrade',
-			[tradeResult[1][0]],
-			new Hbar(1.5, HbarUnit.Hbar),
-		);
-
-		if (tradeExecutionResult[0].status.toString() != 'SUCCESS') {
-			console.log('Trade Execution Error:', tradeExecutionResult);
-			fail();
-		}
-
-		console.log('Alice Trade Execution tx:', tradeExecutionResult[2]?.transactionId?.toString());
-	});
-
-	it('Operator delegates LSH Gen 2 to Bob, Bob creates a listing for Zero Address with no payment needed, Alice Accepts', async () => {
-		// let the mirror nodes catch up
-		await sleep(5000);
-
-		client.setOperator(bobId, bobPK);
-
-		// check the $LAZY allowance for Bob to LGS is < LAZY_COST_FOR_TRADE
-		const lazyAllowance = await checkFTAllowances(env, bobId);
-
-		for (let a = 0; a < lazyAllowance.length; a++) {
-			const allowance = lazyAllowance[a];
-			if (
-				allowance.token_id == lazyTokenId.toString() &&
-				allowance.amount >= LAZY_COST_FOR_TRADE
-			) {
-				// revoke the allowance
-				const res = await clearFTAllowances(client, [
-					{
-						tokenId: lazyTokenId,
-						owner: bobId,
-						spender: AccountId.fromString(lazyGasStationId.toString()),
-					},
-				]);
-
-				expect(res).to.be.equal('SUCCESS');
-				console.log('Revoked $LAZY allowance for Bob');
-				break;
+		// Try with invalid token address (zero address)
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				500_000,
+				'rollLotto',
+				[
+					ethers.ZeroAddress,
+					serial,
+					userNonce,
+					true,
+					winRateThreshold,
+					minWinAmt,
+					maxWinAmt,
+					jackpotThreshold,
+					signature,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with invalid token address', result);
+				fail();
 			}
 		}
+		catch (err) {
+			console.log('Expected error with invalid token address:', err.message);
+			expect(err.message).to.include('BadArguments');
+		}
 
+		// Increment nonce for next test
+		userNonce++;
+	});
+
+	it('Should fail to roll lotto with invalid min/max win amounts', async () => {
+		userNonce++;
 		client.setOperator(operatorId, operatorKey);
 
-		// delegate StkNFTC, serial 4 to Bob
+		// Create invalid parameters where minWin > maxWin
+		const invalidMinWin = 30 * 10 ** LAZY_DECIMAL;
+		const invalidMaxWin = 10 * 10 ** LAZY_DECIMAL;
+
+		const signature = await createSignature(
+			operatorId,
+			token,
+			1,
+			userNonce,
+			true,
+			winRateThreshold,
+			// Min > Max (invalid)
+			invalidMinWin,
+			invalidMaxWin,
+			jackpotThreshold,
+		);
+
+		// Try with invalid win amounts
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				500_000,
+				'rollLotto',
+				[
+					token,
+					serial,
+					userNonce,
+					true,
+					winRateThreshold,
+					invalidMinWin,
+					invalidMaxWin,
+					jackpotThreshold,
+					signature,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with invalid win amounts', result);
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error with invalid win amounts:', err.message);
+			expect(err.message).to.include('BadArguments');
+		}
+
+		userNonce++;
+	});
+
+	it('Should fail to roll lotto with invalid win rate threshold', async () => {
+		userNonce++;
+		client.setOperator(operatorId, operatorKey);
+
+		// Greater than MAX_WIN_RATE_THRESHOLD (100_000_000)
+		const invalidThreshold = 200000000;
+
+		const signatureHex = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			false,
+			invalidThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
+
+		// Try with invalid win rate threshold
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				500_000,
+				'rollLotto',
+				[
+					token,
+					serial,
+					userNonce,
+					false,
+					invalidThreshold,
+					minWinAmt,
+					maxWinAmt,
+					jackpotThreshold,
+					signatureHex,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with invalid win rate threshold', result);
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error with invalid win rate threshold:', err.message);
+			expect(err.message).to.include('BadArguments');
+		}
+
+		userNonce++;
+	});
+
+	it('Should fail to roll lotto with invalid team signature', async () => {
+		userNonce++;
+		client.setOperator(operatorId, operatorKey);
+
+		// Use a random invalid signature
+		const invalidSignature = ethers.hexlify(ethers.randomBytes(65));
+
+		// Try with invalid signature
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				500_000,
+				'rollLotto',
+				[
+					token,
+					serial,
+					userNonce,
+					true,
+					winRateThreshold,
+					minWinAmt,
+					maxWinAmt,
+					jackpotThreshold,
+					invalidSignature,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with invalid signature');
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error with invalid signature:', err.message);
+			expect(err.message).to.include('InvalidTeamSignature');
+		}
+
+		userNonce++;
+	});
+
+	it('Should successfully roll the lotto with valid parameters', async () => {
+		userNonce++;
+		client.setOperator(operatorId, operatorKey);
+
+		const signature = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			true,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
+
+		// Roll the lotto with valid parameters
 		const result = await contractExecuteFunction(
-			ldrAddress,
-			lazyDelegateRegistryIface,
+			ltlContractId,
+			lazyTradeLottoIface,
 			client,
-			650_000,
-			'delegateNFT',
-			[bobId.toSolidityAddress(), LSHMutant_TokenId.toSolidityAddress(), [4]],
+			500_000,
+			'rollLotto',
+			[
+				token,
+				serial,
+				userNonce,
+				true,
+				winRateThreshold,
+				minWinAmt,
+				maxWinAmt,
+				jackpotThreshold,
+				signature,
+			],
 		);
 
-		if (result[0]?.status?.toString() != 'SUCCESS') {
-			console.log('ERROR: Delegation failed');
-			console.log('Delegation Result:', result);
+		if (result[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('Failed to roll lotto:', result);
+			fail();
+		}
+		else {
+			console.log('Lotto rolled successfully:', result[0]?.status.toString());
+		}
+
+		// Let mirror node catch up
+		await sleep(5000);
+
+		// Check if lotto round number incremented
+		const encodedLottoStatsCommand = lazyTradeLottoIface.encodeFunctionData('getLottoStats');
+		const lottoStatsResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			encodedLottoStatsCommand,
+			operatorId,
+			false,
+		);
+		const lottoStatsAfterRoll = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsResponse);
+
+		const newLottoRound = Number(lottoStatsAfterRoll[3]);
+		expect(newLottoRound).to.be.equal(lottoRoundNumber + 1);
+
+		// Check if a win or jackpot occurred and record the relevant amounts
+		const totalWins = Number(lottoStatsAfterRoll[4]);
+		const totalPaid = Number(lottoStatsAfterRoll[5]);
+		const jackpotsWon = Number(lottoStatsAfterRoll[1]);
+
+		console.log('After roll:');
+		console.log('- Total rolls:', newLottoRound);
+		console.log('- Total wins:', totalWins);
+		console.log('- Total paid:', totalPaid / 10 ** LAZY_DECIMAL, '$LAZY');
+		console.log('- Jackpots won:', jackpotsWon);
+
+		userNonce++;
+	});
+
+	it('Should prevent replay attacks by rejecting a duplicate roll', async () => {
+		// do not increment userNonce here to simulate a replay attack
+		client.setOperator(operatorId, operatorKey);
+
+		// Attempt to replay the previous roll by reusing the same parameters
+		const previousNonce = userNonce - 1;
+
+		const signatureHex = await createSignature(
+			operatorId,
+			token,
+			serial,
+			previousNonce,
+			true,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
+
+		// Attempt to roll with same parameters
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				500_000,
+				'rollLotto',
+				[
+					token,
+					serial,
+					previousNonce,
+					true,
+					winRateThreshold,
+					minWinAmt,
+					maxWinAmt,
+					jackpotThreshold,
+					signatureHex,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with replayed parameters', result);
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error with replayed parameters:', err.message);
+			expect(err.message).to.include('AlreadyRolled');
+		}
+	});
+
+	it('Should allow both buyer and seller to roll separately for the same trade', async () => {
+		userNonce++;
+		client.setOperator(operatorId, operatorKey);
+
+		// First roll as buyer
+		// Create a valid signature from the system wallet
+		const signature = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			true,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
+
+		// Roll as buyer
+		let result = await contractExecuteFunction(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			500_000,
+			'rollLotto',
+			[
+				token,
+				serial,
+				userNonce,
+				true,
+				winRateThreshold,
+				minWinAmt,
+				maxWinAmt,
+				jackpotThreshold,
+				signature,
+			],
+		);
+
+		if (result[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('Failed to roll lotto as buyer:', result);
 			fail();
 		}
 
-		console.log('Bob delegated LSH Gen2 tx:', result[2]?.transactionId?.toString());
+		console.log('Rolled successfully as buyer');
 
-		client.setOperator(bobId, bobPK);
+		// Now roll as seller with same parameters (except buyer flag)
+		const signatureHex = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			false,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
 
-		// Bob creates a trade for null user (no $LAZY payment as an LSH Gen2 NFT (delegate) owner)
-		const tradeResult = await contractExecuteFunction(
-			lstContractId,
+		// Roll as seller
+		result = await contractExecuteFunction(
+			ltlContractId,
 			lazyTradeLottoIface,
 			client,
 			500_000,
-			'createTrade',
+			'rollLotto',
 			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				ethers.ZeroAddress,
-				1,
-				Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
-				0,
-				Math.floor(new Date().getTime() / 1000) + 5,
+				token,
+				serial,
+				userNonce,
+				false,
+				winRateThreshold,
+				minWinAmt,
+				maxWinAmt,
+				jackpotThreshold,
+				signatureHex,
 			],
 		);
 
-		if (tradeResult[0]?.status?.toString() != 'SUCCESS') {
-			console.log('ERROR: Trade Creation failed');
-			console.log('Trade Create Result:', tradeResult);
+		expect(result[0]?.status?.toString()).to.be.equal('SUCCESS');
+		console.log('Rolled successfully as seller');
+
+		// Let mirror node catch up
+		await sleep(5000);
+
+		// Check total rolls increased by 2
+		const encodedLottoStatsCommand = lazyTradeLottoIface.encodeFunctionData('getLottoStats');
+		const lottoStatsResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			encodedLottoStatsCommand,
+			operatorId,
+			false,
+		);
+		const lottoStatsAfterRoll = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsResponse);
+
+		const totalRolls = Number(lottoStatsAfterRoll[3]);
+		// +1 from previous test and +2 from this test
+		expect(totalRolls).to.be.equal(lottoRoundNumber + 3);
+
+		userNonce++;
+	});
+
+	it('Should validate jackpot behavior after a win or loss', async () => {
+		userNonce++;
+		client.setOperator(operatorId, operatorKey);
+
+		// Get current stats for comparison
+		const encodedStatsCommand = lazyTradeLottoIface.encodeFunctionData('getLottoStats');
+		const statsBeforeResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			encodedStatsCommand,
+			operatorId,
+			false,
+		);
+		const statsBefore = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', statsBeforeResponse);
+
+		const jackpotBefore = Number(statsBefore[0]);
+		const jackpotsWonBefore = Number(statsBefore[1]);
+		const jackpotIncrement = Number(statsBefore[6]);
+
+		console.log('Before roll:');
+		console.log('- Jackpot:', jackpotBefore / 10 ** LAZY_DECIMAL, '$LAZY');
+		console.log('- Jackpots won:', jackpotsWonBefore);
+
+		// Use high jackpot threshold for testing
+		// 99.9% chance of winning (out of 100_000_000)
+		const highJackpotThreshold = 99_900_000;
+
+		// Create a valid signature from the system wallet
+		const signatureHex = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			true,
+			50_000_000,
+			minWinAmt,
+			maxWinAmt,
+			highJackpotThreshold,
+		);
+
+		// Roll with high jackpot threshold
+		const result = await contractExecuteFunction(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			500_000,
+			'rollLotto',
+			[
+				token,
+				serial,
+				userNonce,
+				true,
+				50_000_000,
+				minWinAmt,
+				maxWinAmt,
+				highJackpotThreshold,
+				signatureHex,
+			],
+		);
+
+		if (result[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('Failed to roll lotto with high jackpot threshold:', result);
 			fail();
 		}
 
-		console.log('trade hash:', tradeResult[1][0]);
-		const tradeHashToCheck = ethers.solidityPackedKeccak256(
-			['address', 'uint256'],
-			[LSHGen1_TokenId.toSolidityAddress(), 1],
-		);
-		console.log('trade hash to check:', tradeHashToCheck);
-
-		console.log('Bob (delegate) Trade Creation tx:', tradeResult[2]?.transactionId?.toString());
-
-		// let mirror node catch up
+		// Let mirror node catch up
 		await sleep(5000);
 
-		// expect this trade to be valid - check via mirror node
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[tradeHashToCheck, operatorId.toSolidityAddress()],
-		);
-
-		let tradeValid = await readOnlyEVMFromMirrorNode(
+		// Check state after roll
+		const statsAfterResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			encodedStatsCommand,
 			operatorId,
 			false,
 		);
+		const statsAfter = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', statsAfterResponse);
 
-		let tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+		const jackpotAfter = Number(statsAfter[0]);
+		const jackpotsWonAfter = Number(statsAfter[1]);
 
-		expect(tradeValidResult[0]).to.be.true;
+		console.log('After roll:');
+		console.log('- Jackpot:', jackpotAfter / 10 ** LAZY_DECIMAL, '$LAZY');
+		console.log('- Jackpots won:', jackpotsWonAfter);
 
-		// now sleep for 6 seconds to allow the trade to expire
+		if (jackpotsWonAfter > jackpotsWonBefore) {
+			// Jackpot was won
+			expect(jackpotAfter).to.be.equal(lottoLossIncrement * 10 ** LAZY_DECIMAL);
+			console.log('✓ Jackpot was reset to one loss increment after win');
+		}
+		else {
+			// No jackpot won
+			expect(jackpotAfter).to.be.equal(jackpotBefore + jackpotIncrement);
+			console.log('✓ Jackpot was incremented by', jackpotIncrement / 10 ** LAZY_DECIMAL, '$LAZY after no win');
+		}
 
-		await sleep(6000);
-
-		// expect this trade to be invalid - check via mirror node
-
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[tradeHashToCheck, operatorId.toSolidityAddress()],
-		);
-
-		tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
-
-		tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
-
-		expect(tradeValidResult[0]).to.be.false;
+		userNonce++;
 	});
 
-	it('Operator create a trade, then cancels it', async () => {
+	it('Should allow the owner to boost the jackpot', async () => {
+		userNonce++;
 		client.setOperator(operatorId, operatorKey);
 
-		// rely on NFT allowance being in place StkNFTA_TokenId
-
-		// create a trade for Bob
-		const tradeResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			500_000,
-			'createTrade',
-			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				bobId.toSolidityAddress(),
-				4,
-				Number(new Hbar(3, HbarUnit.Hbar).toTinybars()),
-				0,
-				0,
-			],
-		);
-
-		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
-
-		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
-
-		const hashToCheck = tradeResult[1][0];
-
-		// let mirror node catch up
-		await sleep(5000);
-
-		// check trade is valid for Bob via mirror node, expect true
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[hashToCheck, bobId.toSolidityAddress()],
-		);
-
-		let tradeValid = await readOnlyEVMFromMirrorNode(
+		// Get current jackpot
+		const encodedStatsCommand = lazyTradeLottoIface.encodeFunctionData('getLottoStats');
+		const lottoStatsBeforeResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			encodedStatsCommand,
 			operatorId,
 			false,
 		);
+		const lottoStatsBefore = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsBeforeResponse);
 
-		let tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+		const jackpotBefore = Number(lottoStatsBefore[0]);
+		console.log('Jackpot before boost:', jackpotBefore / 10 ** LAZY_DECIMAL);
 
-		expect(tradeValidResult[0]).to.be.true;
+		// Boost amount
+		const boostAmount = 1000 * 10 ** LAZY_DECIMAL;
 
-		// cancel the trade
-		const cancelResult = await contractExecuteFunction(
-			lstContractId,
+		// Boost the jackpot
+		const result = await contractExecuteFunction(
+			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			300_000,
-			'cancelTrade',
-			[hashToCheck],
+			null,
+			'boostJackpot',
+			[boostAmount],
 		);
 
-		expect(cancelResult[0].status.toString()).to.be.equal('SUCCESS');
+		expect(result[0]?.status?.toString()).to.be.equal('SUCCESS');
 
-		console.log('Trade cancelled:', cancelResult[2]?.transactionId?.toString());
-
-		// let mirror node catch up
+		// Let mirror node catch up
 		await sleep(5000);
 
-		// check trade is valid for Bob via mirror node, expect false
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[hashToCheck, bobId.toSolidityAddress()],
-		);
-
-		tradeValid = await readOnlyEVMFromMirrorNode(
+		// Check jackpot after boost
+		const lottoStatsAfterResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			encodedStatsCommand,
 			operatorId,
 			false,
 		);
+		const lottoStatsAfter = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsAfterResponse);
 
-		tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+		const jackpotAfter = Number(lottoStatsAfter[0]);
+		console.log('Jackpot after boost:', jackpotAfter / 10 ** LAZY_DECIMAL);
 
-		expect(tradeValidResult[0]).to.be.false;
+		// Verify the jackpot increased by the boost amount
+		expect(jackpotAfter).to.be.equal(jackpotBefore + boostAmount);
 	});
 
-	it('Operator creates a trade then modifies it', async () => {
+	it('Should apply burn percentage when operator wins (non-NFT holder)', async () => {
+		userNonce++;
 		client.setOperator(operatorId, operatorKey);
 
-		// rely on NFT allowance being in place StkNFTA_TokenId
+		// First check the burn percentage for operator
+		const encodedCommand = lazyTradeLottoIface.encodeFunctionData(
+			'getBurnForUser',
+			[operatorId.toSolidityAddress()],
+		);
 
-		// create a trade for Bob
-		const tradeResult = await contractExecuteFunction(
-			lstContractId,
+		const burnResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		const burnResult = lazyTradeLottoIface.decodeFunctionResult(
+			'getBurnForUser',
+			burnResponse,
+		);
+
+		// Operator should have burn percentage applied (no NFTs)
+		expect(Number(burnResult[0])).to.be.equal(LAZY_BURN_PERCENT);
+		console.log(`Operator burn percentage confirmed: ${LAZY_BURN_PERCENT}%`);
+
+		// Get initial balance before winning
+		const initialBalance = await checkMirrorBalance(
+			env,
+			operatorId,
+			lazyTokenId,
+		);
+		console.log('Initial $LAZY balance for operator:', initialBalance / 10 ** LAZY_DECIMAL);
+
+		// get the current stats before rolling for comparison
+		const statsBeforeResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('getLottoStats'),
+			operatorId,
+			false,
+		);
+
+		const statsBefore = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', statsBeforeResponse);
+		const jackpotBefore = Number(statsBefore[0]);
+		const jackpotsWonBefore = Number(statsBefore[1]);
+		const totalPaidBefore = Number(statsBefore[5]);
+		const totalWinsBefore = Number(statsBefore[4]);
+
+		// Use very high win rate to ensure operator wins
+		// 99.999% chance to win
+		const guaranteedWinRate = 99_999_000;
+
+		// Set to 0.000001% for testing
+		const lowJackpotThreshold = 1;
+
+		// Create a valid signature for guaranteed win
+		const signatureHex = await createSignature(
+			operatorId.toSolidityAddress(),
+			token,
+			serial,
+			userNonce,
+			true,
+			guaranteedWinRate,
+			minWinAmt,
+			maxWinAmt,
+			lowJackpotThreshold,
+		);
+
+		// Roll the lotto with high win probability
+		const result = await contractExecuteFunction(
+			ltlContractId,
 			lazyTradeLottoIface,
 			client,
 			500_000,
-			'createTrade',
+			'rollLotto',
 			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				bobId.toSolidityAddress(),
-				4,
-				Number(new Hbar(3, HbarUnit.Hbar).toTinybars()),
-				0,
-				0,
+				token,
+				serial,
+				userNonce,
+				true,
+				guaranteedWinRate,
+				minWinAmt,
+				maxWinAmt,
+				lowJackpotThreshold,
+				signatureHex,
 			],
 		);
 
-		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
+		if (result[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('Failed to roll lotto with high win probability:', result);
+			fail();
+		}
+		console.log('Lotto rolled with high win probability:', result[0]?.status.toString(), 'tx:', result[2]?.transactionId.toString());
 
-		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
-
-		const hashToCheck = tradeResult[1][0];
-
-		// let mirror node catch up
+		// Let mirror node catch up
 		await sleep(5000);
 
-		// check trade is valid for Bob via mirror node, expect true
-
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[hashToCheck, bobId.toSolidityAddress()],
-		);
-
-		let tradeValid = await readOnlyEVMFromMirrorNode(
+		// Check stats after roll to confirm win
+		const statsAfterResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('getLottoStats'),
 			operatorId,
 			false,
 		);
+		const statsAfter = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', statsAfterResponse);
 
-		let tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+		const jackpotAfter = Number(statsAfter[0]);
+		const jackpotsWonAfter = Number(statsAfter[1]);
+		const totalWins = Number(statsAfter[4]);
+		const totalPaid = Number(statsAfter[5]);
 
-		expect(tradeValidResult[0]).to.be.true;
+		if (totalWins > totalWinsBefore) {
+			// Win occurred
 
-		// modify the trade using createTrade for same token and serial
-		const modifyResult = await contractExecuteFunction(
-			lstContractId,
-			lazyTradeLottoIface,
-			client,
-			500_000,
-			'createTrade',
-			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				aliceId.toSolidityAddress(),
-				4,
-				Number(new Hbar(5, HbarUnit.Hbar).toTinybars()),
-				10,
-				0,
-			],
-		);
+			// Expect at least one win and some payment
+			expect(totalWins).to.be.greaterThan(0);
+			expect(totalPaid).to.be.greaterThan(0);
+			console.log('Win confirmed - Total wins:', totalWins, 'Total paid:', totalPaid / 10 ** LAZY_DECIMAL);
 
-		expect(modifyResult[0].status.toString()).to.be.equal('SUCCESS');
+			// Check final balance to verify burn was applied to the payment
+			const finalBalance = await checkMirrorBalance(
+				env,
+				operatorId,
+				lazyTokenId,
+			);
+			console.log('Final $LAZY balance for operator:', finalBalance / 10 ** LAZY_DECIMAL);
 
-		console.log('Trade modified:', modifyResult[2]?.transactionId?.toString());
+			// Calculate expected payout after burn
+			const payout = finalBalance - initialBalance;
+			console.log('Actual payout received:', payout / 10 ** LAZY_DECIMAL);
 
-		// let mirror node catch up
-		await sleep(5000);
+			// this payout could be a jackpot or a win, so we need to check from the contract what has happened
 
-		// check trade is now invalid for Bob via mirror node, expect false
+			// Check if a jackpot was won
+			const jackpotWon = jackpotsWonAfter > jackpotsWonBefore;
+			// check if there was a regular win
+			const regularWin = totalWins > totalWinsBefore;
 
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[hashToCheck, bobId.toSolidityAddress()],
-		);
+			const jackpotPayout = jackpotWon ? jackpotBefore * (1 - burnPercentage / 100) : 0;
+			const regularWinPayout = regularWin ? (totalPaid - totalPaidBefore - jackpotPayout) * (1 - burnPercentage / 100) : 0;
 
-		tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
+			const expectedPayout = jackpotPayout + regularWinPayout;
+			console.log('Expected payout after burn:', expectedPayout / 10 ** LAZY_DECIMAL);
 
-		tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
 
-		expect(tradeValidResult[0]).to.be.false;
+			// Verify payout is in the expected range and burn was applied
+			// Small buffer for rounding
+			if (regularWin) {
+				expect(regularWinPayout).to.be.greaterThanOrEqual(minWinAmt * (1 - burnPercentage / 100) * 0.98);
+				expect(regularWinPayout).to.be.lessThanOrEqual(maxWinAmt * (1 - burnPercentage / 100) * 1.02);
+			}
 
-		// check trade is valid for Alice via mirror node, expect true
+			if (jackpotWon) {
+				// check the jackpot was reset to 1 loss increment
+				expect(jackpotAfter).to.be.equal(lottoLossIncrement);
 
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[modifyResult[1][0], aliceId.toSolidityAddress()],
-		);
+				console.log('✓ Jackpot was reset to 1 loss increment after win');
+			}
 
-		tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
+			expect(payout).to.be.greaterThanOrEqual(expectedPayout * 0.98);
+			expect(payout).to.be.lessThanOrEqual(expectedPayout * 1.02);
 
-		tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+			console.log('✓ Burn percentage was properly applied to operator payout');
+			console.log('✓ Operator win confirmed - Total wins:', totalWins, 'Total paid:', totalPaid / 10 ** LAZY_DECIMAL);
+		}
 
-		expect(tradeValidResult[0]).to.be.true;
+		userNonce++;
 	});
 
-	it('Operator creates a trade for Alice, sends NFT to Bob, Alice can not execute', async () => {
-		client.setOperator(operatorId, operatorKey);
+	it('Should apply zero burn percentage when Alice wins (NFT holder)', async () => {
+		userNonce++;
+		// Use Alice as operator for this test (she has NFTs)
+		client.setOperator(aliceId, alicePK);
 
-		// rely on NFT allowance being in place StkNFTA_TokenId
+		// First check the burn percentage for Alice
+		const encodedCommand = lazyTradeLottoIface.encodeFunctionData(
+			'getBurnForUser',
+			[aliceId.toSolidityAddress()],
+		);
 
-		// create a trade for Alice
-		const tradeResult = await contractExecuteFunction(
-			lstContractId,
+		const burnResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		const burnResult = lazyTradeLottoIface.decodeFunctionResult(
+			'getBurnForUser',
+			burnResponse,
+		);
+
+		// Alice should have zero burn because she has NFTs
+		expect(Number(burnResult[0])).to.be.equal(0);
+		console.log('Alice burn percentage confirmed: 0% (NFT holder)');
+
+		// Get initial balance before winning
+		const initialBalance = await checkMirrorBalance(
+			env,
+			aliceId,
+			lazyTokenId,
+		);
+		console.log('Initial $LAZY balance for Alice:', initialBalance / 10 ** LAZY_DECIMAL);
+
+		// get the current stats before rolling for comparison
+		const statsBeforeResponse = await readOnlyEVMFromMirrorNode(
+			env,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('getLottoStats'),
+			operatorId,
+			false,
+		);
+
+		const statsBefore = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', statsBeforeResponse);
+		const jackpotBefore = Number(statsBefore[0]);
+		const jackpotsWonBefore = Number(statsBefore[1]);
+		const totalPaidBefore = Number(statsBefore[5]);
+		const totalWinsBefore = Number(statsBefore[4]);
+
+		// Use very high win rate to ensure Alice wins
+		const guaranteedWinRate = 99_999_000;
+
+		// Set to 0.000001% for testing
+		const lowJackpotThreshold = 1;
+
+		// Create a valid signature for guaranteed win
+		const signatureHex = await createSignature(
+			aliceId.toSolidityAddress(),
+			token,
+			serial,
+			userNonce,
+			true,
+			guaranteedWinRate,
+			minWinAmt,
+			maxWinAmt,
+			lowJackpotThreshold,
+		);
+
+
+		// Roll the lotto with high win probability
+		const result = await contractExecuteFunction(
+			ltlContractId,
 			lazyTradeLottoIface,
 			client,
 			500_000,
-			'createTrade',
+			'rollLotto',
 			[
-				LSHGen1_TokenId.toSolidityAddress(),
-				aliceId.toSolidityAddress(),
-				3,
-				Number(new Hbar(0.25, HbarUnit.Hbar).toTinybars()),
-				0,
-				0,
+				token,
+				serial,
+				userNonce,
+				true,
+				guaranteedWinRate,
+				minWinAmt,
+				maxWinAmt,
+				lowJackpotThreshold,
+				signatureHex,
 			],
 		);
 
-		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
+		if (result[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('Failed to roll lotto with high win probability:', result);
+			fail();
+		}
+		console.log('Lotto rolled with high win probability for Alice:', result[0]?.status.toString(), 'tx:', result[2]?.transactionId.toString());
 
-		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
-
-		const hashToCheck = tradeResult[1][0];
-
-		// let mirror node catch up
+		// Let mirror node catch up
 		await sleep(5000);
 
-		// check trade is valid for Alice via mirror node, expect true
-		let encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[hashToCheck, aliceId.toSolidityAddress()],
-		);
-
-		let tradeValid = await readOnlyEVMFromMirrorNode(
+		// Check stats after roll to confirm win
+		const statsAfterResponse = await readOnlyEVMFromMirrorNode(
 			env,
-			lstContractId,
-			encodedCommand,
+			ltlContractId,
+			lazyTradeLottoIface.encodeFunctionData('getLottoStats'),
 			operatorId,
 			false,
 		);
+		const statsAfter = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', statsAfterResponse);
 
-		let tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+		const jackpotAfter = Number(statsAfter[0]);
+		const jackpotsWonAfter = Number(statsAfter[1]);
+		const totalWins = Number(statsAfter[4]);
+		const totalPaid = Number(statsAfter[5]);
 
-		expect(tradeValidResult[0]).to.be.true;
+		if (totalWins > totalWinsBefore) {
+			// Win occurred
 
-		// transfer the NFT to Bob
+			// Expect at least one win and some payment
+			expect(totalWins).to.be.greaterThan(0);
+			expect(totalPaid).to.be.greaterThan(0);
+			console.log('Win confirmed - Total wins:', totalWins, 'Total paid:', totalPaid / 10 ** LAZY_DECIMAL);
 
-		const NFTTransferResult = await sendNFTDefeatRoyalty(
-			client,
-			operatorId,
-			bobId,
-			bobPK,
-			LSHGen1_TokenId,
-			[3],
-		);
+			// Check final balance to verify burn was applied to the payment
+			const finalBalance = await checkMirrorBalance(
+				env,
+				aliceId,
+				lazyTokenId,
+			);
+			console.log('Final $LAZY balance for ALICE:', finalBalance / 10 ** LAZY_DECIMAL);
 
-		expect(NFTTransferResult).to.be.equal('SUCCESS');
+			// Calculate expected payout after burn
+			const payout = finalBalance - initialBalance;
+			console.log('Actual payout received by ALICE:', payout / 10 ** LAZY_DECIMAL);
 
-		// let mirror node catch up
-		await sleep(5000);
+			// this payout could be a jackpot or a win, so we need to check from the contract what has happened
 
-		// check trade is valid for Alice via mirror node, expect false
-		encodedCommand = lazyTradeLottoIface.encodeFunctionData(
-			'isTradeValid',
-			[hashToCheck, aliceId.toSolidityAddress()],
-		);
+			// Check if a jackpot was won
+			const jackpotWon = jackpotsWonAfter > jackpotsWonBefore;
+			// check if there was a regular win
+			const regularWin = totalWins > totalWinsBefore;
 
-		tradeValid = await readOnlyEVMFromMirrorNode(
-			env,
-			lstContractId,
-			encodedCommand,
-			operatorId,
-			false,
-		);
+			const jackpotPayout = jackpotWon ? jackpotBefore * (1 - burnPercentage / 100) : 0;
+			const regularWinPayout = regularWin ? (totalPaid - totalPaidBefore - jackpotPayout) * (1 - burnPercentage / 100) : 0;
 
-		tradeValidResult = lazyTradeLottoIface.decodeFunctionResult(
-			'isTradeValid',
-			tradeValid,
-		);
+			const expectedPayout = jackpotPayout + regularWinPayout;
+			console.log('Expected payout after burn:', expectedPayout / 10 ** LAZY_DECIMAL);
 
-		expect(tradeValidResult[0]).to.be.false;
+
+			// Verify payout is in the expected range and burn was applied
+			// Small buffer for rounding
+			if (regularWin) {
+				expect(regularWinPayout).to.be.greaterThanOrEqual(minWinAmt * (1 - burnPercentage / 100) * 0.98);
+				expect(regularWinPayout).to.be.lessThanOrEqual(maxWinAmt * (1 - burnPercentage / 100) * 1.02);
+			}
+
+			if (jackpotWon) {
+				// check the jackpot was reset to 1 loss increment
+				expect(jackpotAfter).to.be.equal(lottoLossIncrement);
+
+				console.log('✓ Jackpot was reset to 1 loss increment after win');
+			}
+
+			expect(payout).to.be.greaterThanOrEqual(expectedPayout * 0.98);
+			expect(payout).to.be.lessThanOrEqual(expectedPayout * 1.02);
+
+			console.log('✓ No burn percentage was applied to Alice\'s payout (NFT holder)');
+			console.log('✓ ALICE win confirmed - Total wins:', totalWins, 'Total paid:', totalPaid / 10 ** LAZY_DECIMAL);
+		}
+
+		// Switch back to operator for subsequent tests
+		client.setOperator(operatorId, operatorKey);
+		userNonce++;
 	});
 });
 
 describe('Clean-up', () => {
-	it('removes allowances from Operator', async () => {
-		client.setOperator(operatorId, operatorKey);
-		let result;
-		if (operatorNftAllowances.length != 0) {
-			result = await clearNFTAllowances(client, operatorNftAllowances);
-			expect(result).to.be.equal('SUCCESS');
-		}
-
-		// clean up the LGS authorizations
-		// getContractUsers()
-		const lgsContractUsers = await contractExecuteQuery(
-			lazyGasStationId,
-			lazyGasStationIface,
-			client,
-			null,
-			'getContractUsers',
-		);
-
-		for (let i = 0; i < lgsContractUsers[0].length; i++) {
-			result = await contractExecuteFunction(
-				lazyGasStationId,
-				lazyGasStationIface,
-				client,
-				300_000,
-				'removeContractUser',
-				[lgsContractUsers[0][i]],
-			);
-
-			if (result[0]?.status.toString() !== 'SUCCESS') {console.log('Failed to remove LGS contract user:', result);}
-			expect(result[0].status.toString()).to.be.equal('SUCCESS');
-		}
-
-		// getAuthorizers()
-		const lgsAuthorizers = await contractExecuteQuery(
-			lazyGasStationId,
-			lazyGasStationIface,
-			client,
-			null,
-			'getAuthorizers',
-		);
-
-		for (let i = 0; i < lgsAuthorizers[0].length; i++) {
-			result = await contractExecuteFunction(
-				lazyGasStationId,
-				lazyGasStationIface,
-				client,
-				300_000,
-				'removeAuthorizer',
-				[lgsAuthorizers[0][i]],
-			);
-
-			if (result[0]?.status.toString() !== 'SUCCESS') {console.log('Failed to remove LGS authorizer:', result);}
-			expect(result[0].status.toString()).to.be.equal('SUCCESS');
-		}
-
-		// getAdmins()
-		const lgsAdmins = await contractExecuteQuery(
-			lazyGasStationId,
-			lazyGasStationIface,
-			client,
-			null,
-			'getAdmins',
-		);
-
-		for (let i = 0; i < lgsAdmins[0].length; i++) {
-			if (
-				lgsAdmins[0][i].slice(2).toLowerCase() == operatorId.toSolidityAddress()
-			) {
-				console.log('Skipping removal of Operator as LGS admin');
-				continue;
-			}
-
-			result = await contractExecuteFunction(
-				lazyGasStationId,
-				lazyGasStationIface,
-				client,
-				300_000,
-				'removeAdmin',
-				[lgsAdmins[0][i]],
-			);
-
-			if (result[0]?.status.toString() !== 'SUCCESS') {console.log('Failed to remove LGS admin:', result);}
-			expect(result[0].status.toString()).to.be.equal('SUCCESS');
-		}
-
-		// ensure mirrors have caught up
-		await sleep(4500);
-
-		const outstandingAllowances = [];
-		// get the FT allowances for operator
-		const mirrorFTAllowances = await checkFTAllowances(env, operatorId);
-		for (let a = 0; a < mirrorFTAllowances.length; a++) {
-			const allowance = mirrorFTAllowances[a];
-			// console.log('FT Allowance found:', allowance.token_id, allowance.owner, allowance.spender);
-			if (allowance.token_id == lazyTokenId.toString() && allowance.amount > 0) {outstandingAllowances.push(allowance.spender);}
-		}
-
-		// if the contract was created reset any $LAZY allowance for the operator
-		if (
-			lstContractId &&
-			outstandingAllowances.includes(lstContractId.toString())
-		) {
-			operatorFtAllowances.push({
-				tokenId: lazyTokenId,
-				owner: operatorId,
-				spender: AccountId.fromString(lstContractId.toString()),
-			});
-		}
-		if (
-			lazyGasStationId &&
-			outstandingAllowances.includes(lazyGasStationId.toString())
-		) {
-			operatorFtAllowances.push({
-				tokenId: lazyTokenId,
-				owner: operatorId,
-				spender: AccountId.fromString(lazyGasStationId.toString()),
-			});
-		}
-
-		result = await clearFTAllowances(client, operatorFtAllowances);
-		expect(result).to.be.equal('SUCCESS');
-	});
-
 	it('sweep hbar from the test accounts', async () => {
 		await sleep(5000);
 		client.setOperator(operatorId, operatorKey);
 		let balance = await checkMirrorHbarBalance(env, aliceId, alicePK);
 		balance -= 1_000_000;
 		console.log('sweeping alice', balance / 10 ** 8);
-		let result = await sweepHbar(client, aliceId, alicePK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
+		const result = await sweepHbar(client, aliceId, alicePK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
 		console.log('alice:', result);
-		balance = await checkMirrorHbarBalance(env, bobId, bobPK);
-		balance -= 1_000_000;
-		console.log('sweeping bob', balance / 10 ** 8);
-		result = await sweepHbar(client, bobId, bobPK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
-		console.log('bob:', result);
 	});
 });
 
@@ -2208,4 +1951,60 @@ async function sendLazy(receiverId, amt) {
 		fail();
 	}
 	return result[0]?.status.toString();
+}
+
+/**
+ * Helper to create a signed message
+ * @param {String | AccountId} roller
+ * @param {String | TokenId} tokenId
+ * @param {Number} serial
+ * @param {Number} nonce
+ * @param {boolean} buyer
+ * @param {Number} winRateThreshold
+ * @param {Number} minWinAmt
+ * @param {Number} maxWinAmt
+ * @param {Number} jackpotThreshold
+ * @return {string} signature
+ */
+async function createSignature(
+	roller,
+	tokenId,
+	serial,
+	nonce,
+	buyer,
+	winRateThreshold,
+	minWinAmt,
+	maxWinAmt,
+	jackpotThreshold,
+) {
+	const signer = new ethers.Wallet(`0x${signingKey.toStringRaw()}`);
+
+	if (roller instanceof AccountId) {
+		roller = roller.toSolidityAddress();
+	}
+
+	if (tokenId instanceof TokenId) {
+		tokenId = tokenId.toSolidityAddress();
+	}
+
+	// First create the raw message
+	const messageHash = ethers.solidityPackedKeccak256(
+		['address', 'address', 'uint256', 'uint256', 'bool', 'uint256', 'uint256', 'uint256', 'uint256'],
+		[
+			roller,
+			tokenId,
+			serial,
+			nonce,
+			buyer,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		],
+	);
+
+	// Sign the hash directly (EIP-191 personal_sign format)
+	const signature = await signer.signMessage(ethers.getBytes(messageHash));
+
+	return signature;
 }
