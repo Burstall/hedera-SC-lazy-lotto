@@ -54,32 +54,63 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
     error BadArguments(string message);
     error AlreadyRolled();
 
+    /// @notice Mapping to track rolls that have been made to prevent replay attacks
+    /// @dev Maps hash of transaction details to a boolean indicating if it has been processed
     mapping(bytes32 => bool) public history;
 
-    // win rate expressed in integer from (0-100_000_000) as a threshold for winning
+    /// @notice Maximum possible threshold for winning (100%)
+    /// @dev Expressed as integer from 0-100,000,000 where 100,000,000 represents 100%
     uint256 public constant MAX_WIN_RATE_THRESHOLD = 100_000_000;
 
+    /// @notice Address of the LSH Gen 1 NFT contract
     address public immutable LSH_GEN1;
+    /// @notice Address of the LSH Gen 2 NFT contract
     address public immutable LSH_GEN2;
+    /// @notice Address of the LSH Gen 1 Mutant NFT contract
     address public immutable LSH_GEN1_MUTANT;
 
+    /// @notice Interface to the PRNG system contract for random number generation
     IPrngSystemContract public prngSystemContract;
+    /// @notice Interface to the Lazy Gas Station contract for token payouts
     ILazyGasStation public lazyGasStation;
+    /// @notice Interface to the Lazy Delegate Registry contract for NFT delegation
     ILazyDelegateRegistry public lazyDelegateRegistry;
 
+    /// @notice Address of the wallet that signs transaction parameters
     address public systemWallet;
 
+    /// @notice Current amount in the jackpot pool
     uint256 public jackpotPool;
+    /// @notice Total number of jackpots won
     uint256 public jackpotsWon;
+    /// @notice Total amount paid out in jackpots
     uint256 public jackpotPaid;
+    /// @notice Total number of lotto rolls
     uint256 public totalRolls;
+    /// @notice Total number of regular wins
     uint256 public totalWins;
-    // exclude the jackpot from the total paid
+    /// @notice Total amount paid out in regular wins (excluding jackpots)
     uint256 public totalPaid;
+    /// @notice Amount to increment the jackpot by on each roll
     uint256 public lottoLossIncrement;
 
+    /// @notice Percentage of winnings to burn for non-NFT holders
     uint256 public burnPercentage;
 
+    /**
+     * @notice Initialize the LazyTradeLotto contract with required parameters
+     * @dev Sets up all necessary references and initial values
+     * @param _prngSystemContract Address of the PRNG system contract for random number generation
+     * @param _lazyGasStation Address of the Lazy Gas Station for token payouts
+     * @param _lazyDelegateRegistry Address of the Lazy Delegate Registry for NFT delegation
+     * @param _lshGen1 Address of the LSH Gen 1 NFT contract
+     * @param _lshGen2 Address of the LSH Gen 2 NFT contract
+     * @param _lshGen1Mutant Address of the LSH Gen 1 Mutant NFT contract
+     * @param _systemWallet Address of the wallet that signs transaction parameters
+     * @param _initialJackpot Initial amount in the jackpot pool
+     * @param _lottoLossIncrement Amount to increment the jackpot by on each roll
+     * @param _burnPercentage Percentage of winnings to burn for non-NFT holders
+     */
     constructor(
         address _prngSystemContract,
         address _lazyGasStation,
@@ -132,6 +163,19 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         burnPercentage = _burnPercentage;
     }
 
+    /**
+     * @notice Executes a lotto roll for a trade with potential for regular win and jackpot
+     * @dev Can be called by both buyer and seller but only once each per trade
+     * @param token The address of the NFT token contract involved in the trade
+     * @param serial The token ID/serial of the NFT involved in the trade
+     * @param nonce A unique number for this trade to prevent replay attacks
+     * @param buyer Whether the caller is the buyer (true) or seller (false)
+     * @param winRateThreshold Threshold for winning a regular prize (0-100,000,000)
+     * @param minWinAmt Minimum amount that can be won in a regular win
+     * @param maxWinAmt Maximum amount that can be won in a regular win
+     * @param jackpotThreshold Threshold for winning the jackpot (0-100,000,000)
+     * @param teamSignature Signature from the system wallet validating these parameters
+     */
     function rollLotto(
         address token,
         uint256 serial,
@@ -205,8 +249,18 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Validate all the parameters for a lotto roll
-     * This is extracted to a separate function to resolve stack too deep errors
+     * @notice Validates all parameters for a lotto roll
+     * @dev Verifies parameters are valid and the signature is authentic
+     * @param token The address of the NFT token contract
+     * @param serial The token ID/serial of the NFT
+     * @param nonce A unique number for this trade
+     * @param buyer Whether the caller is the buyer or seller
+     * @param winRateThreshold Threshold for winning a regular prize
+     * @param minWinAmt Minimum amount that can be won
+     * @param maxWinAmt Maximum amount that can be won
+     * @param jackpotThreshold Threshold for winning the jackpot
+     * @param teamSignature Signature from the system wallet
+     * @return bool True if all parameters are valid
      */
     function validateRollParameters(
         address token,
@@ -268,8 +322,14 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Process regular win condition and payout
-     * @return winAmt The amount won (or 0 if no win)
+     * @notice Processes a regular win condition and pays out if won
+     * @dev Compares random roll against threshold and pays out if winner
+     * @param winRateThreshold Threshold for winning (0-100,000,000)
+     * @param minWinAmt Minimum amount that can be won
+     * @param maxWinAmt Maximum amount that can be won
+     * @param nonce The nonce used for random number generation
+     * @param randomRoll The random number generated for this roll
+     * @return winAmt The amount won (0 if no win)
      */
     function processRegularWin(
         uint256 winRateThreshold,
@@ -297,7 +357,10 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Process jackpot win condition and payout
+     * @notice Processes a jackpot win condition and pays out if won
+     * @dev Compares random roll against threshold and pays out if jackpot winner
+     * @param jackpotThreshold Threshold for winning the jackpot (0-100,000,000)
+     * @param randomRoll The random number generated for this roll
      */
     function processJackpotWin(
         uint256 jackpotThreshold,
@@ -329,12 +392,22 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         jackpotPool += lottoLossIncrement;
     }
 
+    /**
+     * @notice Increases the jackpot pool by a specified amount
+     * @dev Can only be called by the contract owner
+     * @param amount The amount to add to the jackpot pool
+     */
     function boostJackpot(uint256 amount) external onlyOwner {
         jackpotPool += amount;
 
         emit JackpotUpdate(amount);
     }
 
+    /**
+     * @notice Updates the amount added to the jackpot pool after each roll
+     * @dev Can only be called by the contract owner
+     * @param increment The new jackpot loss increment value
+     */
     function updateJackpotLossIncrement(uint256 increment) external onlyOwner {
         lottoLossIncrement = increment;
 
@@ -346,6 +419,11 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Updates the burn percentage applied to non-NFT holders
+     * @dev Can only be called by the contract owner
+     * @param percentage The new burn percentage (0-100)
+     */
     function updateBurnPercentage(uint256 percentage) external onlyOwner {
         burnPercentage = percentage;
 
@@ -357,12 +435,23 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Updates the system wallet address used for validating signatures
+     * @dev Can only be called by the contract owner
+     * @param newWallet The address of the new system wallet
+     */
     function updateSystemWallet(address newWallet) external onlyOwner {
         systemWallet = newWallet;
 
         emit ContractUpdate("SystemWallet", msg.sender, 0, "Updated");
     }
 
+    /**
+     * @notice Determines the burn percentage to apply for a specific user
+     * @dev Users who hold or have delegated access to LSH NFTs get 0% burn
+     * @param _user The address of the user to check
+     * @return uint256 The burn percentage to apply (0% for NFT holders, burnPercentage for others)
+     */
     function getBurnForUser(address _user) public view returns (uint256) {
         if (
             IERC721(LSH_GEN1).balanceOf(_user) > 0 ||
@@ -383,6 +472,20 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice Emits a LottoRoll event with all roll details
+     * @dev Called internally after processing a roll
+     * @param token The address of the NFT token contract
+     * @param serial The token ID/serial of the NFT
+     * @param nonce The unique nonce for this roll
+     * @param buyer Whether the roller was the buyer or seller
+     * @param winRateThreshold The threshold for winning
+     * @param minWinAmt Minimum win amount
+     * @param maxWinAmt Maximum win amount
+     * @param jackpotThreshold Threshold for jackpot win
+     * @param winRolls Array of random numbers generated for this roll
+     * @param winAmt The amount won (0 if no win)
+     */
     function postLottoRoll(
         address token,
         uint256 serial,
@@ -466,11 +569,18 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         Address.sendValue(receiverAddress, amount);
     }
 
-    // Default methods to allow HBAR to be received in EVM
+    /**
+     * @notice Default function to receive HBAR
+     * @dev Triggered when HBAR is sent to the contract
+     */
     receive() external payable {
         emit ContractUpdate("Receive", msg.sender, msg.value, "Received HBAR");
     }
 
+    /**
+     * @notice Fallback function that's triggered when the contract is called with non-existent functions
+     * @dev Also allows receiving HBAR
+     */
     fallback() external payable {
         emit ContractUpdate("Fallback", msg.sender, msg.value, "Fallback");
     }
