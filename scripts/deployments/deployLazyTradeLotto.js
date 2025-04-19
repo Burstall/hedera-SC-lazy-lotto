@@ -390,10 +390,18 @@ const main = async () => {
 
 	// Step 8: Final confirmation before deploying LazyTradeLotto
 	console.log('\n----- LazyTradeLotto Configuration Summary -----');
-	console.log('Initial Jackpot: ', initialJackpotWithDecimals, '$LAZY');
-	console.log('Loss Increment: ', lossIncrementWithDecimals, '$LAZY');
+	console.log('Initial Jackpot: ', initialLottoJackpot, '$LAZY', '(raw:', initialJackpotWithDecimals, ')');
+	console.log('Loss Increment: ', lottoLossIncrement, '$LAZY', '(raw:', lossIncrementWithDecimals, ')');
 	console.log('Burn Percentage: ', LAZY_BURN_PERCENT, '%');
 	console.log('$LAZY Decimals: ', LAZY_DECIMAL);
+	console.log('LSH_GEN1: ', LSH_GEN1.toString());
+	console.log('LSH_GEN2: ', LSH_GEN2.toString());
+	console.log('LSH_GEN1_MUTANT: ', LSH_GEN1_MUTANT.toString());
+	console.log('Lazy Token Creator: ', lazySCT.toString());
+	console.log('Lazy Gas Station: ', lazyGasStationId.toString());
+	console.log('Lazy Delegate Registry: ', ldrId.toString());
+	console.log('PRNG System Contract: ', prngId.toString());
+	console.log('Lazy Token ID: ', lazyTokenId.toString());
 	console.log('System Wallet: ', `0x${signingWallet.publicKey.toEvmAddress()}`);
 
 	const proceed = readlineSync.keyInYNStrict('Do you want to deploy Lazy Trade Lotto Contract with these parameters?');

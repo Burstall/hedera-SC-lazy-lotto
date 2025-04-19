@@ -719,6 +719,23 @@ describe('Check Contract Deployment', () => {
 		expect(Number(lottoStatsResultDecoded[6])).to.be.equal(lottoLossIncrement * 10 ** LAZY_DECIMAL);
 	});
 
+	it('Should check the contract is initially paused', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Check if the contract is paused
+		const isPausedResult = await contractExecuteQuery(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			null,
+			'isPaused',
+			[],
+		);
+
+		expect(isPausedResult[0]).to.be.true;
+		console.log('Contract is initially paused as expected');
+	});
+
 	it('Should check access controls', async () => {
 		let expectedErrors = 0;
 		let unexpectedErrors = 0;
@@ -830,10 +847,62 @@ describe('Check Contract Deployment', () => {
 			unexpectedErrors++;
 		}
 
+		// pause - non-owner should not be able to pause
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				null,
+				'pause',
+				[],
+			);
+			if (
+				result[0].status.toString() ==
+				'REVERT: Ownable: caller is not the owner'
+			) {
+				expectedErrors++;
+			}
+			else {
+				console.log('Unexpected Result (pause):', result);
+				unexpectedErrors++;
+			}
+		}
+		catch (err) {
+			console.log(err);
+			unexpectedErrors++;
+		}
+
+		// unpause - non-owner should not be able to unpause
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				null,
+				'unpause',
+				[],
+			);
+			if (
+				result[0].status.toString() ==
+				'REVERT: Ownable: caller is not the owner'
+			) {
+				expectedErrors++;
+			}
+			else {
+				console.log('Unexpected Result (unpause):', result);
+				unexpectedErrors++;
+			}
+		}
+		catch (err) {
+			console.log(err);
+			unexpectedErrors++;
+		}
+
 		console.log('Expected errors:', expectedErrors);
 		console.log('Unexpected errors:', unexpectedErrors);
 
-		expect(expectedErrors).to.be.equal(4);
+		expect(expectedErrors).to.be.equal(6);
 		expect(unexpectedErrors).to.be.equal(0);
 	});
 });
@@ -892,6 +961,281 @@ describe('Check Burn Percentage Functionality', () => {
 	});
 });
 
+describe('Check Pause Functionality', () => {
+	let userNonce;
+	let token;
+	let serial;
+	let winRateThreshold;
+	let minWinAmt;
+	let maxWinAmt;
+	let jackpotThreshold;
+	let signature;
+
+	before(async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Setup parameters for lotto rolls
+		token = LSHGen1_TokenId.toSolidityAddress();
+		serial = 1;
+		// Random nonce
+		userNonce = Math.floor(Math.random() * 1000000);
+		// 50% chance of winning (out of 100_000_000)
+		winRateThreshold = 50_000_000;
+		minWinAmt = 5 * 10 ** LAZY_DECIMAL;
+		maxWinAmt = 20 * 10 ** LAZY_DECIMAL;
+		// 5% chance of jackpot (out of 100_000_000)
+		jackpotThreshold = 5_000_000;
+
+		// Create a valid signature for the roll
+		signature = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			true,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
+	});
+
+	it('Should fail to roll lotto when contract is paused', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Check if the contract is paused (it should be paused by default from constructor)
+		const isPausedResult = await contractExecuteQuery(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			null,
+			'isPaused',
+			[],
+		);
+
+		// Verify the contract is indeed paused
+		expect(isPausedResult[0]).to.be.true;
+		console.log('Verified contract is in paused state');
+
+		// Try to roll the lotto while paused
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				600_000,
+				'rollLotto',
+				[
+					token,
+					serial,
+					userNonce,
+					true,
+					winRateThreshold,
+					minWinAmt,
+					maxWinAmt,
+					jackpotThreshold,
+					signature,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with contract paused', result);
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error when contract is paused:', err.message);
+			expect(err.message).to.include('Pausable: paused');
+		}
+	});
+
+	it('Should allow only owner to unpause the contract', async () => {
+		// Try as Alice (non-owner) first
+		client.setOperator(aliceId, alicePK);
+
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				600_000,
+				'unpause',
+				[],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Non-owner should not be able to unpause the contract', result);
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error when non-owner tries to unpause:', err.message);
+			expect(err.message).to.include('caller is not the owner');
+		}
+
+		// Now try as operator (owner)
+		client.setOperator(operatorId, operatorKey);
+
+		// Unpause the contract
+		const result = await contractExecuteFunction(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			600_000,
+			'unpause',
+			[],
+		);
+
+		expect(result[0]?.status?.toString()).to.be.equal('SUCCESS');
+		console.log('Contract successfully unpaused by owner');
+
+		// Check the contract is now unpaused
+		const isPausedResult = await contractExecuteQuery(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			null,
+			'isPaused',
+			[],
+		);
+
+		expect(isPausedResult[0]).to.be.false;
+	});
+
+	it('Should now allow lotto rolls when contract is unpaused', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Roll the lotto now that the contract is unpaused
+		const result = await contractExecuteFunction(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			600_000,
+			'rollLotto',
+			[
+				token,
+				serial,
+				userNonce,
+				true,
+				winRateThreshold,
+				minWinAmt,
+				maxWinAmt,
+				jackpotThreshold,
+				signature,
+			],
+		);
+
+		expect(result[0]?.status?.toString()).to.be.equal('SUCCESS');
+		console.log('Lotto roll successful after unpausing');
+
+		userNonce++;
+	});
+
+	it('Should allow owner to pause the contract again', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Pause the contract
+		const result = await contractExecuteFunction(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			600_000,
+			'pause',
+			[],
+		);
+
+		expect(result[0]?.status?.toString()).to.be.equal('SUCCESS');
+		console.log('Contract successfully paused by owner');
+
+		// Check the contract is now paused again
+		const isPausedResult = await contractExecuteQuery(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			null,
+			'isPaused',
+			[],
+		);
+
+		expect(isPausedResult[0]).to.be.true;
+	});
+
+	it('Should again prevent lotto rolls when contract is paused', async () => {
+		client.setOperator(operatorId, operatorKey);
+		userNonce++;
+
+		// Create a new signature for the new nonce
+		const newSignature = await createSignature(
+			operatorId,
+			token,
+			serial,
+			userNonce,
+			true,
+			winRateThreshold,
+			minWinAmt,
+			maxWinAmt,
+			jackpotThreshold,
+		);
+
+		// Try to roll the lotto while paused
+		try {
+			const result = await contractExecuteFunction(
+				ltlContractId,
+				lazyTradeLottoIface,
+				client,
+				600_000,
+				'rollLotto',
+				[
+					token,
+					serial,
+					userNonce,
+					true,
+					winRateThreshold,
+					minWinAmt,
+					maxWinAmt,
+					jackpotThreshold,
+					newSignature,
+				],
+			);
+			if (result[0]?.status?.toString() === 'SUCCESS') {
+				console.log('ERROR: Should have failed with contract paused', result);
+				fail();
+			}
+		}
+		catch (err) {
+			console.log('Expected error when contract is paused:', err.message);
+			expect(err.message).to.include('Pausable: paused');
+		}
+	});
+
+	it('Should unpause the contract for remaining tests', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Unpause the contract for subsequent tests
+		const result = await contractExecuteFunction(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			600_000,
+			'unpause',
+			[],
+		);
+
+		expect(result[0]?.status?.toString()).to.be.equal('SUCCESS');
+		console.log('Contract successfully unpaused for remaining tests');
+
+		// Check the contract is now unpaused
+		const isPausedResult = await contractExecuteQuery(
+			ltlContractId,
+			lazyTradeLottoIface,
+			client,
+			null,
+			'isPaused',
+			[],
+		);
+
+		expect(isPausedResult[0]).to.be.false;
+	});
+});
+
 describe('Time to roll the lotto', () => {
 	let userNonce;
 	let lottoRoundNumber;
@@ -907,6 +1251,8 @@ describe('Time to roll the lotto', () => {
 
 		// Get the current lotto stats for validation
 		// Get lotto stats from the mirror node
+		// sleep to ensure in sync
+		await sleep(4500);
 		const encodedLottoStatsCommand = lazyTradeLottoIface.encodeFunctionData('getLottoStats');
 		const lottoStatsResponse = await readOnlyEVMFromMirrorNode(
 			env,
@@ -916,7 +1262,9 @@ describe('Time to roll the lotto', () => {
 			false,
 		);
 		const lottoStatsResult = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsResponse);
-		lottoRoundNumber = Number(lottoStatsResult[2]);
+		lottoRoundNumber = Number(lottoStatsResult[3]);
+
+		console.log('Starting with totalRolls:', lottoRoundNumber);
 
 		// Setup parameters for lotto rolls
 		token = LSHGen1_TokenId.toSolidityAddress();
@@ -1256,7 +1604,7 @@ describe('Time to roll the lotto', () => {
 			}
 		}
 		catch (err) {
-			console.log('Expected error with replayed parameters:', err.message);
+			console.log('Expected error with replayed parameters:', err.message, err);
 			expect(err.message).to.include('AlreadyRolled');
 		}
 	});

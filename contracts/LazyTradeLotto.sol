@@ -10,12 +10,13 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 
 import {IPrngSystemContract} from "./interfaces/IPrngSystemContract.sol";
 import {ILazyGasStation} from "./interfaces/ILazyGasStation.sol";
 import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
 
-contract LazyTradeLotto is Ownable, ReentrancyGuard {
+contract LazyTradeLotto is Ownable, ReentrancyGuard, Pausable {
     using Address for address;
 
     event LottoRoll(
@@ -166,6 +167,9 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
 
         // Default maximum jackpot pool to 500,000
         maxJackpotPool = 500_000; // Assuming LAZY_DECIMAL is 1
+
+        // Initialize as paused by default for safety
+        _pause();
     }
 
     /**
@@ -191,7 +195,7 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         uint256 maxWinAmt,
         uint256 jackpotThreshold,
         bytes memory teamSignature
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         // each trade can be rolled by both the buyer and the seller but only once
         bytes32 hash = keccak256(abi.encodePacked(token, serial, nonce, buyer));
 
@@ -584,6 +588,32 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
             lottoLossIncrement,
             maxJackpotPool
         );
+    }
+
+    /**
+     * @notice Pauses the contract to prevent any new lotto rolls
+     * @dev Can only be called by the contract owner
+     */
+    function pause() external onlyOwner {
+        _pause();
+        emit ContractUpdate("Pause", msg.sender, 0, "Contract Paused");
+    }
+
+    /**
+     * @notice Unpauses the contract to allow lotto rolls
+     * @dev Can only be called by the contract owner
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+        emit ContractUpdate("Unpause", msg.sender, 0, "Contract Unpaused");
+    }
+
+    /**
+     * @notice Checks if the contract is currently paused
+     * @return bool True if the contract is paused, false otherwise
+     */
+    function isPaused() external view returns (bool) {
+        return paused();
     }
 
     /***

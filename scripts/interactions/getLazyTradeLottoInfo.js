@@ -122,6 +122,13 @@ const main = async () => {
 	);
 	const burnPercentage = ltlIface.decodeFunctionResult('burnPercentage', burnPercentageResponse)[0];
 
+	// Get pause status
+	const pausedCommand = ltlIface.encodeFunctionData('isPaused');
+	const pausedResponse = await readOnlyEVMFromMirrorNode(
+		env, contractId, pausedCommand, operatorId, false,
+	);
+	const isPaused = ltlIface.decodeFunctionResult('isPaused', pausedResponse)[0];
+
 	// Get lotto stats
 	const lottoStatsCommand = ltlIface.encodeFunctionData('getLottoStats');
 	const lottoStatsResponse = await readOnlyEVMFromMirrorNode(
@@ -141,8 +148,9 @@ const main = async () => {
 	console.log('  Lazy Delegate Registry: ', ContractId.fromSolidityAddress(ldrContract).toString());
 
 	console.log('\nConfiguration:');
-	console.log('  System Wallet: ', AccountId.fromEvmAddress(0, 0, systemWallet).toString());
+	console.log('  System Wallet: ', systemWallet);
 	console.log('  Burn Percentage: ', Number(burnPercentage), '%');
+	console.log('  Contract Status: ', isPaused ? 'PAUSED' : 'ACTIVE');
 
 	console.log('\nLotto Stats:');
 	console.log('  Jackpot Pool: ', Number(lottoStats[0]) / (10 ** lazyTokenDecimals), ' $LAZY');

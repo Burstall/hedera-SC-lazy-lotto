@@ -255,6 +255,32 @@
         "type": "event"
     },
     {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": false,
+                "internalType": "address",
+                "name": "account",
+                "type": "address"
+            }
+        ],
+        "name": "Paused",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": false,
+                "internalType": "address",
+                "name": "account",
+                "type": "address"
+            }
+        ],
+        "name": "Unpaused",
+        "type": "event"
+    },
+    {
         "stateMutability": "payable",
         "type": "fallback"
     },
@@ -393,6 +419,11 @@
                 "internalType": "uint256",
                 "name": "_lottoLossIncrement",
                 "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_maxJackpotPool",
+                "type": "uint256"
             }
         ],
         "stateMutability": "view",
@@ -407,6 +438,19 @@
             }
         ],
         "name": "history",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "isPaused",
         "outputs": [
             {
                 "internalType": "bool",
@@ -497,12 +541,45 @@
     },
     {
         "inputs": [],
+        "name": "maxJackpotPool",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
         "name": "owner",
         "outputs": [
             {
                 "internalType": "address",
                 "name": "",
                 "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "pause",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "paused",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
             }
         ],
         "stateMutability": "view",
@@ -665,6 +742,13 @@
         "type": "function"
     },
     {
+        "inputs": [],
+        "name": "unpause",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
         "inputs": [
             {
                 "internalType": "uint256",
@@ -686,6 +770,19 @@
             }
         ],
         "name": "updateJackpotLossIncrement",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "maxThreshold",
+                "type": "uint256"
+            }
+        ],
+        "name": "updateMaxJackpotPool",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
