@@ -356,6 +356,49 @@
         "type": "function"
     },
     {
+        "inputs": [],
+        "name": "getLottoStats",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "_jackpotPool",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_jackpotsWon",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_jackpotPaid",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_totalRolls",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_totalWins",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_totalPaid",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_lottoLossIncrement",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
         "inputs": [
             {
                 "internalType": "bytes32",
