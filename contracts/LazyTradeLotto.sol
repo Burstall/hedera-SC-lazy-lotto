@@ -81,6 +81,8 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
 
     /// @notice Current amount in the jackpot pool
     uint256 public jackpotPool;
+    /// @notice Maximum threshold for the jackpot pool
+    uint256 public maxJackpotPool;
     /// @notice Total number of jackpots won
     uint256 public jackpotsWon;
     /// @notice Total amount paid out in jackpots
@@ -161,6 +163,9 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         jackpotPool = _initialJackpot;
         lottoLossIncrement = _lottoLossIncrement;
         burnPercentage = _burnPercentage;
+
+        // Default maximum jackpot pool to 500,000
+        maxJackpotPool = 500_000; // Assuming LAZY_DECIMAL is 1
     }
 
     /**
@@ -390,6 +395,11 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
         // ensures there is always some amount in the jackpot pool to give out
         // nobody is excited by a 0 jackpot!
         jackpotPool += lottoLossIncrement;
+
+        // Ensure jackpot pool does not exceed the maximum threshold
+        if (jackpotPool > maxJackpotPool) {
+            jackpotPool = maxJackpotPool;
+        }
     }
 
     /**
@@ -415,6 +425,22 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
             "JackpotLossIncrement",
             msg.sender,
             increment,
+            "Updated"
+        );
+    }
+
+    /**
+     * @notice Updates the maximum threshold for the jackpot pool
+     * @dev Can only be called by the contract owner
+     * @param maxThreshold The new maximum jackpot threshold
+     */
+    function updateMaxJackpotPool(uint256 maxThreshold) external onlyOwner {
+        maxJackpotPool = maxThreshold;
+
+        emit ContractUpdate(
+            "MaxJackpotPool",
+            msg.sender,
+            maxThreshold,
             "Updated"
         );
     }
@@ -524,6 +550,7 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
      * @return _totalWins the total number of wins
      * @return _totalPaid the total amount paid out
      * @return _lottoLossIncrement the current jackpot loss increment
+     * @return _maxJackpotPool the maximum jackpot pool threshold
      */
     function getLottoStats()
         external
@@ -535,7 +562,8 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
             uint256 _totalRolls,
             uint256 _totalWins,
             uint256 _totalPaid,
-            uint256 _lottoLossIncrement
+            uint256 _lottoLossIncrement,
+            uint256 _maxJackpotPool
         )
     {
         return (
@@ -545,7 +573,8 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
             totalRolls,
             totalWins,
             totalPaid,
-            lottoLossIncrement
+            lottoLossIncrement,
+            maxJackpotPool
         );
     }
 

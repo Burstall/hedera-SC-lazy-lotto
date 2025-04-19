@@ -152,6 +152,7 @@ const main = async () => {
 	console.log('  Total Wins: ', Number(lottoStats[4]));
 	console.log('  Total Paid: ', Number(lottoStats[5]) / (10 ** lazyTokenDecimals), ' $LAZY');
 	console.log('  Jackpot Loss Increment: ', Number(lottoStats[6]) / (10 ** lazyTokenDecimals), ' $LAZY');
+	console.log('  Maximum Jackpot Threshold: ', Number(lottoStats[7]) / (10 ** lazyTokenDecimals), ' $LAZY');
 };
 
 
