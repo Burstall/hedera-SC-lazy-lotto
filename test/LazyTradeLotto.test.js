@@ -73,7 +73,7 @@ const prngName = 'PrngSystemContract';
 let signingKey;
 const initialJackpot = 100;
 const lottoLossIncrement = 50;
-const LAZY_BURN_PERCENT = process.env.LOTTO_LAZY_BURN_PERCENT ?? 50;
+const LAZY_BURN_PERCENT = process.env.LOTTO_LAZY_BURN_PERCENT ? Number(process.env.LOTTO_LAZY_BURN_PERCENT) : 50;
 
 describe('Deployment', () => {
 	it('Should deploy the contract and setup conditions', async () => {
@@ -230,7 +230,7 @@ describe('Deployment', () => {
 			);
 		}
 		else {
-			const gasLimit = 1_500_000;
+			const gasLimit = 1_600_000;
 			console.log(
 				'\n- Deploying contract...',
 				lazyGasStationName,
@@ -294,7 +294,7 @@ describe('Deployment', () => {
 			);
 		}
 		else {
-			const gasLimit = 500_000;
+			const gasLimit = 600_000;
 
 			const ldrJson = JSON.parse(
 				fs.readFileSync(
@@ -358,7 +358,7 @@ describe('Deployment', () => {
 		// revert back to operator
 		client.setOperator(operatorId, operatorKey);
 
-		const gasLimit = 2_500_000;
+		const gasLimit = 2_600_000;
 
 		// now deploy main contract
 		const lazySecureTradeJson = JSON.parse(
@@ -895,7 +895,6 @@ describe('Check Burn Percentage Functionality', () => {
 describe('Time to roll the lotto', () => {
 	let userNonce;
 	let lottoRoundNumber;
-	let burnPercentage;
 	let token;
 	let serial;
 	let winRateThreshold;
@@ -918,18 +917,6 @@ describe('Time to roll the lotto', () => {
 		);
 		const lottoStatsResult = lazyTradeLottoIface.decodeFunctionResult('getLottoStats', lottoStatsResponse);
 		lottoRoundNumber = Number(lottoStatsResult[2]);
-
-		// Get burn percentage from the mirror node
-		const encodedBurnPercentageCommand = lazyTradeLottoIface.encodeFunctionData('burnPercentage');
-		const burnPercentageResponse = await readOnlyEVMFromMirrorNode(
-			env,
-			ltlContractId,
-			encodedBurnPercentageCommand,
-			operatorId,
-			false,
-		);
-		const burnPercentageResult = lazyTradeLottoIface.decodeFunctionResult('burnPercentage', burnPercentageResponse);
-		burnPercentage = Number(burnPercentageResult[0]);
 
 		// Setup parameters for lotto rolls
 		token = LSHGen1_TokenId.toSolidityAddress();
@@ -975,7 +962,7 @@ describe('Time to roll the lotto', () => {
 				ltlContractId,
 				lazyTradeLottoIface,
 				client,
-				500_000,
+				600_000,
 				'rollLotto',
 				[
 					ethers.ZeroAddress,
@@ -1030,7 +1017,7 @@ describe('Time to roll the lotto', () => {
 				ltlContractId,
 				lazyTradeLottoIface,
 				client,
-				500_000,
+				600_000,
 				'rollLotto',
 				[
 					token,
@@ -1082,7 +1069,7 @@ describe('Time to roll the lotto', () => {
 				ltlContractId,
 				lazyTradeLottoIface,
 				client,
-				500_000,
+				600_000,
 				'rollLotto',
 				[
 					token,
@@ -1122,7 +1109,7 @@ describe('Time to roll the lotto', () => {
 				ltlContractId,
 				lazyTradeLottoIface,
 				client,
-				500_000,
+				600_000,
 				'rollLotto',
 				[
 					token,
@@ -1170,7 +1157,7 @@ describe('Time to roll the lotto', () => {
 			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			500_000,
+			600_000,
 			'rollLotto',
 			[
 				token,
@@ -1249,7 +1236,7 @@ describe('Time to roll the lotto', () => {
 				ltlContractId,
 				lazyTradeLottoIface,
 				client,
-				500_000,
+				600_000,
 				'rollLotto',
 				[
 					token,
@@ -1297,7 +1284,7 @@ describe('Time to roll the lotto', () => {
 			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			500_000,
+			600_000,
 			'rollLotto',
 			[
 				token,
@@ -1337,7 +1324,7 @@ describe('Time to roll the lotto', () => {
 			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			500_000,
+			600_000,
 			'rollLotto',
 			[
 				token,
@@ -1421,7 +1408,7 @@ describe('Time to roll the lotto', () => {
 			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			500_000,
+			600_000,
 			'rollLotto',
 			[
 				token,
@@ -1603,7 +1590,7 @@ describe('Time to roll the lotto', () => {
 			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			500_000,
+			600_000,
 			'rollLotto',
 			[
 				token,
@@ -1650,6 +1637,8 @@ describe('Time to roll the lotto', () => {
 			expect(totalPaid).to.be.greaterThan(0);
 			console.log('Win confirmed - Total wins:', totalWins, 'Total paid:', totalPaid / 10 ** LAZY_DECIMAL);
 
+			console.log('Total paid increment:', (totalPaid - totalPaidBefore) / 10 ** LAZY_DECIMAL);
+
 			// Check final balance to verify burn was applied to the payment
 			const finalBalance = await checkMirrorBalance(
 				env,
@@ -1669,8 +1658,8 @@ describe('Time to roll the lotto', () => {
 			// check if there was a regular win
 			const regularWin = totalWins > totalWinsBefore;
 
-			const jackpotPayout = jackpotWon ? jackpotBefore * (1 - burnPercentage / 100) : 0;
-			const regularWinPayout = regularWin ? (totalPaid - totalPaidBefore - jackpotPayout) * (1 - burnPercentage / 100) : 0;
+			const jackpotPayout = jackpotWon ? jackpotBefore * (1 - LAZY_BURN_PERCENT / 100) : 0;
+			const regularWinPayout = regularWin ? (totalPaid - totalPaidBefore) * (1 - LAZY_BURN_PERCENT / 100) : 0;
 
 			const expectedPayout = jackpotPayout + regularWinPayout;
 			console.log('Expected payout after burn:', expectedPayout / 10 ** LAZY_DECIMAL);
@@ -1679,8 +1668,8 @@ describe('Time to roll the lotto', () => {
 			// Verify payout is in the expected range and burn was applied
 			// Small buffer for rounding
 			if (regularWin) {
-				expect(regularWinPayout).to.be.greaterThanOrEqual(minWinAmt * (1 - burnPercentage / 100) * 0.98);
-				expect(regularWinPayout).to.be.lessThanOrEqual(maxWinAmt * (1 - burnPercentage / 100) * 1.02);
+				expect(regularWinPayout).to.be.greaterThanOrEqual(minWinAmt * (1 - LAZY_BURN_PERCENT / 100) * 0.98);
+				expect(regularWinPayout).to.be.lessThanOrEqual(maxWinAmt * (1 - LAZY_BURN_PERCENT / 100) * 1.02);
 			}
 
 			if (jackpotWon) {
@@ -1776,7 +1765,7 @@ describe('Time to roll the lotto', () => {
 			ltlContractId,
 			lazyTradeLottoIface,
 			client,
-			500_000,
+			600_000,
 			'rollLotto',
 			[
 				token,
@@ -1823,6 +1812,8 @@ describe('Time to roll the lotto', () => {
 			expect(totalPaid).to.be.greaterThan(0);
 			console.log('Win confirmed - Total wins:', totalWins, 'Total paid:', totalPaid / 10 ** LAZY_DECIMAL);
 
+			console.log('Total paid increment:', (totalPaid - totalPaidBefore) / 10 ** LAZY_DECIMAL);
+
 			// Check final balance to verify burn was applied to the payment
 			const finalBalance = await checkMirrorBalance(
 				env,
@@ -1842,8 +1833,8 @@ describe('Time to roll the lotto', () => {
 			// check if there was a regular win
 			const regularWin = totalWins > totalWinsBefore;
 
-			const jackpotPayout = jackpotWon ? jackpotBefore * (1 - burnPercentage / 100) : 0;
-			const regularWinPayout = regularWin ? (totalPaid - totalPaidBefore - jackpotPayout) * (1 - burnPercentage / 100) : 0;
+			const jackpotPayout = jackpotWon ? jackpotBefore : 0;
+			const regularWinPayout = regularWin ? (totalPaid - totalPaidBefore) : 0;
 
 			const expectedPayout = jackpotPayout + regularWinPayout;
 			console.log('Expected payout after burn:', expectedPayout / 10 ** LAZY_DECIMAL);
@@ -1852,8 +1843,8 @@ describe('Time to roll the lotto', () => {
 			// Verify payout is in the expected range and burn was applied
 			// Small buffer for rounding
 			if (regularWin) {
-				expect(regularWinPayout).to.be.greaterThanOrEqual(minWinAmt * (1 - burnPercentage / 100) * 0.98);
-				expect(regularWinPayout).to.be.lessThanOrEqual(maxWinAmt * (1 - burnPercentage / 100) * 1.02);
+				expect(regularWinPayout).to.be.greaterThanOrEqual(minWinAmt * 0.98);
+				expect(regularWinPayout).to.be.lessThanOrEqual(maxWinAmt * 1.02);
 			}
 
 			if (jackpotWon) {

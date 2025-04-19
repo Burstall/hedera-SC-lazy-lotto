@@ -353,7 +353,11 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
             );
 
             // pay the winner
-            lazyGasStation.payoutLazy(msg.sender, winAmt, burnPercentage);
+            lazyGasStation.payoutLazy(
+                msg.sender,
+                winAmt,
+                getBurnForUser(msg.sender)
+            );
 
             totalWins += 1;
             totalPaid += winAmt;
@@ -376,7 +380,11 @@ contract LazyTradeLotto is Ownable, ReentrancyGuard {
             uint256 jackpotAmt = jackpotPool;
 
             // pay the jackpot winner
-            lazyGasStation.payoutLazy(msg.sender, jackpotAmt, burnPercentage);
+            lazyGasStation.payoutLazy(
+                msg.sender,
+                jackpotAmt,
+                getBurnForUser(msg.sender)
+            );
 
             // update the jackpot stats
             jackpotPool = 0;
