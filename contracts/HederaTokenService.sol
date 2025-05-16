@@ -2,8 +2,8 @@
 pragma solidity >=0.8.12 <0.9.0;
 pragma experimental ABIEncoderV2;
 
-import { HederaResponseCodes } from "./HederaResponseCodes.sol";
-import { IHederaTokenService } from "./interfaces/IHederaTokenService.sol";
+import {HederaResponseCodes} from "./HederaResponseCodes.sol";
+import {IHederaTokenService} from "./interfaces/IHederaTokenService.sol";
 
 abstract contract HederaTokenService is HederaResponseCodes {
     address constant precompileAddress = address(0x167);
@@ -30,12 +30,20 @@ abstract contract HederaTokenService is HederaResponseCodes {
     /// @param tokenTransfers the list of transfers to do
     /// @return responseCode The response code for the status of the request. SUCCESS is 22.
     /// @custom:version 0.3.0 the signature of the previous version was cryptoTransfer(TokenTransferList[] memory tokenTransfers)
-    function cryptoTransfer(IHederaTokenService.TransferList memory transferList, IHederaTokenService.TokenTransferList[] memory tokenTransfers) internal
-    returns (int32 responseCode)
-    {
+    function cryptoTransfer(
+        IHederaTokenService.TransferList memory transferList,
+        IHederaTokenService.TokenTransferList[] memory tokenTransfers
+    ) internal returns (int32 responseCode) {
         (bool success, bytes memory result) = precompileAddress.call(
-            abi.encodeWithSelector(IHederaTokenService.cryptoTransfer.selector, transferList, tokenTransfers));
-        responseCode = success ? abi.decode(result, (int32)) : HederaResponseCodes.UNKNOWN;
+            abi.encodeWithSelector(
+                IHederaTokenService.cryptoTransfer.selector,
+                transferList,
+                tokenTransfers
+            )
+        );
+        responseCode = success
+            ? abi.decode(result, (int32))
+            : HederaResponseCodes.UNKNOWN;
     }
 
     /// Transfers `amount` tokens from `from` to `to` using the

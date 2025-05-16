@@ -13,3 +13,4 @@ artifacts
 yarn.lock
 logs/*
 .DS_Store
+*.key
