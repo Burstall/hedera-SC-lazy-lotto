@@ -10,26 +10,22 @@ pragma solidity >=0.8.12 <0.9.0;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 
 import {IPrngSystemContract} from "./interfaces/IPrngSystemContract.sol";
 import {HederaResponseCodes} from "./HederaResponseCodes.sol";
-import {ExpiryHelper} from "./ExpiryHelper.sol";
-import {IHederaTokenService} from "./interfaces/IHederaTokenService.sol";
+import {IHederaTokenServiceLite} from "./interfaces/IHederaTokenServiceLite.sol";
 
 import {TokenStaker} from "./TokenStaker.sol";
 
 /// @title  LazyLottoV2
 /// @notice On-chain lotto pools with Hedera VRF randomness, multi-roll batching, burn on entry, and transparent prize management.
-contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
+contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
     using SafeCast for uint256;
     using SafeCast for int256;
     using SafeCast for int64;
-    using EnumerableSet for EnumerableSet.AddressSet;
-    using EnumerableSet for EnumerableSet.UintSet;
 
     // --- DATA STRUCTURES ---
     struct PrizePackage {
@@ -41,18 +37,18 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
     struct LottoPool {
         string ticketCID;
         string winCID;
+        uint256 winRateThousandthsOfBps; // Moved up
+        uint256 entryFee; // Moved up
+        PrizePackage[] prizes; // Moved up
+        uint256 outstandingEntries; // Moved up
         address poolTokenId;
-        uint256 winRateThousandthsOfBps;
-        uint256 entryFee;
-        address feeToken;
-        PrizePackage[] prizes;
-        uint256 outstandingEntries;
-        EnumerableSet.UintSet winningTickets;
-        bool paused;
-        bool closed;
+        bool paused; // Grouped with poolTokenId and closed
+        bool closed; // Grouped with poolTokenId and paused
+        address feeToken; // Moved down
     }
     struct PendingPrize {
         uint256 poolId; // pool ID
+        bool asNFT; // true if the prize is an NFT - Moved up to pack with prize.token
         PrizePackage prize; // prize package
     }
     struct TimeWindow {
@@ -92,7 +88,6 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
     error NotAdmin();
     error FungibleTokenTransferFailed();
     error LastAdminError();
-    error PoolDoesNotExist();
     error PoolIsClosed();
     error PoolNotClosed();
     error NotEnoughHbar(uint256 _needed, uint256 _presented);
@@ -106,10 +101,10 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
     error NoPendingPrizes();
     error FailedNFTMint();
     error FailedNFTWipe();
-    error CannotRollWinningTicket();
     error PoolOnPause();
     error EntriesOutstanding(uint256 _outstanding, uint256 _tokensOutstanding);
     error NoPrizesAvailable();
+    error AlreadyWinningTicket();
 
     /// --- EVENTS ---
     event AdminAdded(address indexed admin);
@@ -154,7 +149,9 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
     event ContractUpdate(MethodEnum method, address _sender, uint256 _amount);
 
     // --- STATE ---
-    EnumerableSet.AddressSet private admins;
+    mapping(address => bool) private _isAddressAdmin;
+    uint256 private _adminCount;
+
     IPrngSystemContract public prng;
     uint256 public burnPercentage;
 
@@ -179,7 +176,7 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
 
     // --- MODIFIERS ---
     modifier onlyAdmin() {
-        if (!admins.contains(msg.sender)) {
+        if (!_isAddressAdmin[msg.sender]) {
             revert NotAdmin();
         }
         _;
@@ -216,21 +213,34 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
 
         burnPercentage = _burnPercentage;
 
-        // Initialize the admins set with the deployer
-        admins.add(msg.sender);
+        // Initialize the admin with the deployer
+        _isAddressAdmin[msg.sender] = true;
+        _adminCount = 1;
+        emit AdminAdded(msg.sender);
     }
 
     // --- ADMIN FUNCTIONS ---
     function addAdmin(address a) external onlyAdmin {
-        admins.add(a);
-        emit AdminAdded(a);
+        if (a == address(0)) revert BadParameters();
+        if (!_isAddressAdmin[a]) {
+            _isAddressAdmin[a] = true;
+            _adminCount++;
+            emit AdminAdded(a);
+        }
     }
+
     function removeAdmin(address a) external onlyAdmin {
-        if (admins.length() <= 1) {
+        if (a == address(0)) revert BadParameters();
+        if (_adminCount <= 1) {
             revert LastAdminError();
         }
-        admins.remove(a);
-        emit AdminRemoved(a);
+        if (_isAddressAdmin[a]) {
+            _isAddressAdmin[a] = false;
+            _adminCount--;
+            emit AdminRemoved(a);
+        } else {
+            revert NotAdmin();
+        }
     }
 
     function setBurnPercentage(uint256 _burnPercentage) external onlyAdmin {
@@ -330,8 +340,8 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
         }
 
         // now mint the token for the pool making the SC the treasury
-        IHederaTokenService.TokenKey[]
-            memory _keys = new IHederaTokenService.TokenKey[](1);
+        IHederaTokenServiceLite.TokenKey[]
+            memory _keys = new IHederaTokenServiceLite.TokenKey[](1);
 
         // make the contract the sole supply / wipe key
         _keys[0] = getSingleKey(
@@ -341,7 +351,7 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
             address(this)
         );
 
-        IHederaTokenService.HederaToken memory _token;
+        IHederaTokenServiceLite.HederaToken memory _token;
         _token.name = _name;
         _token.symbol = _symbol;
         _token.memo = _memo;
@@ -357,14 +367,14 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
             defaultAutoRenewPeriod
         );
 
-        IHederaTokenService.RoyaltyFee[]
-            memory _fees = new IHederaTokenService.RoyaltyFee[](
+        IHederaTokenServiceLite.RoyaltyFee[]
+            memory _fees = new IHederaTokenServiceLite.RoyaltyFee[](
                 _royalties.length
             );
 
         uint256 _length = _royalties.length;
         for (uint256 f = 0; f < _length; ) {
-            IHederaTokenService.RoyaltyFee memory _fee;
+            IHederaTokenServiceLite.RoyaltyFee memory _fee;
             _fee.numerator = _royalties[f].numerator;
             _fee.denominator = _royalties[f].denominator;
             _fee.feeCollector = _royalties[f].account;
@@ -386,7 +396,7 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
             address tokenAddress
         ) = createNonFungibleTokenWithCustomFees(
                 _token,
-                new IHederaTokenService.FixedFee[](0),
+                new IHederaTokenServiceLite.FixedFee[](0),
                 _fees
             );
 
@@ -395,18 +405,20 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
         }
 
         // now create the pool and add it to the list of pools;
-        LottoPool storage newPool = pools.push();
-        newPool.ticketCID = _ticketCID;
-        newPool.winCID = _winCID;
-        newPool.poolTokenId = tokenAddress;
-        newPool.winRateThousandthsOfBps = _winRateTenThousandthsOfBps;
-        newPool.entryFee = _entryFee;
-        newPool.feeToken = _feeToken;
-        // prizes is already an empty array by default
-        newPool.outstandingEntries = 0;
-        // winningTickets is already initialized by default
-        newPool.paused = false;
-        newPool.closed = false;
+        pools.push(
+            LottoPool({
+                ticketCID: _ticketCID,
+                winCID: _winCID,
+                poolTokenId: tokenAddress,
+                winRateThousandthsOfBps: _winRateTenThousandthsOfBps,
+                entryFee: _entryFee,
+                feeToken: _feeToken,
+                prizes: new PrizePackage[](0),
+                outstandingEntries: 0,
+                paused: false,
+                closed: false
+            })
+        );
 
         emit PoolCreated(pools.length - 1);
     }
@@ -727,8 +739,12 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
             serialNumbers
         );
         uint256 _length = prizeSlots.length;
-        for (uint256 i = 0; i < _length; ) {
-            _claimPrize(prizeSlots[i]);
+        // Claim in reverse order to avoid index shifting issues
+        for (uint256 i = _length; i > 0; ) {
+            _claimPrize(prizeSlots[i - 1]);
+            unchecked {
+                --i;
+            }
         }
     }
 
@@ -737,15 +753,13 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
     }
 
     function claimAllPrizes() external nonReentrant {
-        uint256 _length = pending[msg.sender].length;
-        if (_length == 0) {
+        if (pending[msg.sender].length == 0) {
             revert NoPendingPrizes();
         }
-        for (uint256 i = 0; i < _length; ) {
-            _claimPrize(i);
-            unchecked {
-                ++i;
-            }
+        // Iterate by always claiming the prize at index 0
+        // This is safe as the array shrinks and elements shift (or last is swapped to 0 and popped)
+        while (pending[msg.sender].length > 0) {
+            _claimPrize(0);
         }
     }
 
@@ -755,44 +769,12 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
     }
     function getPoolDetails(
         uint256 id
-    )
-        external
-        view
-        returns (
-            string memory ticketCID,
-            string memory winCID,
-            address poolTokenId,
-            uint256 winRateThousandthsOfBps,
-            uint256 entryFee,
-            address feeToken,
-            uint256 prizesLength,
-            uint256 outstandingEntries,
-            bool paused,
-            bool closed,
-            uint256[] memory winningTickets
-        )
-    {
+    ) external view returns (LottoPool memory) {
         if (id < pools.length) {
-            LottoPool storage p = pools[id];
-            ticketCID = p.ticketCID;
-            winCID = p.winCID;
-            poolTokenId = p.poolTokenId;
-            winRateThousandthsOfBps = p.winRateThousandthsOfBps;
-            entryFee = p.entryFee;
-            feeToken = p.feeToken;
-            prizesLength = p.prizes.length;
-            outstandingEntries = p.outstandingEntries;
-            paused = p.paused;
-            closed = p.closed;
-            winningTickets = p.winningTickets.values();
+            return pools[id];
         } else {
-            revert PoolDoesNotExist();
+            revert LottoPoolNotFound(id);
         }
-    }
-    function getPoolPrizes(
-        uint256 poolId
-    ) external view returns (PrizePackage[] memory) {
-        return pools[poolId].prizes;
     }
     function getUsersEntries(
         uint256 poolId,
@@ -831,7 +813,7 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
         return pendingNFTs[keccak256(abi.encode(tokenId, serialNumber))];
     }
     function isAdmin(address a) external view returns (bool) {
-        return admins.contains(a);
+        return _isAddressAdmin[a];
     }
     function totalTimeBonuses() external view returns (uint256) {
         return timeBonuses.length;
@@ -939,11 +921,17 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
             ) {
                 // check the serial is not a winning ticket
                 if (
-                    p.winningTickets.contains(
-                        serialNumbers[outer + inner].toUint256()
-                    )
+                    // hash the tokenId and serial number to get the key
+                    pendingNFTs[
+                        keccak256(
+                            abi.encode(
+                                p.poolTokenId,
+                                serialNumbers[outer + inner]
+                            )
+                        )
+                    ].asNFT
                 ) {
-                    revert CannotRollWinningTicket();
+                    revert AlreadyWinningTicket();
                 }
 
                 batchSerialsForBurn[inner] = serialNumbers[outer + inner];
@@ -1047,8 +1035,13 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
             receiverList[0] = msg.sender;
             mintedSerials[k] = serialNumbers[0];
 
-            // add the winning serial to the Pool winning tickets
-            p.winningTickets.add(uint256(uint64(mintedSerials[k])));
+            // add the winning serial to pendingNFTs
+            bytes32 key = keccak256(
+                abi.encode(p.poolTokenId, serialNumbers[0])
+            );
+
+            pendingNFTs[key] = prize;
+            pendingNFTs[key].asNFT = true;
 
             response = transferNFTs(
                 p.poolTokenId,
@@ -1091,7 +1084,7 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
                 );
 
                 PendingPrize memory pendingPrize = pendingNFTs[key];
-                if (pendingPrize.prize.token == address(0)) {
+                if (pendingPrize.asNFT == false) {
                     revert BadParameters();
                 }
 
@@ -1099,12 +1092,6 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
                 pending[msg.sender].push(pendingPrize);
                 // remove the prize from the pending list
                 delete pendingNFTs[key];
-
-                // remove the serial from the winning tickets
-                LottoPool storage p = pools[pendingPrize.poolId];
-                p.winningTickets.remove(
-                    serialNumbers[outer + inner].toUint256()
-                );
 
                 prizeSlots[outer + inner] = pending[msg.sender].length - 1;
 
@@ -1337,7 +1324,7 @@ contract LazyLotto is TokenStaker, ExpiryHelper, ReentrancyGuard, Pausable {
                 // add the prize to the pending list for the user
                 // tie it back to the poolId so we can mint to NFT later
                 pending[msg.sender].push(
-                    PendingPrize({poolId: poolId, prize: pkg})
+                    PendingPrize({poolId: poolId, prize: pkg, asNFT: false})
                 );
 
                 emit PrizeAssigned(msg.sender, poolId, pkgIdx);

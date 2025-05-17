@@ -8,8 +8,9 @@ pragma solidity >=0.8.12 <0.9.0;
 /// @version 1.0 - 1 tinybar only.
 
 import {HederaResponseCodes} from "./HederaResponseCodes.sol";
-import {HederaTokenService} from "./HederaTokenService.sol";
-import {IHederaTokenService} from "./interfaces/IHederaTokenService.sol";
+import {HederaTokenServiceLite} from "./HederaTokenServiceLite.sol";
+import {IHederaTokenServiceLite} from "./interfaces/IHederaTokenServiceLite.sol";
+import {KeyHelperLite} from "./KeyHelperLite.sol"; // Added import for KeyHelperLite
 
 import {ILazyGasStation} from "./interfaces/ILazyGasStation.sol";
 import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
@@ -17,7 +18,7 @@ import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract TokenStaker is HederaTokenService {
+contract TokenStaker is HederaTokenServiceLite, KeyHelperLite {
     using SafeCast for uint256;
     using SafeCast for int256;
 
@@ -58,10 +59,7 @@ contract TokenStaker is HederaTokenService {
         lazyGasStation = ILazyGasStation(_lazyGasStation);
         lazyDelegateRegistry = ILazyDelegateRegistry(_lazyDelegateRegistry);
 
-        int256 response = HederaTokenService.associateToken(
-            address(this),
-            lazyToken
-        );
+        int256 response = super.associateToken(address(this), lazyToken);
 
         if (response != HederaResponseCodes.SUCCESS) {
             revert FailedToInitialize();
@@ -90,15 +88,17 @@ contract TokenStaker is HederaTokenService {
             isHbarApproval = true;
         }
 
-        // hbar moves sit seperate from NFT moves (max 8 NFTs + 2 hbar legs +1/-1 tiny bar)
-        IHederaTokenService.TokenTransferList[]
-            memory _transfers = new IHederaTokenService.TokenTransferList[](
+        // hbar moves sit separate from NFT moves (max 8 NFTs + 2 hbar legs +1/-1 tiny bar)
+        IHederaTokenServiceLite.TokenTransferList[]
+            memory _transfers = new IHederaTokenServiceLite.TokenTransferList[](
                 _serials.length
             );
 
         // prep the hbar transfer
-        IHederaTokenService.TransferList memory _hbarTransfer;
-        _hbarTransfer.transfers = new IHederaTokenService.AccountAmount[](2);
+        IHederaTokenServiceLite.TransferList memory _hbarTransfer;
+        _hbarTransfer.transfers = new IHederaTokenServiceLite.AccountAmount[](
+            2
+        );
 
         _hbarTransfer.transfers[0].accountID = receiverAddress;
         _hbarTransfer.transfers[0].amount = -1;
@@ -117,7 +117,7 @@ contract TokenStaker is HederaTokenService {
 
         // transfer NFT
         for (uint256 i = 0; i < _serials.length; i++) {
-            IHederaTokenService.NftTransfer memory _nftTransfer;
+            IHederaTokenServiceLite.NftTransfer memory _nftTransfer;
             _nftTransfer.senderAccountID = senderAddress;
             _nftTransfer.receiverAccountID = receiverAddress;
             _nftTransfer.isApproval = !isHbarApproval;
@@ -127,18 +127,14 @@ contract TokenStaker is HederaTokenService {
             }
             _transfers[i].token = _collectionAddress;
 
-            _transfers[i].nftTransfers = new IHederaTokenService.NftTransfer[](
-                1
-            );
+            _transfers[i]
+                .nftTransfers = new IHederaTokenServiceLite.NftTransfer[](1);
 
             _nftTransfer.serialNumber = SafeCast.toInt64(int256(_serials[i]));
             _transfers[i].nftTransfers[0] = _nftTransfer;
         }
 
-        int256 response = HederaTokenService.cryptoTransfer(
-            _hbarTransfer,
-            _transfers
-        );
+        int256 response = super.cryptoTransfer(_hbarTransfer, _transfers);
 
         if (response != HederaResponseCodes.SUCCESS) {
             // could be $LAZY or serials causing the issue. Check $LAZY balance of contract first
@@ -160,10 +156,7 @@ contract TokenStaker is HederaTokenService {
      * @param tokenId address to associate
      */
     function tokenAssociate(address tokenId) public {
-        int256 response = HederaTokenService.associateToken(
-            address(this),
-            tokenId
-        );
+        int256 response = super.associateToken(address(this), tokenId);
 
         if (
             !(response == SUCCESS ||
@@ -174,10 +167,7 @@ contract TokenStaker is HederaTokenService {
     }
 
     function batchTokenAssociate(address[] memory tokenIds) public {
-        int256 response = HederaTokenService.associateTokens(
-            address(this),
-            tokenIds
-        );
+        int256 response = super.associateTokens(address(this), tokenIds);
 
         if (response != HederaResponseCodes.SUCCESS) {
             revert BatchAssociationFailed();
@@ -185,7 +175,7 @@ contract TokenStaker is HederaTokenService {
     }
 
     /**
-     * @dev associate a group of tokens one at a time to ensure alrady associated tokens are safely handled
+     * @dev associate a group of tokens one at a time to ensure already associated tokens are safely handled
      * less gas efficient than batchTokenAssociate
      * @param tokenIds array of token addresses to associate
      */
@@ -239,7 +229,7 @@ contract TokenStaker is HederaTokenService {
         address _transferInitiator,
         bool _delegate
     ) internal refill {
-        // check the number of serials and send in batchs of 8
+        // check the number of serials and send in batches of 8
         for (
             uint256 outer = 0;
             outer < _serials.length;
