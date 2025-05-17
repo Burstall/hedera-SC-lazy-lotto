@@ -865,7 +865,11 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
 
         if (tokenId == address(0)) {
             if (address(this).balance < ftTokensForPrizes[tokenId]) {
-                revert BalanceError(address(0), address(this).balance, amount);
+                revert BalanceError(
+                    address(0),
+                    address(this).balance,
+                    ftTokensForPrizes[address(0)]
+                );
             }
         } else if (tokenId == lazyToken) {
             // transfer the $LAZY to the LGS
@@ -964,15 +968,14 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
 
     function _redeemPendingPrizeToNFT(
         uint256[] memory _idxs
-    ) internal returns (int64[] memory mintedSerials) {
+    ) internal returns (int64[] memory mintedSerialsToUser) {
         uint256 count = _idxs.length;
         if (count == 0) {
             revert BadParameters();
         }
-        mintedSerials = new int64[](count);
+        mintedSerialsToUser = new int64[](count);
 
-        // To avoid issues with shifting indices as we pop, we process highest indices first
-        // Sort _idxs descending (simple selection sort for small arrays)
+        // Sort _idxs descending to handle removals from pending[msg.sender] correctly
         for (uint256 i = 0; i < count; ) {
             for (uint256 j = i + 1; j < count; ) {
                 if (_idxs[i] < _idxs[j]) {
@@ -980,143 +983,163 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                     _idxs[i] = _idxs[j];
                     _idxs[j] = tmp;
                 }
-
                 unchecked {
                     ++j;
                 }
             }
-
             unchecked {
                 ++i;
             }
         }
 
         for (uint256 k = 0; k < count; ) {
-            uint256 _idx = _idxs[k];
-            if (_idx >= pending[msg.sender].length) {
-                revert BadParameters();
+            uint256 prizeIndexInPendingArray = _idxs[k];
+
+            if (prizeIndexInPendingArray >= pending[msg.sender].length) {
+                revert BadParameters(); // Index out of bounds
             }
 
-            PendingPrize memory prize = pending[msg.sender][_idx];
-            // remove the prize from the pending list
-            pending[msg.sender][_idx] = pending[msg.sender][
-                pending[msg.sender].length - 1
+            PendingPrize memory prizeToConvert = pending[msg.sender][
+                prizeIndexInPendingArray
             ];
+
+            // Remove from pending[msg.sender] by swapping with the last element and popping
+            if (prizeIndexInPendingArray < pending[msg.sender].length - 1) {
+                pending[msg.sender][prizeIndexInPendingArray] = pending[
+                    msg.sender
+                ][pending[msg.sender].length - 1];
+            }
             pending[msg.sender].pop();
 
-            // find the pool
-            LottoPool storage p = pools[prize.poolId];
+            prizeToConvert.asNFT = true; // Mark that this prize is now represented by an NFT
 
-            bytes[] memory batchMetadataForMint = new bytes[](1);
-            batchMetadataForMint[0] = bytes(p.winCID);
+            bytes[] memory metadata = new bytes[](1);
+            metadata[0] = abi.encodePacked(pools[prizeToConvert.poolId].winCID);
+            address poolTokenIdForPrizeNFT = pools[prizeToConvert.poolId]
+                .poolTokenId;
 
-            // mint the NFT for the prize
-            (int256 response, , int64[] memory serialNumbers) = mintToken(
-                p.poolTokenId,
-                0,
-                batchMetadataForMint
-            );
+            // 1. Mint NFT to contract (treasury)
+            (
+                int256 responseCodeMint,
+                ,
+                int64[] memory serialNumbersMinted
+            ) = mintToken(poolTokenIdForPrizeNFT, 0, metadata);
 
-            if (response != HederaResponseCodes.SUCCESS) {
+            if (
+                responseCodeMint != HederaResponseCodes.SUCCESS ||
+                serialNumbersMinted.length == 0
+            ) {
                 revert FailedNFTMint();
             }
+            int64 mintedSerial = serialNumbersMinted[0]; // Assuming one NFT per prize conversion
 
-            // transfer the token to the user
-            address[] memory senderList = new address[](1);
-            address[] memory receiverList = new address[](1);
-            emit TicketMintEvent(
-                prize.poolId,
-                p.poolTokenId,
+            // 2. Transfer the minted NFT from contract to msg.sender
+            // Using TokenStaker.transferNFT which calls HTS.transferNFT
+            int256 responseCodeTransfer = transferNFT(
+                poolTokenIdForPrizeNFT,
+                address(this),
                 msg.sender,
-                serialNumbers[0]
+                mintedSerial
             );
-
-            senderList[0] = address(this);
-            receiverList[0] = msg.sender;
-            mintedSerials[k] = serialNumbers[0];
-
-            // add the winning serial to pendingNFTs
-            bytes32 key = keccak256(
-                abi.encode(p.poolTokenId, serialNumbers[0])
-            );
-
-            pendingNFTs[key] = prize;
-            pendingNFTs[key].asNFT = true;
-
-            response = transferNFTs(
-                p.poolTokenId,
-                senderList,
-                receiverList,
-                serialNumbers
-            );
-
-            if (response != HederaResponseCodes.SUCCESS) {
+            if (responseCodeTransfer != HederaResponseCodes.SUCCESS) {
                 revert NFTTransferFailed(TransferDirection.WITHDRAWAL);
             }
+
+            // 3. Store in pendingNFTs mapping
+            bytes32 nftKey = keccak256(
+                abi.encode(poolTokenIdForPrizeNFT, mintedSerial)
+            );
+            pendingNFTs[nftKey] = prizeToConvert;
+            mintedSerialsToUser[k] = mintedSerial;
+
+            emit TicketMintEvent(
+                prizeToConvert.poolId,
+                poolTokenIdForPrizeNFT,
+                msg.sender,
+                mintedSerial
+            );
 
             unchecked {
                 ++k;
             }
         }
-
-        return mintedSerials;
     }
 
     function _redeemPendingPrizeFromNFT(
-        address tokenId,
+        address poolTokenId, // This is the poolTokenId of the NFT voucher
         int64[] memory serialNumbers
-    ) internal returns (uint256[] memory prizeSlots) {
-        uint256 length = serialNumbers.length;
-        prizeSlots = new uint256[](length);
-        for (uint256 outer = 0; outer < length; outer += NFT_BATCH_SIZE) {
-            uint256 thisBatch = (length - outer) >= NFT_BATCH_SIZE
-                ? NFT_BATCH_SIZE
-                : (length - outer);
-            int64[] memory batchSerialsForBurn = new int64[](thisBatch);
-            for (
-                uint256 inner = 0;
-                ((outer + inner) < length) && (inner < thisBatch);
+    ) internal returns (uint256[] memory prizeSlotsInPendingArray) {
+        uint256 numSerials = serialNumbers.length;
+        if (numSerials == 0) {
+            revert BadParameters();
+        }
 
-            ) {
-                // check the token has a pending prize
-                bytes32 key = keccak256(
-                    abi.encode(tokenId, serialNumbers[outer + inner])
-                );
+        prizeSlotsInPendingArray = new uint256[](numSerials);
+        uint256 successfullyRedeemedCount = 0;
 
-                PendingPrize memory pendingPrize = pendingNFTs[key];
-                if (pendingPrize.asNFT == false) {
-                    revert BadParameters();
-                }
+        for (uint256 i = 0; i < numSerials; ) {
+            bytes32 nftKey = keccak256(
+                abi.encode(poolTokenId, serialNumbers[i])
+            );
+            PendingPrize memory prize = pendingNFTs[nftKey];
 
-                // move the pending prize to the user
-                pending[msg.sender].push(pendingPrize);
-                // remove the prize from the pending list
-                delete pendingNFTs[key];
-
-                prizeSlots[outer + inner] = pending[msg.sender].length - 1;
-
-                batchSerialsForBurn[inner] = serialNumbers[outer + inner];
-                emit TicketBurnEvent(
-                    pendingPrize.poolId,
-                    tokenId,
-                    msg.sender,
-                    batchSerialsForBurn[inner]
-                );
-                unchecked {
-                    ++inner;
-                }
+            if (!prize.asNFT) {
+                // If asNFT is false, it's not a valid entry from pendingNFTs or was already processed.
+                // Could revert, or skip this serial. For now, revert.
+                revert BadParameters();
             }
 
-            int256 response = wipeTokenAccountNFT(
-                tokenId,
+            delete pendingNFTs[nftKey]; // Remove from NFT voucher mapping
+
+            prize.asNFT = false; // Mark as a regular pending prize again
+            pending[msg.sender].push(prize);
+            prizeSlotsInPendingArray[successfullyRedeemedCount] =
+                pending[msg.sender].length -
+                1;
+            successfullyRedeemedCount++;
+
+            // Wipe the NFT voucher from the sender's account
+            int64[] memory singleSerialArray = new int64[](1);
+            singleSerialArray[0] = serialNumbers[i];
+            int256 responseWipe = wipeTokenAccountNFT(
+                poolTokenId,
                 msg.sender,
-                batchSerialsForBurn
+                singleSerialArray
             );
 
-            if (response != HederaResponseCodes.SUCCESS) {
+            if (responseWipe != HederaResponseCodes.SUCCESS) {
+                // If wipe fails, the state might be inconsistent. Reverting is safest.
+                // Consider if this should revert all or just this specific redemption.
                 revert FailedNFTWipe();
             }
+
+            emit TicketBurnEvent(
+                prize.poolId,
+                poolTokenId,
+                msg.sender,
+                serialNumbers[i]
+            );
+
+            unchecked {
+                ++i;
+            }
         }
+
+        // If some redemptions failed and we chose to skip (not current logic), resize array.
+        // For now, successfullyRedeemedCount should equal numSerials if no reverts.
+        if (successfullyRedeemedCount < numSerials) {
+            uint256[] memory sizedPrizeSlots = new uint256[](
+                successfullyRedeemedCount
+            );
+            for (uint256 j = 0; j < successfullyRedeemedCount; ) {
+                sizedPrizeSlots[j] = prizeSlotsInPendingArray[j];
+                unchecked {
+                    ++j;
+                }
+            }
+            return sizedPrizeSlots;
+        }
+        return prizeSlotsInPendingArray;
     }
 
     function _redeemEntriesToNFT(
@@ -1266,8 +1289,8 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         LottoPool storage p = pools[poolId];
 
         // ensure we know the total number of prizes available
-        uint256 totalPrizes = p.prizes.length;
-        if (totalPrizes == 0) {
+        uint256 totalPrizesAvailable = p.prizes.length;
+        if (totalPrizesAvailable == 0) {
             revert NoPrizesAvailable();
         }
 
@@ -1285,51 +1308,58 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         p.outstandingEntries -= numberToRoll;
         userEntries[poolId][msg.sender] -= numberToRoll;
 
-        uint256 winRateThreshold = p.winRateThousandthsOfBps +
-            boostBps *
-            10_000;
-        // check we are below the threshold for the win rate
-        if (winRateThreshold > MAX_WIN_RATE_THRESHOLD) {
-            winRateThreshold = MAX_WIN_RATE_THRESHOLD;
+        // boostBps is already scaled to 10_000s of bps in calculateBoost
+        uint256 winRateWithBoost = p.winRateThousandthsOfBps + boostBps;
+
+        if (winRateWithBoost > MAX_WIN_RATE_THRESHOLD) {
+            winRateWithBoost = MAX_WIN_RATE_THRESHOLD;
         }
 
-        // check the offset of the users current pending prizes
-        // this is the number of prizes that have been assigned to the user already
-        // this makes it easier to see what the user has won
         offset = pending[msg.sender].length;
 
-        // roll the whole list with getPseudorandomNumberArray
         uint256[] memory rolls = prng.getPseudorandomNumberArray(
-            0,
-            100_000_000,
-            uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender))),
+            0, // min value for random number
+            MAX_WIN_RATE_THRESHOLD, // max value for random number (exclusive for PRNG, so 0 to 99,999,999)
+            uint256(
+                keccak256(
+                    abi.encodePacked(
+                        block.timestamp,
+                        msg.sender,
+                        poolId,
+                        numberToRoll
+                    )
+                )
+            ), // seed
             numberToRoll
         );
 
-        // roll the tickets and check if the user won
         for (uint256 i = 0; i < numberToRoll; i++) {
-            bool won = rolls[i] < p.winRateThousandthsOfBps;
-            // if people roll more than the number of prizes and they win rest will be burnt
-            // that's the downside of luck!
-            if (won && totalPrizes > 0) {
-                // randomly select a prize package and remove it from the pool
-                uint256 pkgIdx = rolls[i] % totalPrizes;
-                PrizePackage memory pkg = p.prizes[pkgIdx];
-                p.prizes[pkgIdx] = p.prizes[totalPrizes - 1];
+            bool won = rolls[i] < winRateWithBoost;
+            emit Rolled(msg.sender, poolId, won, rolls[i]); // Emit roll event regardless of win
+
+            if (won && totalPrizesAvailable > 0) {
+                // Use a different random number for prize selection to avoid bias from the win roll
+                // Or, if PRNG is good enough, can use a portion of the same roll or a subsequent one if available.
+                // For simplicity, let's use a modulo of the win roll for now, assuming PRNG distribution is fine.
+                // A more robust way would be another PRNG call or a hash-based selection.
+                uint256 prizeSelectionIndex = rolls[i] % totalPrizesAvailable;
+                PrizePackage memory pkg = p.prizes[prizeSelectionIndex];
+
+                // Remove prize from pool by swapping with last and popping
+                p.prizes[prizeSelectionIndex] = p.prizes[
+                    totalPrizesAvailable - 1
+                ];
                 p.prizes.pop();
 
-                totalPrizes--;
+                totalPrizesAvailable--; // Decrement available prizes
                 wins++;
 
-                // add the prize to the pending list for the user
-                // tie it back to the poolId so we can mint to NFT later
                 pending[msg.sender].push(
                     PendingPrize({poolId: poolId, prize: pkg, asNFT: false})
                 );
 
-                emit PrizeAssigned(msg.sender, poolId, pkgIdx);
+                emit PrizeAssigned(msg.sender, poolId, prizeSelectionIndex); // Emitting original index before pop
             }
-            emit Rolled(msg.sender, poolId, won, rolls[i]);
         }
     }
 
