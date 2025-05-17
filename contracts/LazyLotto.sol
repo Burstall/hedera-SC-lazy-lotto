@@ -113,35 +113,24 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
     event PoolPaused(uint256 indexed poolId);
     event PoolClosed(uint256 indexed poolId);
     event PoolOpened(uint256 indexed poolId);
-    event EntryPurchased(address indexed user, uint256 indexed poolId);
+    event EntryPurchased(
+        address indexed user,
+        uint256 indexed poolId,
+        uint256 count
+    );
     event Rolled(
         address indexed user,
         uint256 indexed poolId,
         bool won,
         uint256 rollBps
     );
-    event PrizeAssigned(
-        address indexed user,
-        uint256 indexed poolId,
-        uint256 pkgIdx
-    );
     event PrizeClaimed(address indexed user, PrizePackage prize);
-    event TicketMintEvent(
+    event TicketEvent(
         uint256 indexed poolId,
         address indexed tokenId,
         address indexed user,
-        int64 serialNumber
-    );
-    event TicketBurnEvent(
-        uint256 indexed poolId,
-        address indexed tokenId,
-        address indexed user,
-        int64 serialNumber
-    );
-    event PrizeRemoved(
-        address indexed user,
-        uint256 indexed poolId,
-        PrizePackage prize
+        int64 serialNumber,
+        bool mint
     );
     event TimeBonusAdded(uint256 start, uint256 end, uint16 bonusBps);
     event NFTBonusSet(address indexed token, uint16 bonusBps);
@@ -335,7 +324,11 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         }
 
         // we need to associate the _feeToken with the contract
-        if (_feeToken != address(0) && _feeToken != lazyToken) {
+        if (
+            _feeToken != address(0) &&
+            _feeToken != lazyToken &&
+            IERC20(_feeToken).balanceOf(address(this)) == 0
+        ) {
             tokenAssociate(_feeToken);
         }
 
@@ -466,8 +459,6 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 nftSerials: nftSerials
             })
         );
-
-        emit PrizeAssigned(msg.sender, poolId, p.prizes.length - 1);
     }
 
     function addMultipleFungiblePrizes(
@@ -506,8 +497,6 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                     nftSerials: new uint256[][](0)
                 })
             );
-
-            emit PrizeAssigned(msg.sender, poolId, p.prizes.length - 1);
 
             unchecked {
                 ++i;
@@ -600,9 +589,6 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 ++i;
             }
         }
-
-        // emit the event for the prize removal
-        emit PrizeRemoved(msg.sender, poolId, prize);
     }
 
     // PAUSE
@@ -939,11 +925,12 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 }
 
                 batchSerialsForBurn[inner] = serialNumbers[outer + inner];
-                emit TicketBurnEvent(
+                emit TicketEvent(
                     _poolId,
                     p.poolTokenId,
                     msg.sender,
-                    batchSerialsForBurn[inner]
+                    batchSerialsForBurn[inner],
+                    false
                 );
                 unchecked {
                     ++inner;
@@ -1052,11 +1039,12 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             pendingNFTs[nftKey] = prizeToConvert;
             mintedSerialsToUser[k] = mintedSerial;
 
-            emit TicketMintEvent(
+            emit TicketEvent(
                 prizeToConvert.poolId,
                 poolTokenIdForPrizeNFT,
                 msg.sender,
-                mintedSerial
+                mintedSerial,
+                true
             );
 
             unchecked {
@@ -1113,11 +1101,12 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 revert FailedNFTWipe();
             }
 
-            emit TicketBurnEvent(
+            emit TicketEvent(
                 prize.poolId,
                 poolTokenId,
                 msg.sender,
-                serialNumbers[i]
+                serialNumbers[i],
+                false
             );
 
             unchecked {
@@ -1194,11 +1183,12 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             address[] memory receiverList = new address[](serialNumbers.length);
             uint256 length = serialNumbers.length;
             for (uint256 s = 0; s < length; ) {
-                emit TicketMintEvent(
+                emit TicketEvent(
                     _poolId,
                     p.poolTokenId,
                     msg.sender,
-                    serialNumbers[s]
+                    serialNumbers[s],
+                    true
                 );
                 senderList[s] = address(this);
                 receiverList[s] = _onBehalfOf;
@@ -1275,9 +1265,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
 
         p.outstandingEntries += ticketCount;
         userEntries[poolId][msg.sender] += ticketCount;
-        for (uint256 i = 0; i < ticketCount; i++) {
-            emit EntryPurchased(msg.sender, poolId);
-        }
+        emit EntryPurchased(msg.sender, poolId, ticketCount);
     }
 
     function _roll(
@@ -1357,8 +1345,6 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 pending[msg.sender].push(
                     PendingPrize({poolId: poolId, prize: pkg, asNFT: false})
                 );
-
-                emit PrizeAssigned(msg.sender, poolId, prizeSelectionIndex); // Emitting original index before pop
             }
         }
     }
