@@ -9,24 +9,19 @@ pragma solidity >=0.8.12 <0.9.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 
 import {IPrngSystemContract} from "./interfaces/IPrngSystemContract.sol";
-import {HederaResponseCodes} from "./HederaResponseCodes.sol";
-import {IHederaTokenServiceLite} from "./interfaces/IHederaTokenServiceLite.sol";
-
-import {TokenStaker} from "./TokenStaker.sol";
+import {HTSLazyLottoLibrary} from "./HTSLazyLottoLibrary.sol";
+import {ILazyGasStation} from "./interfaces/ILazyGasStation.sol";
+import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
 
 /// @title  LazyLottoV2
 /// @notice On-chain lotto pools with Hedera VRF randomness, multi-roll batching, burn on entry, and transparent prize management.
-contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
-    using SafeCast for uint256;
-    using SafeCast for int256;
-    using SafeCast for int64;
-
+contract LazyLotto is ReentrancyGuard, Pausable {
     // --- DATA STRUCTURES ---
     struct PrizePackage {
         address token; // HTS token address (0 = HBAR)
@@ -56,12 +51,6 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         uint256 end;
         uint16 bonusBps;
     }
-    struct NFTFeeObject {
-        uint32 numerator;
-        uint32 denominator;
-        uint32 fallbackfee;
-        address account;
-    }
 
     /// --- CONSTANTS ---
     /// @notice Maximum possible threshold for winning (100%)
@@ -84,6 +73,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         uint256 _balance,
         uint256 _requestedAmount
     );
+    error AssociationFailed(address _tokenAddress);
     error BadParameters();
     error NotAdmin();
     error FungibleTokenTransferFailed();
@@ -99,7 +89,8 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
     );
     error NoTickets(uint256 _poolId, address _user);
     error NoPendingPrizes();
-    error FailedNFTMint();
+    error FailedNFTCreate();
+    error FailedNFTMintAndSend();
     error FailedNFTWipe();
     error PoolOnPause();
     error EntriesOutstanding(uint256 _outstanding, uint256 _tokensOutstanding);
@@ -129,7 +120,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         uint256 indexed poolId,
         address indexed tokenId,
         address indexed user,
-        int64 serialNumber,
+        int64[] serialNumber,
         bool mint
     );
     event TimeBonusAdded(uint256 start, uint256 end, uint16 bonusBps);
@@ -163,6 +154,10 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
     // mapping of poolId -> User -> entries in state
     mapping(uint256 => mapping(address => uint256)) public userEntries;
 
+    address public lazyToken;
+    ILazyGasStation public lazyGasStation;
+    ILazyDelegateRegistry public lazyDelegateRegistry;
+
     // --- MODIFIERS ---
     modifier onlyAdmin() {
         if (!_isAddressAdmin[msg.sender]) {
@@ -177,6 +172,18 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
 
         if (pools[id].closed) {
             revert PoolIsClosed();
+        }
+        _;
+    }
+
+    modifier refill() {
+        // check the $LAZY balance of the contract and refill if necessary
+        if (IERC20(lazyToken).balanceOf(address(this)) < 20) {
+            lazyGasStation.refillLazy(50);
+        }
+        // check the balance of the contract and refill if necessary
+        if (address(this).balance < 20) {
+            lazyGasStation.refillHbar(50);
         }
         _;
     }
@@ -197,7 +204,9 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             revert BadParameters();
         }
 
-        initContracts(_lazyToken, _lazyGasStation, _lazyDelegateRegistry);
+        lazyToken = _lazyToken;
+        lazyGasStation = ILazyGasStation(_lazyGasStation);
+        lazyDelegateRegistry = ILazyDelegateRegistry(_lazyDelegateRegistry);
         prng = IPrngSystemContract(_prng);
 
         burnPercentage = _burnPercentage;
@@ -301,7 +310,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         string memory _name,
         string memory _symbol,
         string memory _memo,
-        NFTFeeObject[] memory _royalties,
+        HTSLazyLottoLibrary.NFTFeeObject[] memory _royalties,
         string memory _ticketCID,
         string memory _winCID,
         uint256 _winRateTenThousandthsOfBps,
@@ -329,72 +338,23 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             _feeToken != lazyToken &&
             IERC20(_feeToken).balanceOf(address(this)) == 0
         ) {
-            tokenAssociate(_feeToken);
-        }
-
-        // now mint the token for the pool making the SC the treasury
-        IHederaTokenServiceLite.TokenKey[]
-            memory _keys = new IHederaTokenServiceLite.TokenKey[](1);
-
-        // make the contract the sole supply / wipe key
-        _keys[0] = getSingleKey(
-            KeyType.SUPPLY,
-            KeyType.WIPE,
-            KeyValueType.CONTRACT_ID,
-            address(this)
-        );
-
-        IHederaTokenServiceLite.HederaToken memory _token;
-        _token.name = _name;
-        _token.symbol = _symbol;
-        _token.memo = _memo;
-        _token.treasury = address(this);
-        _token.tokenKeys = _keys;
-        _token.tokenSupplyType = false;
-        // int64 max value
-        _token.maxSupply = 0x7FFFFFFFFFFFFFFF;
-
-        // create the expiry schedule for the token using ExpiryHelper
-        _token.expiry = createAutoRenewExpiry(
-            address(this),
-            defaultAutoRenewPeriod
-        );
-
-        IHederaTokenServiceLite.RoyaltyFee[]
-            memory _fees = new IHederaTokenServiceLite.RoyaltyFee[](
-                _royalties.length
-            );
-
-        uint256 _length = _royalties.length;
-        for (uint256 f = 0; f < _length; ) {
-            IHederaTokenServiceLite.RoyaltyFee memory _fee;
-            _fee.numerator = _royalties[f].numerator;
-            _fee.denominator = _royalties[f].denominator;
-            _fee.feeCollector = _royalties[f].account;
-
-            if (_royalties[f].fallbackfee != 0) {
-                _fee.amount = _royalties[f].fallbackfee;
-                _fee.useHbarsForPayment = true;
-            }
-
-            _fees[f] = _fee;
-
-            unchecked {
-                ++f;
+            bool success = HTSLazyLottoLibrary.tokenAssociate(_feeToken);
+            if (!success) {
+                revert AssociationFailed(_feeToken);
             }
         }
 
-        (
-            int256 responseCode,
-            address tokenAddress
-        ) = createNonFungibleTokenWithCustomFees(
-                _token,
-                new IHederaTokenServiceLite.FixedFee[](0),
-                _fees
+        (int256 responseCode, address tokenAddress) = HTSLazyLottoLibrary
+            .createTokenForNewPool(
+                address(this),
+                _name,
+                _symbol,
+                _memo,
+                _royalties
             );
 
-        if (responseCode != HederaResponseCodes.SUCCESS) {
-            revert FailedNFTMint();
+        if (responseCode != HTSLazyLottoLibrary.SUCCESS) {
+            revert FailedNFTCreate();
         }
 
         // now create the pool and add it to the list of pools;
@@ -422,33 +382,19 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         uint256 amount,
         address[] memory nftTokens,
         uint256[][] memory nftSerials
-    ) external payable validPool(poolId) {
+    ) external payable validPool(poolId) refill {
         if (nftTokens.length != nftSerials.length) {
             revert BadParameters();
         }
 
         _checkAndPullFungible(token, amount);
-
-        // check the NFTs are associated to the contract
-        uint256 _length = nftTokens.length;
-        for (uint256 i = 0; i < _length; ) {
-            if (IERC721(nftTokens[i]).balanceOf(address(this)) == 0) {
-                tokenAssociate(nftTokens[i]);
-            }
-
-            // now stake the NFTs for the prize
-            batchMoveNFTs(
-                TransferDirection.STAKING,
-                nftTokens[i],
-                nftSerials[i],
-                msg.sender,
-                false
-            );
-
-            unchecked {
-                ++i;
-            }
-        }
+        HTSLazyLottoLibrary.bulkTransfer(
+            HTSLazyLottoLibrary.TransferDirection.STAKING,
+            nftTokens,
+            nftSerials,
+            address(this),
+            msg.sender
+        );
 
         LottoPool storage p = pools[poolId];
         p.prizes.push(
@@ -541,7 +487,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
     function removePrizes(
         uint256 poolId,
         uint256 prizeIndex
-    ) external onlyAdmin {
+    ) external onlyAdmin refill {
         LottoPool storage p = pools[poolId];
         if (!p.closed) {
             revert PoolNotClosed();
@@ -574,21 +520,13 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         }
 
         // then transfer the NFTs back to the caller
-        uint256 _length = prize.nftTokens.length;
-        for (uint256 i = 0; i < _length; ) {
-            // now stake the NFTs for the prize
-            batchMoveNFTs(
-                TransferDirection.WITHDRAWAL,
-                prize.nftTokens[i],
-                prize.nftSerials[i],
-                msg.sender,
-                false
-            );
-
-            unchecked {
-                ++i;
-            }
-        }
+        HTSLazyLottoLibrary.bulkTransfer(
+            HTSLazyLottoLibrary.TransferDirection.WITHDRAWAL,
+            prize.nftTokens,
+            prize.nftSerials,
+            address(this),
+            msg.sender
+        );
     }
 
     // PAUSE
@@ -868,7 +806,10 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             ) {
                 // first check if the contract has a balance > 0 (else try to associate)
                 if (IERC20(tokenId).balanceOf(address(this)) == 0) {
-                    tokenAssociate(tokenId);
+                    bool success = HTSLazyLottoLibrary.tokenAssociate(tokenId);
+                    if (!success) {
+                        revert AssociationFailed(tokenId);
+                    }
                 }
 
                 // now try and move the token to the contract (needs an allowance to be in place)
@@ -925,25 +866,27 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 }
 
                 batchSerialsForBurn[inner] = serialNumbers[outer + inner];
-                emit TicketEvent(
-                    _poolId,
-                    p.poolTokenId,
-                    msg.sender,
-                    batchSerialsForBurn[inner],
-                    false
-                );
+
                 unchecked {
                     ++inner;
                 }
             }
 
-            int256 response = wipeTokenAccountNFT(
+            emit TicketEvent(
+                _poolId,
+                p.poolTokenId,
+                msg.sender,
+                batchSerialsForBurn,
+                false
+            );
+
+            int256 response = HTSLazyLottoLibrary.wipeTokenAccountNFT(
                 p.poolTokenId,
                 msg.sender,
                 batchSerialsForBurn
             );
 
-            if (response != HederaResponseCodes.SUCCESS) {
+            if (response != HTSLazyLottoLibrary.SUCCESS) {
                 revert FailedNFTWipe();
             }
 
@@ -1005,45 +948,32 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             address poolTokenIdForPrizeNFT = pools[prizeToConvert.poolId]
                 .poolTokenId;
 
-            // 1. Mint NFT to contract (treasury)
             (
-                int256 responseCodeMint,
-                ,
-                int64[] memory serialNumbersMinted
-            ) = mintToken(poolTokenIdForPrizeNFT, 0, metadata);
+                int32 responseCode,
+                int64[] memory mintedSerials
+            ) = HTSLazyLottoLibrary.mintAndTransferNFT(
+                    poolTokenIdForPrizeNFT,
+                    address(this),
+                    msg.sender,
+                    metadata
+                );
 
-            if (
-                responseCodeMint != HederaResponseCodes.SUCCESS ||
-                serialNumbersMinted.length == 0
-            ) {
-                revert FailedNFTMint();
-            }
-            int64 mintedSerial = serialNumbersMinted[0]; // Assuming one NFT per prize conversion
-
-            // 2. Transfer the minted NFT from contract to msg.sender
-            // Using TokenStaker.transferNFT which calls HTS.transferNFT
-            int256 responseCodeTransfer = transferNFT(
-                poolTokenIdForPrizeNFT,
-                address(this),
-                msg.sender,
-                mintedSerial
-            );
-            if (responseCodeTransfer != HederaResponseCodes.SUCCESS) {
-                revert NFTTransferFailed(TransferDirection.WITHDRAWAL);
+            if (responseCode != HTSLazyLottoLibrary.SUCCESS) {
+                revert FailedNFTMintAndSend();
             }
 
             // 3. Store in pendingNFTs mapping
             bytes32 nftKey = keccak256(
-                abi.encode(poolTokenIdForPrizeNFT, mintedSerial)
+                abi.encode(poolTokenIdForPrizeNFT, mintedSerials[0])
             );
             pendingNFTs[nftKey] = prizeToConvert;
-            mintedSerialsToUser[k] = mintedSerial;
+            mintedSerialsToUser[k] = mintedSerials[0];
 
             emit TicketEvent(
                 prizeToConvert.poolId,
                 poolTokenIdForPrizeNFT,
                 msg.sender,
-                mintedSerial,
+                mintedSerials,
                 true
             );
 
@@ -1064,6 +994,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
 
         prizeSlotsInPendingArray = new uint256[](numSerials);
         uint256 successfullyRedeemedCount = 0;
+        uint256 poolId = 0;
 
         for (uint256 i = 0; i < numSerials; ) {
             bytes32 nftKey = keccak256(
@@ -1080,6 +1011,7 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             delete pendingNFTs[nftKey]; // Remove from NFT voucher mapping
 
             prize.asNFT = false; // Mark as a regular pending prize again
+            poolId = prize.poolId;
             pending[msg.sender].push(prize);
             prizeSlotsInPendingArray[successfullyRedeemedCount] =
                 pending[msg.sender].length -
@@ -1089,30 +1021,24 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             // Wipe the NFT voucher from the sender's account
             int64[] memory singleSerialArray = new int64[](1);
             singleSerialArray[0] = serialNumbers[i];
-            int256 responseWipe = wipeTokenAccountNFT(
+            int256 responseWipe = HTSLazyLottoLibrary.wipeTokenAccountNFT(
                 poolTokenId,
                 msg.sender,
                 singleSerialArray
             );
 
-            if (responseWipe != HederaResponseCodes.SUCCESS) {
+            if (responseWipe != HTSLazyLottoLibrary.SUCCESS) {
                 // If wipe fails, the state might be inconsistent. Reverting is safest.
                 // Consider if this should revert all or just this specific redemption.
                 revert FailedNFTWipe();
             }
 
-            emit TicketEvent(
-                prize.poolId,
-                poolTokenId,
-                msg.sender,
-                serialNumbers[i],
-                false
-            );
-
             unchecked {
                 ++i;
             }
         }
+
+        emit TicketEvent(poolId, poolTokenId, msg.sender, serialNumbers, false);
 
         // If some redemptions failed and we chose to skip (not current logic), resize array.
         // For now, successfullyRedeemedCount should equal numSerials if no reverts.
@@ -1151,7 +1077,6 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
         // @dev: not adjusting the oustanding entries here, as the tickets are not being rolled yet
 
         // mint the NFTs for the user
-        mintedSerials = new int64[](_numTickets);
         for (uint256 outer = 0; outer < _numTickets; outer += NFT_BATCH_SIZE) {
             uint256 thisBatch = (_numTickets - outer) >= NFT_BATCH_SIZE
                 ? NFT_BATCH_SIZE
@@ -1168,47 +1093,27 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
                 }
             }
 
-            (int256 response, , int64[] memory serialNumbers) = mintToken(
-                p.poolTokenId,
-                0,
-                batchMetadataForMint
-            );
+            int32 responseCode;
 
-            if (response != HederaResponseCodes.SUCCESS) {
-                revert FailedNFTMint();
-            }
-
-            // transfer the token to the user
-            address[] memory senderList = new address[](serialNumbers.length);
-            address[] memory receiverList = new address[](serialNumbers.length);
-            uint256 length = serialNumbers.length;
-            for (uint256 s = 0; s < length; ) {
-                emit TicketEvent(
-                    _poolId,
+            (responseCode, mintedSerials) = HTSLazyLottoLibrary
+                .mintAndTransferNFT(
                     p.poolTokenId,
-                    msg.sender,
-                    serialNumbers[s],
-                    true
+                    address(this),
+                    _onBehalfOf,
+                    batchMetadataForMint
                 );
-                senderList[s] = address(this);
-                receiverList[s] = _onBehalfOf;
-                mintedSerials[s + outer] = serialNumbers[s];
 
-                unchecked {
-                    ++s;
-                }
+            if (responseCode != HTSLazyLottoLibrary.SUCCESS) {
+                revert FailedNFTMintAndSend();
             }
 
-            response = transferNFTs(
+            emit TicketEvent(
+                _poolId,
                 p.poolTokenId,
-                senderList,
-                receiverList,
-                serialNumbers
+                msg.sender,
+                mintedSerials,
+                true
             );
-
-            if (response != HederaResponseCodes.SUCCESS) {
-                revert NFTTransferFailed(TransferDirection.WITHDRAWAL);
-            }
         }
     }
 
@@ -1389,18 +1294,13 @@ contract LazyLotto is TokenStaker, ReentrancyGuard, Pausable {
             );
         }
 
-        // now claim the NFTs for the prize
-        uint256 _length = claimedPrize.prize.nftTokens.length;
-        for (uint256 i = 0; i < _length; i++) {
-            // use batchMoveNFTs to move the NFTs
-            batchMoveNFTs(
-                TransferDirection.WITHDRAWAL,
-                claimedPrize.prize.nftTokens[i],
-                claimedPrize.prize.nftSerials[i],
-                msg.sender,
-                false
-            );
-        }
+        HTSLazyLottoLibrary.bulkTransfer(
+            HTSLazyLottoLibrary.TransferDirection.WITHDRAWAL,
+            claimedPrize.prize.nftTokens,
+            claimedPrize.prize.nftSerials,
+            address(this),
+            msg.sender
+        );
     }
 
     /// --- Token Transfer Functions ---
