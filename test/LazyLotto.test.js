@@ -1,160 +1,3 @@
-// 4.3.8-4.3.20: Continue with setNFTBonus, setTimeBonus, removeTimeBonus, removeNFTBonus, etc.
-describe('4.3.8. setNFTBonus()', function () {
-	it('Test 4.3.8: Admin can set NFT bonus for a token', async function () {
-		// Example NFT token address and bonusBps
-		const nftToken = ZERO_ADDRESS; // Replace with actual NFT address in real test
-		const bonusBps = 1000;
-		const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(bonusBps);
-		const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
-		await tx.getReceipt(client);
-		// Verify (assume getter is nftBonuses)
-		const queryParams = new ContractFunctionParameters().addAddress(nftToken);
-		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'nftBonuses');
-		expectEqual(result.getUint256(0).toNumber(), bonusBps, 'nftBonuses bonusBps');
-	});
-
-	it('Test 4.3.9: Admin cannot set NFT bonus > 10000', async function () {
-		const nftToken = ZERO_ADDRESS;
-		const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(10001);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
-			expectFalse(true, 'Should not set NFT bonus > 10000');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setNFTBonus bonusBps > 10000 revert');
-		}
-	});
-
-	it('Test 4.3.10: Non-admin cannot set NFT bonus', async function () {
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(aliceId, aliceKey);
-		const nftToken = ZERO_ADDRESS;
-		const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(100);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
-			expectFalse(true, 'Non-admin should not set NFT bonus');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setNFTBonus non-admin revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
-});
-
-describe('4.3.11. removeNFTBonus()', function () {
-	it('Test 4.3.11: Admin can remove NFT bonus for a token', async function () {
-		const nftToken = ZERO_ADDRESS;
-		// First set a bonus
-		let params = new ContractFunctionParameters().addAddress(nftToken).addUint256(500);
-		let tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
-		await tx.getReceipt(client);
-		// Now remove
-		params = new ContractFunctionParameters().addAddress(nftToken);
-		tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeNFTBonus', 100000);
-		await tx.getReceipt(client);
-		// Verify (assume getter is nftBonuses)
-		const queryParams = new ContractFunctionParameters().addAddress(nftToken);
-		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'nftBonuses');
-		expectEqual(result.getUint256(0).toNumber(), 0, 'nftBonuses after removal');
-	});
-
-	it('Test 4.3.12: Non-admin cannot remove NFT bonus', async function () {
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(aliceId, aliceKey);
-		const nftToken = ZERO_ADDRESS;
-		const params = new ContractFunctionParameters().addAddress(nftToken);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeNFTBonus', 100000);
-			expectFalse(true, 'Non-admin should not remove NFT bonus');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'removeNFTBonus non-admin revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
-});
-
-describe('4.3.13. setTimeBonus()', function () {
-	it('Test 4.3.13: Admin can set time bonus', async function () {
-		const start = Math.floor(Date.now() / 1000);
-		const end = start + 3600;
-		const bonusBps = 200;
-		const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(bonusBps);
-		const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
-		await tx.getReceipt(client);
-		// Verify (assume getter is timeBonuses)
-		const queryParams = new ContractFunctionParameters().addUint256(start).addUint256(end);
-		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'timeBonuses');
-		expectEqual(result.getUint256(0).toNumber(), bonusBps, 'timeBonuses bonusBps');
-	});
-
-	it('Test 4.3.14: Admin cannot set time bonus > 10000', async function () {
-		const start = Math.floor(Date.now() / 1000);
-		const end = start + 3600;
-		const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(10001);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
-			expectFalse(true, 'Should not set time bonus > 10000');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setTimeBonus bonusBps > 10000 revert');
-		}
-	});
-
-	it('Test 4.3.15: Non-admin cannot set time bonus', async function () {
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(aliceId, aliceKey);
-		const start = Math.floor(Date.now() / 1000);
-		const end = start + 3600;
-		const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(100);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
-			expectFalse(true, 'Non-admin should not set time bonus');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setTimeBonus non-admin revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
-});
-
-describe('4.3.16. removeTimeBonus()', function () {
-	it('Test 4.3.16: Admin can remove time bonus', async function () {
-		const start = Math.floor(Date.now() / 1000);
-		const end = start + 3600;
-		// First set a bonus
-		let params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(100);
-		let tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
-		await tx.getReceipt(client);
-		// Now remove
-		params = new ContractFunctionParameters().addUint256(start).addUint256(end);
-		tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeTimeBonus', 100000);
-		await tx.getReceipt(client);
-		// Verify (assume getter is timeBonuses)
-		const queryParams = new ContractFunctionParameters().addUint256(start).addUint256(end);
-		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'timeBonuses');
-		expectEqual(result.getUint256(0).toNumber(), 0, 'timeBonuses after removal');
-	});
-
-	it('Test 4.3.17: Non-admin cannot remove time bonus', async function () {
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(aliceId, aliceKey);
-		const start = Math.floor(Date.now() / 1000);
-		const end = start + 3600;
-		const params = new ContractFunctionParameters().addUint256(start).addUint256(end);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeTimeBonus', 100000);
-			expectFalse(true, 'Non-admin should not remove time bonus');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'removeTimeBonus non-admin revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
-});
-
 const {
 	Client,
 	AccountId,
@@ -1004,7 +847,161 @@ describe('4.3. Bonus Configuration', function () {
 	});
 
 	// 4.3.8-4.3.20: Continue with setNFTBonus, setTimeBonus, removeTimeBonus, removeNFTBonus, etc.
-	// Use expectEqual, expectFalse, expectInclude, etc. for all assertions and error checks.
+	describe('4.3.8. setNFTBonus()', function () {
+		it('Test 4.3.8: Admin can set NFT bonus for a token', async function () {
+			// Example NFT token address and bonusBps
+			const nftToken = ZERO_ADDRESS; // Replace with actual NFT address in real test
+			const bonusBps = 1000;
+			const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(bonusBps);
+			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
+			await tx.getReceipt(client);
+			// Verify (assume getter is nftBonuses)
+			const queryParams = new ContractFunctionParameters().addAddress(nftToken);
+			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'nftBonuses');
+			expectEqual(result.getUint256(0).toNumber(), bonusBps, 'nftBonuses bonusBps');
+		});
+
+		it('Test 4.3.9: Admin cannot set NFT bonus > 10000', async function () {
+			const nftToken = ZERO_ADDRESS;
+			const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(10001);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
+				expectFalse(true, 'Should not set NFT bonus > 10000');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setNFTBonus bonusBps > 10000 revert');
+			}
+		});
+
+		it('Test 4.3.10: Non-admin cannot set NFT bonus', async function () {
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(aliceId, aliceKey);
+			const nftToken = ZERO_ADDRESS;
+			const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(100);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
+				expectFalse(true, 'Non-admin should not set NFT bonus');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setNFTBonus non-admin revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+	});
+
+	describe('4.3.11. removeNFTBonus()', function () {
+		it('Test 4.3.11: Admin can remove NFT bonus for a token', async function () {
+			const nftToken = ZERO_ADDRESS;
+			// First set a bonus
+			let params = new ContractFunctionParameters().addAddress(nftToken).addUint256(500);
+			let tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
+			await tx.getReceipt(client);
+			// Now remove
+			params = new ContractFunctionParameters().addAddress(nftToken);
+			tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeNFTBonus', 100000);
+			await tx.getReceipt(client);
+			// Verify (assume getter is nftBonuses)
+			const queryParams = new ContractFunctionParameters().addAddress(nftToken);
+			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'nftBonuses');
+			expectEqual(result.getUint256(0).toNumber(), 0, 'nftBonuses after removal');
+		});
+
+		it('Test 4.3.12: Non-admin cannot remove NFT bonus', async function () {
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(aliceId, aliceKey);
+			const nftToken = ZERO_ADDRESS;
+			const params = new ContractFunctionParameters().addAddress(nftToken);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeNFTBonus', 100000);
+				expectFalse(true, 'Non-admin should not remove NFT bonus');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'removeNFTBonus non-admin revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+	});
+
+	describe('4.3.13. setTimeBonus()', function () {
+		it('Test 4.3.13: Admin can set time bonus', async function () {
+			const start = Math.floor(Date.now() / 1000);
+			const end = start + 3600;
+			const bonusBps = 200;
+			const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(bonusBps);
+			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
+			await tx.getReceipt(client);
+			// Verify (assume getter is timeBonuses)
+			const queryParams = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'timeBonuses');
+			expectEqual(result.getUint256(0).toNumber(), bonusBps, 'timeBonuses bonusBps');
+		});
+
+		it('Test 4.3.14: Admin cannot set time bonus > 10000', async function () {
+			const start = Math.floor(Date.now() / 1000);
+			const end = start + 3600;
+			const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(10001);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
+				expectFalse(true, 'Should not set time bonus > 10000');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setTimeBonus bonusBps > 10000 revert');
+			}
+		});
+
+		it('Test 4.3.15: Non-admin cannot set time bonus', async function () {
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(aliceId, aliceKey);
+			const start = Math.floor(Date.now() / 1000);
+			const end = start + 3600;
+			const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(100);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
+				expectFalse(true, 'Non-admin should not set time bonus');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'setTimeBonus non-admin revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+	});
+
+	describe('4.3.16. removeTimeBonus()', function () {
+		it('Test 4.3.16: Admin can remove time bonus', async function () {
+			const start = Math.floor(Date.now() / 1000);
+			const end = start + 3600;
+			// First set a bonus
+			let params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(100);
+			let tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
+			await tx.getReceipt(client);
+			// Now remove
+			params = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeTimeBonus', 100000);
+			await tx.getReceipt(client);
+			// Verify (assume getter is timeBonuses)
+			const queryParams = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'timeBonuses');
+			expectEqual(result.getUint256(0).toNumber(), 0, 'timeBonuses after removal');
+		});
+
+		it('Test 4.3.17: Non-admin cannot remove time bonus', async function () {
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(aliceId, aliceKey);
+			const start = Math.floor(Date.now() / 1000);
+			const end = start + 3600;
+			const params = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeTimeBonus', 100000);
+				expectFalse(true, 'Non-admin should not remove time bonus');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'removeTimeBonus non-admin revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+	});
 });
 
 // --- 4.4. Pool Prize Management ---
