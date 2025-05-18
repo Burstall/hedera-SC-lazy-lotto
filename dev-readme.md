@@ -1,0 +1,406 @@
+# LazyLotto.sol Comprehensive Testing Plan
+
+## 1. Introduction
+This document outlines the testing strategy for the `LazyLotto.sol` smart contract. The goal is to ensure all functionalities operate as expected, including edge cases and security considerations.
+
+## 2. Test Environment Setup
+-   Hedera Local Node or Testnet.
+-   Deployment scripts for `LazyLotto` and its dependencies (`LazyGasStation`, `LazyDelegateRegistry`, mock `PrngSystemContract`, mock ERC20/ERC721 tokens).
+-   Test accounts with HBAR, $LAZY tokens, and various NFTs.
+
+## 3. General Test Considerations
+-   **Gas Consumption:** Monitor gas usage for key functions.
+-   **Event Emission:** Verify correct events are emitted with accurate parameters for all state-changing operations.
+-   **Reentrancy Guards:** Test `nonReentrant` modifiers on relevant functions.
+-   **Pausable Functionality:** Ensure `whenNotPaused` and `Pausable` contract features work correctly.
+-   **Role-Based Access Control:** Thoroughly test `onlyAdmin` modifier.
+-   **Input Validation:** Test for `BadParameters` errors with invalid inputs for all functions.
+-   **External Calls:** Mock or use deployed instances of external contracts (`IPrngSystemContract`, `HTSLazyLottoLibrary`, `ILazyGasStation`, `ILazyDelegateRegistry`) and verify interactions.
+-   **`refill` Modifier:** Test scenarios where the contract needs $LAZY or HBAR refills.
+
+## 4. Detailed Test Cases
+
+### 4.1. Contract Deployment and Initialization
+-   **Test 4.1.1:** Deploy with valid parameters.
+    -   Verify: `lazyToken`, `lazyGasStation`, `lazyDelegateRegistry`, `prng`, `burnPercentage` are set.
+    -   Verify: Deployer is set as the first admin, `_adminCount` is 1.
+    -   Verify: `AdminAdded` event emitted for deployer.
+-   **Test 4.1.2:** Deploy with zero address for `_lazyToken`.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.1.3:** Deploy with zero address for `_lazyGasStation`.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.1.4:** Deploy with zero address for `_lazyDelegateRegistry`.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.1.5:** Deploy with zero address for `_prng`.
+    -   Verify: Reverts with `BadParameters`.
+
+### 4.2. Admin Management (`onlyAdmin` modifier)
+-   **Test 4.2.1:** `addAdmin()` by current admin.
+    -   Verify: New admin added, `_adminCount` increments, `AdminAdded` event.
+-   **Test 4.2.2:** `addAdmin()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.2.3:** `addAdmin()` with zero address.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.2.4:** `addAdmin()` with an existing admin.
+    -   Verify: State remains unchanged, no event.
+-   **Test 4.2.5:** `removeAdmin()` by current admin (not last admin).
+    -   Verify: Admin removed, `_adminCount` decrements, `AdminRemoved` event.
+-   **Test 4.2.6:** `removeAdmin()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.2.7:** `removeAdmin()` self when multiple admins exist.
+    -   Verify: Admin removed, `_adminCount` decrements, `AdminRemoved` event.
+-   **Test 4.2.8:** `removeAdmin()` last admin.
+    -   Verify: Reverts with `LastAdminError`.
+-   **Test 4.2.9:** `removeAdmin()` non-existent admin address.
+    -   Verify: Reverts with `NotAdmin` (as `_isAddressAdmin[a]` will be false).
+-   **Test 4.2.10:** `removeAdmin()` with zero address.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.2.11:** `isAdmin()` view function.
+    -   Verify: Returns true for admin, false for non-admin.
+
+### 4.3. Bonus Configuration (`onlyAdmin` modifier)
+-   **Test 4.3.1:** `setBurnPercentage()` by admin with valid percentage (0-100).
+    -   Verify: `burnPercentage` updated.
+-   **Test 4.3.2:** `setBurnPercentage()` by admin with invalid percentage (>100).
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.3:** `setBurnPercentage()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.3.4:** `setLazyBalanceBonus()` by admin with valid parameters.
+    -   Verify: `lazyBalanceThreshold`, `lazyBalanceBonusBps` updated, `LazyBalanceBonusSet` event.
+-   **Test 4.3.5:** `setLazyBalanceBonus()` by admin with zero threshold.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.6:** `setLazyBalanceBonus()` by admin with bonusBps > 10000.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.7:** `setLazyBalanceBonus()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.3.8:** `setNFTBonus()` by admin with valid parameters.
+    -   Verify: Token added to `nftBonusTokens`, `nftBonusBps` mapping updated, `NFTBonusSet` event.
+-   **Test 4.3.9:** `setNFTBonus()` by admin with zero address token.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.10:** `setNFTBonus()` by admin with bonusBps > 10000.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.11:** `setNFTBonus()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.3.12:** `setTimeBonus()` by admin with valid parameters.
+    -   Verify: `TimeWindow` added to `timeBonuses`, `TimeBonusAdded` event.
+-   **Test 4.3.13:** `setTimeBonus()` by admin with zero start/end or bonusBps > 10000.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.14:** `setTimeBonus()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.3.15:** `removeTimeBonus()` by admin with valid index.
+    -   Verify: `TimeWindow` removed (swap and pop).
+-   **Test 4.3.16:** `removeTimeBonus()` by admin with invalid index.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.17:** `removeTimeBonus()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.3.18:** `removeNFTBonus()` by admin with valid index.
+    -   Verify: Token removed from `nftBonusTokens` and `nftBonusBps` mapping (swap and pop).
+-   **Test 4.3.19:** `removeNFTBonus()` by admin with invalid index.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.3.20:** `removeNFTBonus()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+
+### 4.4. Pool Management (`onlyAdmin` for creation/control, `validPool` modifier)
+-   **Test 4.4.1:** `createPool()` by admin with valid parameters.
+    -   Verify: Pool created, `poolTokenId` (NFT) minted via `HTSLazyLottoLibrary.createTokenForNewPool`.
+    -   Verify: `pools` array updated, `PoolCreated` event.
+    -   Verify: Fee token associated if specified and not $LAZY.
+-   **Test 4.4.2:** `createPool()` with empty name/symbol/memo/ticketCID/winCID.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.3:** `createPool()` with memo too long.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.4:** `createPool()` with too many royalties.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.5:** `createPool()` with `_winRateTenThousandthsOfBps` > `MAX_WIN_RATE_THRESHOLD`.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.6:** `createPool()` with `_entryFee` == 0.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.7:** `createPool()` where `HTSLazyLottoLibrary.createTokenForNewPool` fails.
+    -   Verify: Reverts with `FailedNFTCreate`.
+-   **Test 4.4.8:** `createPool()` where `HTSLazyLottoLibrary.tokenAssociate` fails for fee token.
+    -   Verify: Reverts with `AssociationFailed`.
+-   **Test 4.4.9:** `createPool()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.4.10:** `addPrizePackage()` to a valid, open pool (HBAR prize).
+    -   Verify: Prize added to `pools[poolId].prizes`. `ftTokensForPrizes[address(0)]` updated.
+    -   Verify: HBAR transferred from msg.sender to contract.
+-   **Test 4.4.11:** `addPrizePackage()` with FT prize (not $LAZY).
+    -   Verify: Prize added, `ftTokensForPrizes[token]` updated.
+    -   Verify: FT transferred from msg.sender to contract via `_checkAndPullFungible`.
+-   **Test 4.4.12:** `addPrizePackage()` with $LAZY prize.
+    -   Verify: Prize added, `ftTokensForPrizes[lazyToken]` updated.
+    -   Verify: $LAZY drawn from msg.sender via `lazyGasStation.drawLazyFrom`.
+-   **Test 4.4.13:** `addPrizePackage()` with NFT prizes.
+    -   Verify: Prize added. NFTs transferred from msg.sender to contract via `HTSLazyLottoLibrary.bulkTransfer`.
+-   **Test 4.4.14:** `addPrizePackage()` with mismatched `nftTokens` and `nftSerials` length.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.15:** `addPrizePackage()` to non-existent pool.
+    -   Verify: Reverts with `LottoPoolNotFound`.
+-   **Test 4.4.16:** `addPrizePackage()` to closed pool.
+    -   Verify: Reverts with `PoolIsClosed`.
+-   **Test 4.4.17:** `addPrizePackage()` when msg.sender lacks HBAR/FT/NFTs.
+    -   Verify: Reverts (specific error depends on helper library or token contract).
+-   **Test 4.4.18:** `addMultipleFungiblePrizes()` to a valid, open pool.
+    -   Verify: Multiple prizes added, `ftTokensForPrizes` updated correctly.
+    -   Verify: Total FT amount transferred.
+-   **Test 4.4.19:** `addMultipleFungiblePrizes()` with empty `amounts` array.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.20:** `pausePool()` by admin on an active pool.
+    -   Verify: `pools[poolId].paused` is true, `PoolPaused` event.
+-   **Test 4.4.21:** `pausePool()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.4.22:** `pausePool()` on already paused pool.
+    -   Verify: State unchanged.
+-   **Test 4.4.23:** `unpausePool()` by admin on a paused pool.
+    -   Verify: `pools[poolId].paused` is false, `PoolOpened` event.
+-   **Test 4.4.24:** `unpausePool()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.4.25:** `unpausePool()` on an active pool.
+    -   Verify: State unchanged.
+-   **Test 4.4.26:** `closePool()` by admin on an open pool with no outstanding entries/tokens.
+    -   Verify: `pools[poolId].closed` is true, `PoolClosed` event.
+-   **Test 4.4.27:** `closePool()` with outstanding entries.
+    -   Verify: Reverts with `EntriesOutstanding`.
+-   **Test 4.4.28:** `closePool()` with outstanding pool tokens (NFTs minted for entries).
+    -   Verify: Reverts with `EntriesOutstanding`.
+-   **Test 4.4.29:** `closePool()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.4.30:** `removePrizes()` by admin from a closed pool (HBAR, FT, NFT prizes).
+    -   Verify: Prize removed from `p.prizes`.
+    -   Verify: `ftTokensForPrizes` updated.
+    -   Verify: HBAR/$LAZY/FT/NFTs transferred back to msg.sender.
+-   **Test 4.4.31:** `removePrizes()` from a pool that is not closed.
+    -   Verify: Reverts with `PoolNotClosed`.
+-   **Test 4.4.32:** `removePrizes()` with invalid prizeIndex.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.4.33:** `removePrizes()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.4.34:** `totalPools()` view function.
+    -   Verify: Returns correct number of pools.
+-   **Test 4.4.35:** `getPoolDetails()` for existing pool.
+    -   Verify: Returns correct `LottoPool` struct.
+-   **Test 4.4.36:** `getPoolDetails()` for non-existent pool.
+    -   Verify: Reverts with `LottoPoolNotFound`.
+-   **Test 4.4.37:** `validPool` modifier: Accessing a non-existent pool ID.
+    -   Verify: Reverts with `LottoPoolNotFound`.
+-   **Test 4.4.38:** `validPool` modifier: Accessing a closed pool.
+    -   Verify: Reverts with `PoolIsClosed`.
+
+### 4.5. Pausable Contract (`whenNotPaused` modifier)
+-   **Test 4.5.1:** `pause()` by admin.
+    -   Verify: Contract is paused, `Paused` event (from OpenZeppelin).
+-   **Test 4.5.2:** `pause()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.5.3:** `unpause()` by admin.
+    -   Verify: Contract is unpaused, `Unpaused` event.
+-   **Test 4.5.4:** `unpause()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.5.5:** Call a `whenNotPaused` function (e.g., `buyEntry`) when contract is paused.
+    -   Verify: Reverts (with OpenZeppelin's `Pausable: paused` error).
+-   **Test 4.5.6:** Call a `whenNotPaused` function when pool is paused but contract is not.
+    -   Verify: Reverts with `PoolOnPause` (from `_buyEntry` internal check `if (pools[poolId].paused)`).
+
+### 4.6. User Entry & Rolling
+-   **Test 4.6.1:** `buyEntry()` with HBAR fee.
+    -   Verify: `msg.value` matches `entryFee * ticketCount`.
+    -   Verify: `userEntries` updated, `outstandingEntries` in pool updated.
+    -   Verify: `EntryPurchased` event.
+    -   Verify: Correct HBAR amount taken, burn applied if `feeToken` is address(0).
+-   **Test 4.6.2:** `buyEntry()` with FT fee (e.g., $LAZY or other FT).
+    -   Verify: User has approved contract for FT.
+    -   Verify: FT transferred from user to contract (or LGS for $LAZY).
+    -   Verify: `userEntries` updated, `outstandingEntries` in pool updated.
+    -   Verify: `EntryPurchased` event.
+    -   Verify: Burn applied if `feeToken` is $LAZY.
+-   **Test 4.6.3:** `buyEntry()` with insufficient HBAR (`msg.value`).
+    -   Verify: Reverts with `NotEnoughHbar`.
+-   **Test 4.6.4:** `buyEntry()` with insufficient FT allowance/balance.
+    -   Verify: Reverts (e.g., `NotEnoughFungible` or ERC20 error).
+-   **Test 4.6.5:** `buyEntry()` with `ticketCount` = 0.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.6.6:** `buyEntry()` for a paused pool.
+    -   Verify: Reverts with `PoolOnPause`.
+-   **Test 4.6.7:** `buyEntry()` for a closed pool.
+    -   Verify: Reverts with `PoolIsClosed` (via `validPool`).
+-   **Test 4.6.8:** `buyAndRollEntry()`: successful case.
+    -   Verify: Combines `buyEntry` and `_roll` logic. `EntryPurchased`, `Rolled`, potentially `PrizeClaimed` (if auto-claim or prize added to pending).
+-   **Test 4.6.9:** `buyAndRedeemEntry()`: successful case.
+    -   Verify: Combines `buyEntry` and `_redeemEntriesToNFT` logic. `EntryPurchased`, `TicketEvent` (mint=true).
+    -   Verify: Pool NFTs minted to user.
+-   **Test 4.6.10:** `adminBuyEntry()` by admin.
+    -   Verify: Similar to `buyAndRedeemEntry` but for `onBehalfOf` user.
+    -   Verify: Pool NFTs minted to `onBehalfOf` user.
+-   **Test 4.6.11:** `adminBuyEntry()` by non-admin.
+    -   Verify: Reverts with `NotAdmin`.
+-   **Test 4.6.12:** `rollAll()` when user has entries.
+    -   Verify: All `userEntries[poolId][msg.sender]` are rolled.
+    -   Verify: `userEntries` becomes 0, `outstandingEntries` in pool decreases.
+    -   Verify: `Rolled` events for each roll.
+    -   Verify: Prizes added to `pending[msg.sender]` for wins.
+-   **Test 4.6.13:** `rollAll()` when user has no entries.
+    -   Verify: Reverts with `NoTickets`.
+-   **Test 4.6.14:** `rollBatch()` with valid `numberToRoll`.
+    -   Verify: Specified number of entries rolled. `userEntries` and `outstandingEntries` updated.
+-   **Test 4.6.15:** `rollBatch()` with `numberToRoll` = 0.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.6.16:** `rollBatch()` with `numberToRoll` > user's entries.
+    -   Verify: Reverts with `NotEnoughTickets`.
+-   **Test 4.6.17:** `rollWithNFT()` with valid serial numbers (user owns them, not winning tickets).
+    -   Verify: NFTs are wiped (via `HTSLazyLottoLibrary.wipeBurnBatchNFT`). `TicketEvent` (mint=false).
+    -   Verify: `userEntries` credited, then rolled.
+-   **Test 4.6.18:** `rollWithNFT()` with empty `serialNumbers` array.
+    -   Verify: Reverts with `BadParameters`.
+-   **Test 4.6.19:** `rollWithNFT()` with serial numbers of already winning tickets.
+    -   Verify: Reverts with `AlreadyWinningTicket` (from `_redeemEntriesFromNFT`).
+-   **Test 4.6.20:** `rollWithNFT()` where NFT wipe fails.
+    -   Verify: Reverts with `FailedNFTWipe`.
+-   **Test 4.6.21:** Rolling mechanism (`_roll`):
+    -   Mock `prng.getRandomFeed()` to return specific values to test win/loss scenarios based on `winRateThousandthsOfBps` and `calculateBoost`.
+    -   Test win scenario: `randomNumber` <= `winRate + boost`.
+        -   Verify: Prize selected from `p.prizes` (test different prize indices).
+        -   Verify: `pending[msg.sender]` updated.
+        -   Verify: `Rolled` event with `won = true`.
+    -   Test loss scenario: `randomNumber` > `winRate + boost`.
+        -   Verify: `Rolled` event with `won = false`.
+    -   Test scenario with no prizes available in pool.
+        -   Verify: Reverts with `NoPrizesAvailable` if a win occurs but no prizes.
+-   **Test 4.6.22:** `_redeemEntriesToNFT()` internal logic (via `buyAndRedeemEntry` or `adminBuyEntry`).
+    -   Verify: `HTSLazyLottoLibrary.mintBatchNFT` called correctly.
+    -   Verify: `TicketEvent` emitted for each minted NFT.
+    -   Verify: `userEntries` decremented, `outstandingEntries` in pool decremented.
+-   **Test 4.6.23:** `_redeemEntriesToNFT()` when minting fails.
+    -   Verify: Reverts with `FailedNFTMintAndSend`.
+-   **Test 4.6.24:** `_redeemEntriesToNFT()` when user has insufficient entries.
+    -   Verify: Reverts with `NotEnoughTickets`.
+
+### 4.7. Prize Claiming & Management
+-   **Test 4.7.1:** `redeemPrizeToNFT()` for a pending FT/HBAR prize.
+    -   Verify: `PendingPrize` removed from `pending[msg.sender]`.
+    -   Verify: New NFT minted (via `HTSLazyLottoLibrary.createAndMintPrizeNFT`) representing the prize.
+    -   Verify: `pendingNFTs` mapping updated with the new NFT serial.
+    -   Verify: `TicketEvent` (mint=true) for the prize NFT.
+-   **Test 4.7.2:** `redeemPrizeToNFT()` for a pending NFT prize.
+    -   Verify: Similar to FT/HBAR, but the prize NFT itself is used (check logic for `asNFT`).
+-   **Test 4.7.3:** `redeemPrizeToNFT()` with invalid indices.
+    -   Verify: Reverts (likely `BadParameters` or array out-of-bounds).
+-   **Test 4.7.4:** `redeemPrizeToNFT()` when user has no pending prizes.
+    -   Verify: Reverts with `NoPendingPrizes`.
+-   **Test 4.7.5:** `claimPrizeFromNFT()` with valid prize NFT serials.
+    -   Verify: Prize NFT is wiped (via `HTSLazyLottoLibrary.wipeBurnBatchNFT`).
+    -   Verify: `pendingNFTs` entry cleared.
+    -   Verify: Original prize (HBAR/FT/NFT) transferred to user.
+    -   Verify: `PrizeClaimed` event.
+-   **Test 4.7.6:** `claimPrizeFromNFT()` with non-prize NFT serials.
+    -   Verify: Reverts (e.g., if `pendingNFTs` lookup fails).
+-   **Test 4.7.7:** `claimPrize()` for a pending HBAR prize.
+    -   Verify: `PendingPrize` removed from `pending[msg.sender]`.
+    -   Verify: HBAR transferred to user. `PrizeClaimed` event.
+-   **Test 4.7.8:** `claimPrize()` for a pending FT prize (not $LAZY).
+    -   Verify: FT transferred to user. `ftTokensForPrizes` updated.
+-   **Test 4.7.9:** `claimPrize()` for a pending $LAZY prize.
+    -   Verify: $LAZY paid out via `lazyGasStation.payoutLazy`. `ftTokensForPrizes` updated.
+-   **Test 4.7.10:** `claimPrize()` for a pending NFT prize.
+    -   Verify: NFTs transferred to user via `HTSLazyLottoLibrary.bulkTransfer`.
+-   **Test 4.7.11:** `claimPrize()` with invalid `pkgIdx`.
+    -   Verify: Reverts (e.g., `BadParameters` or array out-of-bounds).
+-   **Test 4.7.12:** `claimPrize()` when user has no pending prizes at that index.
+    -   Verify: Reverts.
+-   **Test 4.7.13:** `claimAllPrizes()` when user has multiple pending prizes of different types.
+    -   Verify: All prizes claimed successfully.
+-   **Test 4.7.14:** `claimAllPrizes()` when user has no pending prizes.
+    -   Verify: Reverts with `NoPendingPrizes`.
+-   **Test 4.7.15:** `_claimPrize()` internal logic: HBAR transfer failure.
+    -   Verify: Reverts (Address.sendValue failure).
+-   **Test 4.7.16:** `_claimPrize()` internal logic: FT transfer failure.
+    -   Verify: Reverts (IERC20 transfer failure).
+-   **Test 4.7.17:** `_claimPrize()` internal logic: NFT transfer failure.
+    -   Verify: Reverts (HTSLazyLottoLibrary.bulkTransfer failure).
+
+### 4.8. View Functions
+-   **Test 4.8.1:** `getUsersEntries(poolId, user)`.
+    -   Verify: Returns correct entry count for a user in a specific pool.
+-   **Test 4.8.2:** `getUserEntries(user)`.
+    -   Verify: Returns an array with correct entry counts for the user across all pools.
+-   **Test 4.8.3:** `getPendingPrizes(user)`.
+    -   Verify: Returns correct array of `PendingPrize` structs for a user.
+-   **Test 4.8.4:** `getPendingPrize(user, index)`.
+    -   Verify: Returns correct `PendingPrize` or reverts with `BadParameters` if index is out of bounds.
+-   **Test 4.8.5:** `getPendingPrizes(tokenId, serialNumber)` (for NFT prizes).
+    -   Verify: Returns correct `PendingPrize` struct for a prize NFT.
+-   **Test 4.8.6:** `totalTimeBonuses()`.
+    -   Verify: Returns correct count of active time bonuses.
+-   **Test 4.8.7:** `totalNFTBonusTokens()`.
+    -   Verify: Returns correct count of NFT bonus tokens.
+-   **Test 4.8.8:** `calculateBoost(user)`:
+    -   No active time bonuses, no NFT bonuses, user $LAZY balance below threshold. Verify: boost = 0.
+    -   Active time bonus. Verify: boost reflects `timeBonuses[i].bonusBps`.
+    -   User holds a bonus NFT. Verify: boost reflects `nftBonusBps[tkn]`. (Requires mocking `IERC721(tkn).balanceOf(_user)`).
+    -   User $LAZY balance >= threshold. Verify: boost reflects `lazyBalanceBonusBps`.
+    -   Combinations of all above bonuses. Verify: boost is cumulative and scaled correctly.
+    -   Time bonus window expired. Verify: bonus not applied.
+    -   User does not hold bonus NFT. Verify: bonus not applied.
+
+### 4.9. Error Handling
+-   Systematically trigger each custom error:
+    -   `LottoPoolNotFound`
+    -   `BalanceError` (if applicable, might be superseded by more specific errors)
+    -   `AssociationFailed`
+    -   `BadParameters` (already covered in many tests)
+    -   `NotAdmin` (already covered)
+    -   `FungibleTokenTransferFailed` (if `_checkAndPullFungible` or prize payout fails)
+    -   `LastAdminError` (already covered)
+    -   `PoolIsClosed` (already covered)
+    -   `PoolNotClosed` (already covered)
+    -   `NotEnoughHbar`
+    -   `NotEnoughFungible`
+    -   `NotEnoughTickets`
+    -   `NoTickets`
+    -   `NoPendingPrizes`
+    -   `FailedNFTCreate`
+    -   `FailedNFTMintAndSend`
+    -   `FailedNFTWipe`
+    -   `PoolOnPause`
+    -   `EntriesOutstanding`
+    -   `NoPrizesAvailable`
+    -   `AlreadyWinningTicket`
+
+### 4.10. `refill` Modifier
+-   **Test 4.10.1:** Call a function with `refill` when contract $LAZY balance is low.
+    -   Verify: `lazyGasStation.refillLazy()` is called.
+-   **Test 4.10.2:** Call a function with `refill` when contract HBAR balance is low.
+    -   Verify: `lazyGasStation.refillHbar()` is called.
+-   **Test 4.10.3:** Call a function with `refill` when balances are sufficient.
+    -   Verify: No refill calls are made.
+
+### 4.11. Miscellaneous
+-   **Test 4.11.1:** `_checkAndPullFungible` internal logic:
+    -   HBAR: `msg.value` vs `amount`.
+    -   $LAZY: `lazyGasStation.drawLazyFrom`.
+    -   Other FT: `IERC20.transferFrom`.
+    -   Insufficient balance/allowance for FTs.
+    -   `ftTokensForPrizes` accounting.
+-   **Test 4.11.2:** `NFT_BATCH_SIZE` usage in loops (e.g., `_redeemEntriesFromNFT`). Test with number of items <, =, > `NFT_BATCH_SIZE`.
+
+## 5. Security Considerations (Specific to this contract)
+-   **Reentrancy:** Covered by `ReentrancyGuard` and `nonReentrant` modifier. Test attempts to re-enter critical functions.
+-   **Oracle Manipulation (PRNG):** The `IPrngSystemContract` is external. Assume it's secure for these tests, but note dependency.
+-   **Integer Overflow/Underflow:** Solidity 0.8.x provides some protection. Review calculations, especially around loops and subtractions (e.g., `userEntries`, `outstandingEntries`, prize indices). `unchecked` blocks should be scrutinized.
+-   **Access Control:** Thoroughly test `onlyAdmin` and other permissioned logic.
+-   **Denial of Service:**
+    -   Gas limits on loops (e.g., `rollAll` with huge number of entries, `claimAllPrizes` with many prizes).
+    -   Array manipulation (e.g., `removeTimeBonus`, `removeNFTBonus`, `removePrizes` using swap and pop - generally efficient).
+-   **Timestamp Dependence:** `calculateBoost` uses `block.timestamp`. This is generally acceptable for time windows but be aware of miner influence (less of an issue on Hedera).
+-   **External Call Failures:** Ensure the contract handles failures from `HTSLazyLottoLibrary`, `ILazyGasStation`, token transfers gracefully (reverts or handles error).
+
+## 6. Test Data Requirements
+-   Multiple user accounts.
+-   Sufficient HBAR for gas and prize funding.
+-   Deployed $LAZY token (ERC20).
+-   Other ERC20 tokens for prize funding and fee payment.
+-   Various ERC721 NFTs for prize funding and NFT bonuses.
+-   Deployed `LazyGasStation`, `LazyDelegateRegistry`, and a mock `IPrngSystemContract`.
+
+## 7. Future Considerations / Out of Scope for Initial Testing
+-   Integration testing with live Hedera Testnet/Mainnet environment.
+-   Performance testing under high load.
+-   Audits by third parties.

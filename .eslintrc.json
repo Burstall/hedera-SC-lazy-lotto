@@ -38,8 +38,8 @@
 		"semi": ["error", "always"],
 		"space-before-blocks": "error",
 		"space-before-function-paren": ["error", {
-			"anonymous": "never",
-			"named": "never",
+			"anonymous": "allow",
+			"named": "allow",
 			"asyncArrow": "always"
 		}],
 		"space-in-parens": "error",
