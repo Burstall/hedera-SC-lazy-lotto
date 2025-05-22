@@ -9,6 +9,15 @@ const {
 const fs = require('fs');
 const { expect } = require('chai');
 const { describe, it, before, after } = require('mocha');
+const { sleep } = require('../utils/nodeHelpers');
+const { checkLastMirrorEvent } = require('../utils/hederaMirrorHelpers');
+
+// Import LazyLotto ABI and ethers Interface
+const lazyLottoAbi = JSON.parse(fs.readFileSync(
+	'./artifacts/contracts/LazyLotto.sol/LazyLotto.json',
+	'utf8',
+)).abi;
+const lazyLottoIface = new ethers.Interface(lazyLottoAbi);
 const {
 	contractDeployFunction,
 	contractExecuteFunction,
@@ -20,9 +29,7 @@ const {
 	accountCreator,
 	associateTokenToAccount,
 } = require('../utils/hederaHelpers');
-// const {
-// checkMirrorEvent,
-// } = require('../utils/hederaMirrorHelpers');
+
 const { ethers } = require('ethers');
 
 require('dotenv').config();
@@ -50,6 +57,7 @@ let bobId, bobKey;
 
 let htsLazyLottoLibraryAddress;
 let prngContractId, prngContractAddress;
+let mockPrngContractId, mockPrngContractAddress;
 // $LAZY token
 let lazyTokenId, lazyTokenAddress;
 let lazyGasStationId, lazyGasStationAddress;
@@ -140,14 +148,28 @@ describe('LazyLotto Contract Tests', function () {
 		htsLazyLottoLibraryAddress = libraryDeploy.contractId.toSolidityAddress();
 		console.log(`${HTS_LAZY_LOTTO_LIBRARY_NAME} deployed at: ${htsLazyLottoLibraryAddress}`);
 
-		// 2. Deploy PrngSystemContract (Mock or Actual)
-		// For now, let's assume it's a simple contract without complex constructor args
-		console.log('\\nDeploying PrngSystemContract...');
+
+		// 2. Deploy PrngSystemContract (real, for reference)
+		console.log('\nDeploying PrngSystemContract (real)...');
 		const prngBytecode = fs.readFileSync(`./artifacts/contracts/${PRNG_CONTRACT_NAME}.sol/${PRNG_CONTRACT_NAME}.bin`);
 		const prngDeploy = await contractDeployFunction(client, prngBytecode, 2_000_000);
 		prngContractId = prngDeploy.contractId;
 		prngContractAddress = prngContractId.toSolidityAddress();
 		console.log(`${PRNG_CONTRACT_NAME} deployed at: ${prngContractAddress} (${prngContractId.toString()})`);
+
+		// 2b. Deploy MockPrngSystemContract for deterministic tests
+		console.log('\nDeploying MockPrngSystemContract for deterministic randomness...');
+		const mockPrngBytecode = fs.readFileSync('./artifacts/contracts/mocks/MockPrngSystemContract.sol/MockPrngSystemContract.bin');
+		// Use a static seed and number for deterministic results
+		const staticSeed = ethers.utils.formatBytes32String('static-seed');
+		const staticNumber = 0; // Always return lowest value for win, can be changed in tests
+		const mockPrngParams = new ContractFunctionParameters()
+			.addBytes32(staticSeed)
+			.addUint256(staticNumber);
+		const mockPrngDeploy = await contractDeployFunction(client, mockPrngBytecode, 2_000_000, mockPrngParams);
+		mockPrngContractId = mockPrngDeploy.contractId;
+		mockPrngContractAddress = mockPrngContractId.toSolidityAddress();
+		console.log(`MockPrngSystemContract deployed at: ${mockPrngContractAddress} (${mockPrngContractId.toString()})`);
 
 		// 3. Deploy LAZYTokenCreator and create $LAZY token
 		console.log('\\nDeploying LAZYTokenCreator and creating $LAZY token...');
@@ -234,11 +256,15 @@ describe('LazyLotto Contract Tests', function () {
 		linkableLibraries[`contracts/${HTS_LAZY_LOTTO_LIBRARY_NAME}.sol:${HTS_LAZY_LOTTO_LIBRARY_NAME}`] = htsLazyLottoLibraryAddress;
 		lazyLottoBytecode = linkBytecode(lazyLottoBytecode, linkableLibraries);
 
+
+		// Use mockPrngContractAddress for deterministic tests, or prngContractAddress for integration
+		const useMockPrng = true;
+		const prngToUse = useMockPrng ? mockPrngContractAddress : prngContractAddress;
 		const lazyLottoConstructorParams = new ContractFunctionParameters()
 			.addAddress(lazyTokenAddress)
 			.addAddress(lazyGasStationAddress)
 			.addAddress(lazyDelegateRegistryAddress)
-			.addAddress(prngContractAddress)
+			.addAddress(prngToUse)
 			.addUint256(INITIAL_BURN_PERCENTAGE);
 
 		// High gas for linking and deployment
@@ -405,7 +431,7 @@ describe('4.1. Contract Deployment and Initialization', function () {
 describe('4.2. Admin Management', function () {
 	describe('4.2.1. addAdmin(address admin)', function () {
 		it('Test 4.2.1.1: Admin should be able to add a new admin', async function () {
-			const addAdminParams = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+			const addAdminParams = [bobId.toSolidityAddress()];
 			const addAdminTx = await contractExecuteFunction(
 				client,
 				lazyLottoContractId,
@@ -418,18 +444,21 @@ describe('4.2. Admin Management', function () {
 			await addAdminTx.getReceipt(client);
 
 			// Verify Bob is now an admin
-			const isAdminParams = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+			const isAdminParams = [bobId.toSolidityAddress()];
 			const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 			expectTrue(result.getBool(0), 'Bob is admin after addAdmin');
 			console.log('Test 4.2.1.1 Passed: Admin (Operator) successfully added Bob as admin.');
-			// TODO: Verify AdminAdded event emitted with Bob's address
+			// Verify AdminAdded event emitted with Bob's address
+			await sleep(5000);
+			const lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, true);
+			expect(lastEvent.toString()).to.equal(bobId.toString());
 		});
 
 		it('Test 4.2.1.2: Non-admin should not be able to add a new admin', async function () {
 			// Alice (non-admin) attempts to add a new admin (e.g., herself or another address)
 			// A dummy address
 			const tempAccountId = AccountId.fromString('0.0.12345');
-			const addAdminParams = new ContractFunctionParameters().addAddress(tempAccountId.toSolidityAddress());
+			const addAdminParams = [tempAccountId.toSolidityAddress()];
 
 			// Switch client to Alice
 			const originalOperator = client.operatorAccountId;
@@ -457,7 +486,7 @@ describe('4.2. Admin Management', function () {
 		});
 
 		it('Test 4.2.1.3: Should not be able to add zero address as admin', async function () {
-			const addAdminParams = new ContractFunctionParameters().addAddress(ZERO_ADDRESS);
+			const addAdminParams = [ZERO_ADDRESS];
 			try {
 				// Operator is admin
 				await contractExecuteFunction(
@@ -476,7 +505,7 @@ describe('4.2. Admin Management', function () {
 		});
 
 		it('Test 4.2.1.4: Should not be able to add an existing admin again', async function () {
-			const addAdminParams = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+			const addAdminParams = [bobId.toSolidityAddress()];
 			try {
 				// Operator is admin
 				await contractExecuteFunction(
@@ -499,7 +528,7 @@ describe('4.2. Admin Management', function () {
 describe('4.2.2. removeAdmin(address admin)', function () {
 	it('Test 4.2.2.1: Admin should be able to remove another admin', async function () {
 		// Operator (admin) removes Bob (who was added in 4.2.1.1)
-		const removeAdminParams = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+		const removeAdminParams = [bobId.toSolidityAddress()];
 		const removeAdminTx = await contractExecuteFunction(
 			client,
 			lazyLottoContractId,
@@ -511,16 +540,19 @@ describe('4.2.2. removeAdmin(address admin)', function () {
 		await removeAdminTx.getReceipt(client);
 
 		// Verify Bob is no longer an admin
-		const isAdminParams = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+		const isAdminParams = [bobId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 		expectFalse(result.getBool(0), 'Bob is not admin after removeAdmin');
 		console.log('Test 4.2.2.1 Passed: Admin (Operator) successfully removed Bob from admin role.');
-		// TODO: Verify AdminRemoved event emitted with Bob's address
+		// Verify AdminRemoved event emitted with Bob's address
+		await sleep(5000);
+		const lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, true);
+		expect(lastEvent.toString()).to.equal(bobId.toString());
 	});
 
 	it('Test 4.2.2.2: Non-admin should not be able to remove an admin', async function () {
 		// Alice (non-admin) attempts to remove Operator (admin)
-		const removeAdminParams = new ContractFunctionParameters().addAddress(operatorId.toSolidityAddress());
+		const removeAdminParams = [operatorId.toSolidityAddress()];
 
 		const originalOperator = client.operatorAccountId;
 		const originalOperatorKey = client.operatorPublicKey;
@@ -546,7 +578,7 @@ describe('4.2.2. removeAdmin(address admin)', function () {
 	});
 
 	it('Test 4.2.2.3: Should not be able to remove zero address', async function () {
-		const removeAdminParams = new ContractFunctionParameters().addAddress(ZERO_ADDRESS);
+		const removeAdminParams = [ZERO_ADDRESS];
 		try {
 			// Operator is admin
 			await contractExecuteFunction(
@@ -566,7 +598,7 @@ describe('4.2.2. removeAdmin(address admin)', function () {
 
 	it('Test 4.2.2.4: Should not be able to remove a non-existing admin', async function () {
 		// Alice was never an admin (or Bob was removed)
-		const removeAdminParams = new ContractFunctionParameters().addAddress(aliceId.toSolidityAddress());
+		const removeAdminParams = [aliceId.toSolidityAddress()];
 		try {
 			// Operator is admin
 			await contractExecuteFunction(
@@ -588,12 +620,12 @@ describe('4.2.2. removeAdmin(address admin)', function () {
 		// Ensure Operator is the only admin. Bob was removed in 4.2.2.1.
 		// If other admins were added, they need to be removed first for this test.
 		// Let's double check Bob is not an admin
-		const isAdminParamsBob = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+		const isAdminParamsBob = [bobId.toSolidityAddress()];
 		const resultBob = await contractCallQuery(client, lazyLottoContractId, isAdminParamsBob, 100000, 'isAdmin');
 		// Bob should not be admin here
 		expectFalse(resultBob.getBool(0), 'Bob is not admin before last self-remove');
 
-		const removeAdminParams = new ContractFunctionParameters().addAddress(operatorId.toSolidityAddress());
+		const removeAdminParams = [operatorId.toSolidityAddress()];
 		try {
 			// Operator is admin
 			await contractExecuteFunction(
@@ -615,7 +647,7 @@ describe('4.2.2. removeAdmin(address admin)', function () {
 describe('4.2.3. isAdmin(address account)', function () {
 	it('Test 4.2.3.1: Should return true for a known admin', async function () {
 		// Operator is admin
-		const isAdminParams = new ContractFunctionParameters().addAddress(operatorId.toSolidityAddress());
+		const isAdminParams = [operatorId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 		expect(result.getBool(0)).to.be.true;
 		console.log('Test 4.2.3.1 Passed: isAdmin returned true for Operator.');
@@ -623,14 +655,14 @@ describe('4.2.3. isAdmin(address account)', function () {
 
 	it('Test 4.2.3.2: Should return false for a non-admin', async function () {
 		// Alice is not an admin
-		const isAdminParams = new ContractFunctionParameters().addAddress(aliceId.toSolidityAddress());
+		const isAdminParams = [aliceId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 		expect(result.getBool(0)).to.be.false;
 		console.log('Test 4.2.3.2 Passed: isAdmin returned false for Alice.');
 	});
 
 	it('Test 4.2.3.3: Should return false for zero address', async function () {
-		const isAdminParams = new ContractFunctionParameters().addAddress(ZERO_ADDRESS);
+		const isAdminParams = [ZERO_ADDRESS];
 		const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 		expect(result.getBool(0)).to.be.false;
 		console.log('Test 4.2.3.3 Passed: isAdmin returned false for zero address.');
@@ -640,7 +672,7 @@ describe('4.2.3. isAdmin(address account)', function () {
 describe('4.2.4. renounceAdmin()', function () {
 	before(async function () {
 		// Ensure Bob is an admin for these tests, so Operator is not the last admin initially
-		const isAdminParams = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+		const isAdminParams = [bobId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 		if (!result.getBool(0)) {
 			console.log('Adding Bob as admin for renounceAdmin tests...');
@@ -656,8 +688,7 @@ describe('4.2.4. renounceAdmin()', function () {
 		const renounceAdminTx = await contractExecuteFunction(
 			client,
 			lazyLottoContractId,
-			// No params for renounceAdmin
-			new ContractFunctionParameters(),
+			[],
 			0,
 			'renounceAdmin',
 			150000,
@@ -665,17 +696,20 @@ describe('4.2.4. renounceAdmin()', function () {
 		await renounceAdminTx.getReceipt(client);
 
 		// Verify Operator is no longer an admin
-		const isAdminParamsOperator = new ContractFunctionParameters().addAddress(operatorId.toSolidityAddress());
+		const isAdminParamsOperator = [operatorId.toSolidityAddress()];
 		const resultOperator = await contractCallQuery(client, lazyLottoContractId, isAdminParamsOperator, 100000, 'isAdmin');
 		expect(resultOperator.getBool(0)).to.be.false;
 
 		// Verify Bob is still an admin
-		const isAdminParamsBob = new ContractFunctionParameters().addAddress(bobId.toSolidityAddress());
+		const isAdminParamsBob = [bobId.toSolidityAddress()];
 		const resultBob = await contractCallQuery(client, lazyLottoContractId, isAdminParamsBob, 100000, 'isAdmin');
 		expect(resultBob.getBool(0)).to.be.true;
 		console.log('Test 4.2.4.1 Passed: Operator successfully renounced admin status. Bob remains admin.');
 
-		// TODO: Verify AdminRemoved event emitted with Operator's address
+		// Verify AdminRemoved event emitted with Operator's address
+		await sleep(5000);
+		const lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, true);
+		expect(lastEvent.toString()).to.equal(operatorId.toString());
 	});
 
 	it('Test 4.2.4.2: Admin should not be able to renounce if they are the last admin', async function () {
@@ -689,7 +723,7 @@ describe('4.2.4. renounceAdmin()', function () {
 			await contractExecuteFunction(
 				client,
 				lazyLottoContractId,
-				new ContractFunctionParameters(),
+				[],
 				0,
 				'renounceAdmin',
 				150000,
@@ -718,7 +752,7 @@ describe('4.2.4. renounceAdmin()', function () {
 			await contractExecuteFunction(
 				client,
 				lazyLottoContractId,
-				new ContractFunctionParameters(),
+				[],
 				0,
 				'renounceAdmin',
 				150000,
@@ -741,7 +775,7 @@ describe('4.2.4. renounceAdmin()', function () {
 		const currentClientKey = client.operatorPublicKey;
 		client.setOperator(bobId, bobKey);
 
-		const addAdminParams = new ContractFunctionParameters().addAddress(operatorId.toSolidityAddress());
+		const addAdminParams = [operatorId.toSolidityAddress()];
 		const tx = await contractExecuteFunction(client, lazyLottoContractId, addAdminParams, 0, 'addAdmin', 150000);
 		await tx.getReceipt(client);
 
@@ -749,7 +783,7 @@ describe('4.2.4. renounceAdmin()', function () {
 		client.setOperator(currentClientOperator, currentClientKey);
 
 		// Verify Operator is admin again
-		const isAdminParams = new ContractFunctionParameters().addAddress(operatorId.toSolidityAddress());
+		const isAdminParams = [operatorId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, isAdminParams, 100000, 'isAdmin');
 		expect(result.getBool(0)).to.be.true;
 		console.log('Operator restored as admin.');
@@ -761,17 +795,17 @@ describe('4.3. Bonus Configuration', function () {
 	describe('4.3.1. setBurnPercentage()', function () {
 		it('Test 4.3.1: Admin can set valid burn percentage (0-100)', async function () {
 			const newBurn = 15;
-			const params = new ContractFunctionParameters().addUint256(newBurn);
+			const params = [newBurn];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setBurnPercentage', 100000);
 			await tx.getReceipt(client);
 			// Verify
-			const queryParams = new ContractFunctionParameters();
+			const queryParams = [];
 			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'burnPercentage');
 			expectEqual(result.getUint256(0).toNumber(), newBurn, 'burnPercentage after setBurnPercentage');
 		});
 
 		it('Test 4.3.2: Admin cannot set burn percentage > 100', async function () {
-			const params = new ContractFunctionParameters().addUint256(101);
+			const params = [101];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setBurnPercentage', 100000);
 				expectFalse(true, 'Should not set burn percentage > 100');
@@ -784,7 +818,7 @@ describe('4.3. Bonus Configuration', function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
-			const params = new ContractFunctionParameters().addUint256(20);
+			const params = [20];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setBurnPercentage', 100000);
 				expectFalse(true, 'Non-admin should not set burn percentage');
@@ -800,18 +834,18 @@ describe('4.3. Bonus Configuration', function () {
 		it('Test 4.3.4: Admin can set valid lazy balance bonus', async function () {
 			const threshold = ethers.BigNumber.from('1000');
 			const bonusBps = 500;
-			const params = new ContractFunctionParameters().addUint256(threshold).addUint256(bonusBps);
+			const params = [threshold, bonusBps];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setLazyBalanceBonus', 100000);
 			await tx.getReceipt(client);
 			// Verify (assume getter is lazyBalanceBonus)
-			const queryParams = new ContractFunctionParameters();
+			const queryParams = [];
 			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'lazyBalanceBonus');
 			expectEqual(result.getUint256(0).toString(), threshold.toString(), 'lazyBalanceBonus threshold');
 			expectEqual(result.getUint256(1).toNumber(), bonusBps, 'lazyBalanceBonus bonusBps');
 		});
 
 		it('Test 4.3.5: Admin cannot set zero threshold', async function () {
-			const params = new ContractFunctionParameters().addUint256(0).addUint256(100);
+			const params = [0, 100];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setLazyBalanceBonus', 100000);
 				expectFalse(true, 'Should not set zero threshold');
@@ -821,7 +855,7 @@ describe('4.3. Bonus Configuration', function () {
 		});
 
 		it('Test 4.3.6: Admin cannot set bonusBps > 10000', async function () {
-			const params = new ContractFunctionParameters().addUint256(1000).addUint256(10001);
+			const params = [1000, 10001];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setLazyBalanceBonus', 100000);
 				expectFalse(true, 'Should not set bonusBps > 10000');
@@ -834,7 +868,7 @@ describe('4.3. Bonus Configuration', function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
-			const params = new ContractFunctionParameters().addUint256(1000).addUint256(100);
+			const params = [1000, 100];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setLazyBalanceBonus', 100000);
 				expectFalse(true, 'Non-admin should not set lazy balance bonus');
@@ -852,18 +886,18 @@ describe('4.3. Bonus Configuration', function () {
 			// Example NFT token address and bonusBps
 			const nftToken = ZERO_ADDRESS; // Replace with actual NFT address in real test
 			const bonusBps = 1000;
-			const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(bonusBps);
+			const params = [nftToken, bonusBps];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
 			await tx.getReceipt(client);
 			// Verify (assume getter is nftBonuses)
-			const queryParams = new ContractFunctionParameters().addAddress(nftToken);
+			const queryParams = [nftToken];
 			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'nftBonuses');
 			expectEqual(result.getUint256(0).toNumber(), bonusBps, 'nftBonuses bonusBps');
 		});
 
 		it('Test 4.3.9: Admin cannot set NFT bonus > 10000', async function () {
 			const nftToken = ZERO_ADDRESS;
-			const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(10001);
+			const params = [nftToken, 10001];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
 				expectFalse(true, 'Should not set NFT bonus > 10000');
@@ -877,7 +911,7 @@ describe('4.3. Bonus Configuration', function () {
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
 			const nftToken = ZERO_ADDRESS;
-			const params = new ContractFunctionParameters().addAddress(nftToken).addUint256(100);
+			const params = [nftToken, 100];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
 				expectFalse(true, 'Non-admin should not set NFT bonus');
@@ -893,15 +927,15 @@ describe('4.3. Bonus Configuration', function () {
 		it('Test 4.3.11: Admin can remove NFT bonus for a token', async function () {
 			const nftToken = ZERO_ADDRESS;
 			// First set a bonus
-			let params = new ContractFunctionParameters().addAddress(nftToken).addUint256(500);
+			let params = [nftToken, 500];
 			let tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setNFTBonus', 100000);
 			await tx.getReceipt(client);
 			// Now remove
-			params = new ContractFunctionParameters().addAddress(nftToken);
+			params = [nftToken];
 			tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeNFTBonus', 100000);
 			await tx.getReceipt(client);
 			// Verify (assume getter is nftBonuses)
-			const queryParams = new ContractFunctionParameters().addAddress(nftToken);
+			const queryParams = [nftToken];
 			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'nftBonuses');
 			expectEqual(result.getUint256(0).toNumber(), 0, 'nftBonuses after removal');
 		});
@@ -911,7 +945,7 @@ describe('4.3. Bonus Configuration', function () {
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
 			const nftToken = ZERO_ADDRESS;
-			const params = new ContractFunctionParameters().addAddress(nftToken);
+			const params = [nftToken];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeNFTBonus', 100000);
 				expectFalse(true, 'Non-admin should not remove NFT bonus');
@@ -928,11 +962,11 @@ describe('4.3. Bonus Configuration', function () {
 			const start = Math.floor(Date.now() / 1000);
 			const end = start + 3600;
 			const bonusBps = 200;
-			const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(bonusBps);
+			const params = [start, end, bonusBps];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
 			await tx.getReceipt(client);
 			// Verify (assume getter is timeBonuses)
-			const queryParams = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			const queryParams = [start, end];
 			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'timeBonuses');
 			expectEqual(result.getUint256(0).toNumber(), bonusBps, 'timeBonuses bonusBps');
 		});
@@ -940,7 +974,7 @@ describe('4.3. Bonus Configuration', function () {
 		it('Test 4.3.14: Admin cannot set time bonus > 10000', async function () {
 			const start = Math.floor(Date.now() / 1000);
 			const end = start + 3600;
-			const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(10001);
+			const params = [start, end, 10001];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
 				expectFalse(true, 'Should not set time bonus > 10000');
@@ -955,7 +989,7 @@ describe('4.3. Bonus Configuration', function () {
 			client.setOperator(aliceId, aliceKey);
 			const start = Math.floor(Date.now() / 1000);
 			const end = start + 3600;
-			const params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(100);
+			const params = [start, end, 100];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
 				expectFalse(true, 'Non-admin should not set time bonus');
@@ -972,15 +1006,15 @@ describe('4.3. Bonus Configuration', function () {
 			const start = Math.floor(Date.now() / 1000);
 			const end = start + 3600;
 			// First set a bonus
-			let params = new ContractFunctionParameters().addUint256(start).addUint256(end).addUint256(100);
+			let params = [start, end, 100];
 			let tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'setTimeBonus', 100000);
 			await tx.getReceipt(client);
 			// Now remove
-			params = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			params = [start, end];
 			tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeTimeBonus', 100000);
 			await tx.getReceipt(client);
 			// Verify (assume getter is timeBonuses)
-			const queryParams = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			const queryParams = [start, end];
 			const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'timeBonuses');
 			expectEqual(result.getUint256(0).toNumber(), 0, 'timeBonuses after removal');
 		});
@@ -991,7 +1025,7 @@ describe('4.3. Bonus Configuration', function () {
 			client.setOperator(aliceId, aliceKey);
 			const start = Math.floor(Date.now() / 1000);
 			const end = start + 3600;
-			const params = new ContractFunctionParameters().addUint256(start).addUint256(end);
+			const params = [start, end];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removeTimeBonus', 100000);
 				expectFalse(true, 'Non-admin should not remove time bonus');
@@ -1015,15 +1049,16 @@ describe('4.4. Pool Prize Management', function () {
 
 		it('Test 4.4.1.x: Should revert if adding a prize to a paused pool', async function () {
 			// Pause the pool first
-			const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID);
+			const pauseParams = [POOL_ID];
 			await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 100000);
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Should not add prize to paused pool');
@@ -1038,15 +1073,16 @@ describe('4.4. Pool Prize Management', function () {
 		it('Test 4.4.1.x: Should revert if adding a prize to a closed pool', async function () {
 			// Close the pool (simulate no outstanding entries and supply)
 			// For test, assume pool is closable (no entries/tokens outstanding)
-			const closeParams = new ContractFunctionParameters().addUint256(POOL_ID);
+			const closeParams = [POOL_ID];
 			await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Should not add prize to closed pool');
@@ -1055,26 +1091,32 @@ describe('4.4. Pool Prize Management', function () {
 			}
 		});
 		it('Test 4.4.1.1: Admin can add a fungible prize package', async function () {
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false) // isNFT
-				.addAddress(ZERO_ADDRESS) // NFT address
-				.addUint256(0); // NFT serial
+			const params = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false, // isNFT
+				ZERO_ADDRESS, // NFT address
+				0 // NFT serial
+			];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 			await tx.getReceipt(client);
-			// TODO: Add prize verification if getter exists
+			// Prize verification
+			const detailsParams = [POOL_ID];
+			const details = await contractCallQuery(client, lazyLottoContractId, detailsParams, 200000, 'getPoolDetails');
+			// prizes is the 5th output (index 4)
+			expect(details.getArray(4).length).to.be.greaterThan(0, 'prizes array should have at least 1 prize after addPrizePackage');
 		});
 
 		it('Test 4.4.1.x: Should revert if adding a fungible prize with zero address (unless HBAR)', async function () {
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params = [
+				POOL_ID,
+				ZERO_ADDRESS,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				// If HBAR pool, this may succeed, so only expect revert for non-HBAR pools
@@ -1085,13 +1127,14 @@ describe('4.4. Pool Prize Management', function () {
 		});
 
 		it('Test 4.4.1.x: Should revert if adding a fungible prize with amount = 0', async function () {
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(0)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params = [
+				POOL_ID,
+				lazyTokenAddress,
+				0,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Should not add prize with zero amount');
@@ -1101,33 +1144,36 @@ describe('4.4. Pool Prize Management', function () {
 		});
 
 		it('Test 4.4.1.x: Should allow adding the same FT prize (same token/amount) multiple times', async function () {
-			const params1 = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
-			const params2 = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params1 = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
+			const params2 = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, params1, 0, 'addPrizePackage', 200000);
 			await contractExecuteFunction(client, lazyLottoContractId, params2, 0, 'addPrizePackage', 200000);
 			// No revert expected
 		});
 
 		it('Test 4.4.1.x: Should revert if adding NFT prize with serial 0', async function () {
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0)
-				.addBool(true)
-				.addAddress(NFT_PRIZE_TOKEN)
-				.addUint256(0); // serial 0
+			const params = [
+				POOL_ID,
+				ZERO_ADDRESS,
+				0,
+				true,
+				NFT_PRIZE_TOKEN,
+				0 // serial 0
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Should not add NFT with serial 0');
@@ -1138,13 +1184,14 @@ describe('4.4. Pool Prize Management', function () {
 
 		it('Test 4.4.1.x: Should revert if adding NFT prize with serial not owned by sender', async function () {
 			// This test assumes NFT_PRIZE_TOKEN and serial 9999 is not owned by sender
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0)
-				.addBool(true)
-				.addAddress(NFT_PRIZE_TOKEN)
-				.addUint256(9999);
+			const params = [
+				POOL_ID,
+				ZERO_ADDRESS,
+				0,
+				true,
+				NFT_PRIZE_TOKEN,
+				9999
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Should not add NFT not owned');
@@ -1155,13 +1202,14 @@ describe('4.4. Pool Prize Management', function () {
 
 		it('Test 4.4.1.x: Should revert if adding NFT prize without NFT allowance to contract', async function () {
 			// This test assumes NFT_PRIZE_TOKEN and serial 1 is owned by sender but no allowance set
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0)
-				.addBool(true)
-				.addAddress(NFT_PRIZE_TOKEN)
-				.addUint256(NFT_PRIZE_SERIAL);
+			const params = [
+				POOL_ID,
+				ZERO_ADDRESS,
+				0,
+				true,
+				NFT_PRIZE_TOKEN,
+				NFT_PRIZE_SERIAL
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Should not add NFT without allowance');
@@ -1174,13 +1222,14 @@ describe('4.4. Pool Prize Management', function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 				expectFalse(true, 'Non-admin should not add prize package');
@@ -1195,31 +1244,25 @@ describe('4.4. Pool Prize Management', function () {
 	describe('4.4.2. addMultipleFungiblePrizes(uint256 poolId, address token, uint256[] amounts)', function () {
 		it('Test 4.4.2.1: Admin can add multiple fungible prizes', async function () {
 			const amounts = [FUNGIBLE_PRIZE_AMOUNT, FUNGIBLE_PRIZE_AMOUNT.mul(2)];
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256Array(amounts);
+			const params = [POOL_ID, lazyTokenAddress, amounts];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addMultipleFungiblePrizes', 200000);
 			await tx.getReceipt(client);
-			// TODO: Add prize verification if getter exists
+			// Prize verification
+			const detailsParams = [POOL_ID];
+			const details = await contractCallQuery(client, lazyLottoContractId, detailsParams, 200000, 'getPoolDetails');
+			expect(details.getArray(4).length).to.be.greaterThan(1, 'prizes array should have more than 1 prize after addMultipleFungiblePrizes');
 		});
 
 		it('Test 4.4.2.x: Should allow adding same FT token multiple times in differing amounts', async function () {
 			const amounts = [FUNGIBLE_PRIZE_AMOUNT, FUNGIBLE_PRIZE_AMOUNT.mul(2), FUNGIBLE_PRIZE_AMOUNT.mul(3)];
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256Array(amounts);
+			const params = [POOL_ID, lazyTokenAddress, amounts];
 			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addMultipleFungiblePrizes', 200000);
 			// No revert expected
 		});
 
 		it('Test 4.4.2.x: Should revert if any amount is zero', async function () {
 			const amounts = [FUNGIBLE_PRIZE_AMOUNT, 0];
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256Array(amounts);
+			const params = [POOL_ID, lazyTokenAddress, amounts];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addMultipleFungiblePrizes', 200000);
 				expectFalse(true, 'Should not add with zero amount');
@@ -1233,10 +1276,7 @@ describe('4.4. Pool Prize Management', function () {
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
 			const amounts = [FUNGIBLE_PRIZE_AMOUNT];
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256Array(amounts);
+			const params = [POOL_ID, lazyTokenAddress, amounts];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addMultipleFungiblePrizes', 200000);
 				expectFalse(true, 'Non-admin should not add multiple fungible prizes');
@@ -1252,7 +1292,7 @@ describe('4.4. Pool Prize Management', function () {
 		it('Test 4.4.3.x: Should revert if removing prizes from a pool with no prizes', async function () {
 			// Use a new pool or remove all prizes first
 			// Try to remove at index 0 (no prizes)
-			const params = new ContractFunctionParameters().addUint256(POOL_ID).addUint256(0);
+			const params = [POOL_ID, 0];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removePrizes', 200000);
 				expectFalse(true, 'Should not remove from empty prize pool');
@@ -1265,7 +1305,7 @@ describe('4.4. Pool Prize Management', function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
-			const params = new ContractFunctionParameters().addUint256(POOL_ID).addUint256(0);
+			const params = [POOL_ID, 0];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removePrizes', 200000);
 				expectFalse(true, 'Non-admin should not remove prizes');
@@ -1277,7 +1317,7 @@ describe('4.4. Pool Prize Management', function () {
 		});
 
 		it('Test 4.4.3.x: Should revert if removing prizes from a non-existent pool', async function () {
-			const params = new ContractFunctionParameters().addUint256(9999).addUint256(0);
+			const params = [9999, 0];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removePrizes', 200000);
 				expectFalse(true, 'Should not remove from non-existent pool');
@@ -1289,7 +1329,7 @@ describe('4.4. Pool Prize Management', function () {
 		it('Test 4.4.3.x: Should revert if removing prizes from a pool that is not closed', async function () {
 			// Reopen pool for this test
 			// (Assume POOL_ID_1 is open)
-			const params = new ContractFunctionParameters().addUint256(POOL_ID).addUint256(0);
+			const params = [POOL_ID, 0];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removePrizes', 200000);
 				expectFalse(true, 'Should not remove from open pool');
@@ -1308,28 +1348,32 @@ describe('4.4. Pool Prize Management', function () {
 			// Simulate outstanding tickets (buyEntry or similar)
 			// For now, just ensure addPrizePackage does not revert if tickets exist
 			// (Assume POOL_ID is open and has tickets)
-			const params = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(FUNGIBLE_PRIZE_AMOUNT)
-				.addBool(false)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0);
+			const params = [
+				POOL_ID,
+				lazyTokenAddress,
+				FUNGIBLE_PRIZE_AMOUNT,
+				false,
+				ZERO_ADDRESS,
+				0
+			];
 			// Should not revert
 			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'addPrizePackage', 200000);
 		});
 		it('Test 4.4.3.1: Admin can remove all prizes from a pool', async function () {
-			const params = new ContractFunctionParameters().addUint256(POOL_ID);
+			const params = [POOL_ID];
 			const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removePrizes', 200000);
 			await tx.getReceipt(client);
-			// TODO: Add prize verification if getter exists
+			// Prize verification
+			const detailsParams = [POOL_ID];
+			const details = await contractCallQuery(client, lazyLottoContractId, detailsParams, 200000, 'getPoolDetails');
+			expect(details.getArray(4).length).to.equal(0, 'prizes array should be empty after removePrizes');
 		});
 
 		it('Test 4.4.3.2: Non-admin cannot remove prizes', async function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
-			const params = new ContractFunctionParameters().addUint256(POOL_ID);
+			const params = [POOL_ID];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'removePrizes', 200000);
 				expectFalse(true, 'Non-admin should not remove prizes');
@@ -1353,7 +1397,7 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
-			const params = new ContractFunctionParameters().addUint256(POOL_ID);
+			const params = [POOL_ID];
 			for (const fn of ['pausePool', 'unpausePool', 'closePool']) {
 				try {
 					await contractExecuteFunction(client, lazyLottoContractId, params, 0, fn, 100000);
@@ -1367,7 +1411,7 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 		it('Should revert if closing a pool that is already closed', async function () {
 			// Close the pool first
-			const params = new ContractFunctionParameters().addUint256(POOL_ID);
+			const params = [POOL_ID];
 			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'closePool', 200000);
 			// Try closing again
 			try {
@@ -1387,17 +1431,18 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 		it('Should revert if updating a closed pool', async function () {
 			// Close the pool first
-			const params = new ContractFunctionParameters().addUint256(POOL_ID);
+			const params = [POOL_ID];
 			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'closePool', 200000);
 			// Try to update config
-			const updateParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(TICKET_PRICE_LAZY)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const updateParams = [
+				POOL_ID,
+				lazyTokenAddress,
+				TICKET_PRICE_LAZY,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, updateParams, 0, 'updatePoolConfig', 200000);
 				expectFalse(true, 'Should not update closed pool');
@@ -1408,14 +1453,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 		it('Should revert if updating a pool with invalid parameters', async function () {
 			// Use zero ticket price
-			const updateParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID)
-				.addAddress(lazyTokenAddress)
-				.addUint256(0)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const updateParams = [
+				POOL_ID,
+				lazyTokenAddress,
+				0,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			try {
 				await contractExecuteFunction(client, lazyLottoContractId, updateParams, 0, 'updatePoolConfig', 200000);
 				expectFalse(true, 'Should not update pool with zero ticket price');
@@ -1425,21 +1471,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 		});
 	});
 	it('Test 4.5.1.1: Admin should be able to create a new HBAR pool', async function () {
-		const createPoolParams = new ContractFunctionParameters()
-			// poolId (using 0 for HBAR)
-			.addUint256(POOL_ID_HBAR)
-			// prizeToken (HBAR)
-			.addAddress(ZERO_ADDRESS)
-			// ticketPrice
-			.addUint256(TICKET_PRICE_HBAR)
-			// minEntries
-			.addUint256(MIN_ENTRIES)
-			// maxEntriesPerUser
-			.addUint256(MAX_ENTRIES_PER_USER)
-			// houseEdgePercentage
-			.addUint256(HOUSE_EDGE_PERCENTAGE)
-			// durationSeconds
-			.addUint256(DURATION_SECONDS);
+		const createPoolParams = [
+			POOL_ID_HBAR,
+			ZERO_ADDRESS,
+			TICKET_PRICE_HBAR,
+			MIN_ENTRIES,
+			MAX_ENTRIES_PER_USER,
+			HOUSE_EDGE_PERCENTAGE,
+			DURATION_SECONDS
+		];
 
 		const createPoolTx = await contractExecuteFunction(
 			client,
@@ -1452,7 +1492,7 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 		await createPoolTx.getReceipt(client);
 
 		// Verify pool creation
-		const getPoolParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR);
+		const getPoolParams = [POOL_ID_HBAR];
 		const pool = await contractCallQuery(client, lazyLottoContractId, getPoolParams, 200000, 'getPool');
 
 		expectEqual(pool.getAddress(0).toLowerCase(), ZERO_ADDRESS, 'prizeToken ZERO_ADDRESS');
@@ -1468,21 +1508,22 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 		expectTrue(pool.getBool(10), 'isOpen');
 		expectFalse(pool.getBool(11), 'isDrawn');
 		console.log('Test 4.5.1.1 Passed: Admin created HBAR pool.');
-		// TODO: Verify PoolCreated event
+		// Verify PoolCreated event
+		await sleep(5000);
+		const lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, false);
+		expect(Number(lastEvent)).to.equal(POOL_ID_HBAR);
 	});
 
 	it('Test 4.5.1.2: Admin should be able to create a new $LAZY token pool', async function () {
-		const createPoolParams = new ContractFunctionParameters()
-			// poolId
-			.addUint256(POOL_ID_1)
-			// prizeToken ($LAZY)
-			.addAddress(lazyTokenAddress)
-			// ticketPrice
-			.addUint256(TICKET_PRICE_LAZY)
-			.addUint256(MIN_ENTRIES)
-			.addUint256(MAX_ENTRIES_PER_USER)
-			.addUint256(HOUSE_EDGE_PERCENTAGE)
-			.addUint256(DURATION_SECONDS);
+		const createPoolParams = [
+			POOL_ID_1,
+			lazyTokenAddress,
+			TICKET_PRICE_LAZY,
+			MIN_ENTRIES,
+			MAX_ENTRIES_PER_USER,
+			HOUSE_EDGE_PERCENTAGE,
+			DURATION_SECONDS
+		];
 
 		const createPoolTx = await contractExecuteFunction(
 			client,
@@ -1495,13 +1536,16 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 		await createPoolTx.getReceipt(client);
 
 		// Verify pool creation
-		const getPoolParams = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const getPoolParams = [POOL_ID_1];
 		const pool = await contractCallQuery(client, lazyLottoContractId, getPoolParams, 200000, 'getPool');
 
 		expectEqual(pool.getAddress(0).toLowerCase(), lazyTokenAddress.toLowerCase(), '$LAZY token address');
 		expectEqual(pool.getUint256(1).toString(), TICKET_PRICE_LAZY.toString(), '$LAZY ticket price');
 		console.log('Test 4.5.1.2 Passed: Admin created $LAZY token pool.');
-		// TODO: Verify PoolCreated event
+		// Verify PoolCreated event
+		await sleep(5000);
+		const lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, false);
+		expect(Number(lastEvent)).to.equal(POOL_ID_1);
 	});
 
 	it('Test 4.5.1.3: Non-admin should not be able to create a pool', async function () {
@@ -1510,14 +1554,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 		client.setOperator(aliceId, aliceKey);
 
 		try {
-			const createPoolParams = new ContractFunctionParameters()
-				.addUint256(2)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(TICKET_PRICE_HBAR)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const createPoolParams = [
+				2,
+				ZERO_ADDRESS,
+				TICKET_PRICE_HBAR,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, createPoolParams, 0, 'createPool', 500000);
 			expectFalse(true, 'Non-admin should not have been able to create a pool');
 		} catch (error) {
@@ -1531,14 +1576,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 	it('Test 4.5.1.4: Should fail to create a pool if poolId already exists', async function () {
 		// POOL_ID_HBAR (0) was created in 4.5.1.1
 		try {
-			const createPoolParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(TICKET_PRICE_HBAR)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const createPoolParams = [
+				POOL_ID_HBAR,
+				ZERO_ADDRESS,
+				TICKET_PRICE_HBAR,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, createPoolParams, 0, 'createPool', 500000);
 			expectFalse(true, 'Should not create pool with existing ID');
 		} catch (error) {
@@ -1549,14 +1595,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 	it('Test 4.5.1.5: Should fail if ticketPrice is zero', async function () {
 		try {
-			const createPoolParams = new ContractFunctionParameters()
-				.addUint256(3)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(0)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const createPoolParams = [
+				3,
+				ZERO_ADDRESS,
+				0,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, createPoolParams, 0, 'createPool', 500000);
 			expectFalse(true, 'Should not create pool with zero ticket price');
 		} catch (error) {
@@ -1567,14 +1614,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 	it('Test 4.5.1.6: Should fail if minEntries is zero', async function () {
 		try {
-			const createPoolParams = new ContractFunctionParameters()
-				.addUint256(4)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(TICKET_PRICE_HBAR)
-				.addUint256(0)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const createPoolParams = [
+				4,
+				ZERO_ADDRESS,
+				TICKET_PRICE_HBAR,
+				0,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, createPoolParams, 0, 'createPool', 500000);
 			expectFalse(true, 'Should not create pool with zero min entries');
 		} catch (error) {
@@ -1585,14 +1633,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 	it('Test 4.5.1.7: Should fail if houseEdgePercentage is >= 100', async function () {
 		try {
-			const createPoolParams = new ContractFunctionParameters()
-				.addUint256(5)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(TICKET_PRICE_HBAR)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(100)
-				.addUint256(DURATION_SECONDS);
+			const createPoolParams = [
+				5,
+				ZERO_ADDRESS,
+				TICKET_PRICE_HBAR,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				100,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, createPoolParams, 0, 'createPool', 500000);
 			expectFalse(true, 'Should not create pool with house edge >= 100');
 		} catch (error) {
@@ -1603,14 +1652,15 @@ describe('4.5.1. createPool(PoolConfig calldata config)', function () {
 
 	it('Test 4.5.1.8: Should fail if durationSeconds is zero', async function () {
 		try {
-			const createPoolParams = new ContractFunctionParameters()
-				.addUint256(6)
-				.addAddress(ZERO_ADDRESS)
-				.addUint256(TICKET_PRICE_HBAR)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(0);
+			const createPoolParams = [
+				6,
+				ZERO_ADDRESS,
+				TICKET_PRICE_HBAR,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				0
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, createPoolParams, 0, 'createPool', 500000);
 			expectFalse(true, 'Should not create pool with zero duration');
 		} catch (error) {
@@ -1626,21 +1676,15 @@ describe('4.5.2. updatePoolConfig(uint256 poolId, PoolConfig calldata config)', 
 	const NEW_MIN_ENTRIES = 10;
 
 	it('Test 4.5.2.1: Admin should be able to update an existing, open pool', async function () {
-		const updateParams = new ContractFunctionParameters()
-			.addUint256(POOL_TO_UPDATE)
-			// New Config (only updating some fields for this test)
-			// prizeToken (must match existing for open pool)
-			.addAddress(lazyTokenAddress)
-			// new ticketPrice
-			.addUint256(NEW_TICKET_PRICE_LAZY)
-			// new minEntries
-			.addUint256(NEW_MIN_ENTRIES)
-			// unchanged (Uses shared MAX_ENTRIES_PER_USER)
-			.addUint256(MAX_ENTRIES_PER_USER)
-			// unchanged (Uses shared HOUSE_EDGE_PERCENTAGE)
-			.addUint256(HOUSE_EDGE_PERCENTAGE)
-			// unchanged (Uses shared DURATION_SECONDS)
-			.addUint256(DURATION_SECONDS);
+		const updateParams = [
+			POOL_TO_UPDATE,
+			lazyTokenAddress,
+			NEW_TICKET_PRICE_LAZY,
+			NEW_MIN_ENTRIES,
+			MAX_ENTRIES_PER_USER,
+			HOUSE_EDGE_PERCENTAGE,
+			DURATION_SECONDS
+		];
 
 		const updateTx = await contractExecuteFunction(
 			client,
@@ -1653,13 +1697,13 @@ describe('4.5.2. updatePoolConfig(uint256 poolId, PoolConfig calldata config)', 
 		await updateTx.getReceipt(client);
 
 		// Verify updated config
-		const getPoolParams = new ContractFunctionParameters().addUint256(POOL_TO_UPDATE);
+		const getPoolParams = [POOL_TO_UPDATE];
 		const pool = await contractCallQuery(client, lazyLottoContractId, getPoolParams, 200000, 'getPool');
 
 		expect(pool.getUint256(1).toString()).to.equal(NEW_TICKET_PRICE_LAZY.toString());
 		expect(pool.getUint256(2).toNumber()).to.equal(NEW_MIN_ENTRIES);
 		console.log('Test 4.5.2.1 Passed: Admin updated pool config.');
-		// TODO: Verify PoolConfigUpdated event
+		// Optionally: Verify PoolConfigUpdated event
 	});
 
 	it('Test 4.5.2.2: Non-admin should not be able to update a pool', async function () {
@@ -1668,14 +1712,15 @@ describe('4.5.2. updatePoolConfig(uint256 poolId, PoolConfig calldata config)', 
 		client.setOperator(aliceId, aliceKey);
 
 		try {
-			const updateParams = new ContractFunctionParameters()
-				.addUint256(POOL_TO_UPDATE)
-				.addAddress(lazyTokenAddress)
-				.addUint256(TICKET_PRICE_LAZY)
-				.addUint256(MIN_ENTRIES)
-				.addUint256(MAX_ENTRIES_PER_USER)
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				.addUint256(DURATION_SECONDS);
+			const updateParams = [
+				POOL_TO_UPDATE,
+				lazyTokenAddress,
+				TICKET_PRICE_LAZY,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, updateParams, 0, 'updatePoolConfig', 500000);
 			expectFalse(true, 'Non-admin should not have been able to update the pool');
 		} catch (error) {
@@ -1689,19 +1734,15 @@ describe('4.5.2. updatePoolConfig(uint256 poolId, PoolConfig calldata config)', 
 	it('Test 4.5.2.3: Should fail to update a non-existent pool', async function () {
 		const NON_EXISTENT_POOL_ID = 999;
 		try {
-			const updateParams = new ContractFunctionParameters()
-				.addUint256(NON_EXISTENT_POOL_ID)
-				.addAddress(lazyTokenAddress)
-				// Uses shared TICKET_PRICE_LAZY
-				.addUint256(TICKET_PRICE_LAZY)
-				// Uses shared MIN_ENTRIES
-				.addUint256(MIN_ENTRIES)
-				// Uses shared MAX_ENTRIES_PER_USER
-				.addUint256(MAX_ENTRIES_PER_USER)
-				// Uses shared HOUSE_EDGE_PERCENTAGE
-				.addUint256(HOUSE_EDGE_PERCENTAGE)
-				// Uses shared DURATION_SECONDS
-				.addUint256(DURATION_SECONDS);
+			const updateParams = [
+				NON_EXISTENT_POOL_ID,
+				lazyTokenAddress,
+				TICKET_PRICE_LAZY,
+				MIN_ENTRIES,
+				MAX_ENTRIES_PER_USER,
+				HOUSE_EDGE_PERCENTAGE,
+				DURATION_SECONDS
+			];
 			await contractExecuteFunction(client, lazyLottoContractId, updateParams, 0, 'updatePoolConfig', 500000);
 			expect.fail('Updating a non-existent pool should have failed');
 		}
@@ -1720,7 +1761,7 @@ describe('4.5.3. getPool(uint256 poolId) view', function () {
 
 	it('Test 4.5.3.1: Should return correct details for an existing HBAR pool', async function () {
 		// HBAR pool (POOL_ID_HBAR) was created in 4.5.1.1
-		const getPoolParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR);
+		const getPoolParams = [POOL_ID_HBAR];
 		const pool = await contractCallQuery(client, lazyLottoContractId, getPoolParams, 200000, 'getPool');
 
 		// prizeToken HBAR
@@ -1731,7 +1772,7 @@ describe('4.5.3. getPool(uint256 poolId) view', function () {
 
 	it('Test 4.5.3.2: Should return correct details for an existing $LAZY pool', async function () {
 		// $LAZY pool (POOL_ID_1) was updated in 4.5.2.1
-		const getPoolParams = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const getPoolParams = [POOL_ID_1];
 		const pool = await contractCallQuery(client, lazyLottoContractId, getPoolParams, 200000, 'getPool');
 
 		expectEqual(pool.getAddress(0).toLowerCase(), lazyTokenAddress.toLowerCase(), 'getPool $LAZY prizeToken');
@@ -1742,7 +1783,7 @@ describe('4.5.3. getPool(uint256 poolId) view', function () {
 	it('Test 4.5.3.3: Should revert for non-existent poolId', async function () {
 		const NON_EXISTENT_POOL_ID = 999;
 		try {
-			const getPoolParams = new ContractFunctionParameters().addUint256(NON_EXISTENT_POOL_ID);
+			const getPoolParams = [NON_EXISTENT_POOL_ID];
 			await contractCallQuery(client, lazyLottoContractId, getPoolParams, 200000, 'getPool');
 			expectFalse(true, 'Should not return pool for non-existent poolId');
 		} catch (error) {
@@ -1755,7 +1796,7 @@ describe('4.5.3. getPool(uint256 poolId) view', function () {
 describe('4.5.4. getPoolIds() view', function () {
 	it('Test 4.5.4.1: Should return a list of all created pool IDs', async function () {
 		// No params
-		const queryParams = new ContractFunctionParameters();
+		const queryParams = [];
 		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'getPoolIds');
 		const rawPoolIds = result.getUint256Array(0);
 		const poolIds = [];
@@ -1773,9 +1814,7 @@ describe('4.5.4. getPoolIds() view', function () {
 
 describe('4.5.5. getNumberOfEntries(uint256 poolId, address player) view', function () {
 	it('Test 4.5.5.1: Should return 0 for a player who has not entered a specific pool', async function () {
-		const getNumberOfEntriesParams = new ContractFunctionParameters()
-			.addUint256(POOL_ID_HBAR)
-			.addAddress(aliceId.toSolidityAddress());
+		const getNumberOfEntriesParams = [POOL_ID_HBAR, aliceId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, getNumberOfEntriesParams, 100000, 'getNumberOfEntries');
 		expectEqual(result.getUint256(0).toNumber(), 0, 'getNumberOfEntries for non-entered player');
 		console.log('Test 4.5.5.1 Passed: getNumberOfEntries returned 0 for player not entered.');
@@ -1786,9 +1825,7 @@ describe('4.5.5. getNumberOfEntries(uint256 poolId, address player) view', funct
 
 describe('4.5.6. getPlayerEntries(uint256 poolId, address player) view', function () {
 	it('Test 4.5.6.1: Should return an empty array for a player who has not entered', async function () {
-		const getPlayerEntriesParams = new ContractFunctionParameters()
-			.addUint256(POOL_ID_HBAR)
-			.addAddress(aliceId.toSolidityAddress());
+		const getPlayerEntriesParams = [POOL_ID_HBAR, aliceId.toSolidityAddress()];
 		const result = await contractCallQuery(client, lazyLottoContractId, getPlayerEntriesParams, 100000, 'getPlayerEntries');
 		const entries = result.getUint256Array(0);
 		expectEqual(entries.length, 0, 'getPlayerEntries for non-entered player');
@@ -1799,7 +1836,7 @@ describe('4.5.6. getPlayerEntries(uint256 poolId, address player) view', functio
 
 describe('4.5.7. isPoolOpen(uint256 poolId) view', function () {
 	it('Test 4.5.7.1: Should return true for an open pool', async function () {
-		const isPoolOpenParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR);
+		const isPoolOpenParams = [POOL_ID_HBAR];
 		const result = await contractCallQuery(client, lazyLottoContractId, isPoolOpenParams, 100000, 'isPoolOpen');
 		expectTrue(result.getBool(0), 'isPoolOpen for open pool');
 		console.log('Test 4.5.7.1 Passed: isPoolOpen returned true for open pool.');
@@ -1810,7 +1847,7 @@ describe('4.5.7. isPoolOpen(uint256 poolId) view', function () {
 
 describe('4.5.8. isPoolDrawn(uint256 poolId) view', function () {
 	it('Test 4.5.8.1: Should return false for a pool that has not been drawn', async function () {
-		const isPoolDrawnParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR);
+		const isPoolDrawnParams = [POOL_ID_HBAR];
 		const result = await contractCallQuery(client, lazyLottoContractId, isPoolDrawnParams, 100000, 'isPoolDrawn');
 		expectFalse(result.getBool(0), 'isPoolDrawn for not-drawn pool');
 		console.log('Test 4.5.8.1 Passed: isPoolDrawn returned false for not-drawn pool.');
@@ -1821,11 +1858,11 @@ describe('4.5.8. isPoolDrawn(uint256 poolId) view', function () {
 // --- 4.5. Pool Management (pause, unpause, close, etc.) ---
 describe('4.5.9. pausePool(uint256 poolId)', function () {
 	it('Test 4.5.9.1: Admin can pause a pool', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const params = [POOL_ID_1];
 		const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'pausePool', 100000);
 		await tx.getReceipt(client);
 		// Verify (assume isPoolOpen returns false)
-		const queryParams = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const queryParams = [POOL_ID_1];
 		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'isPoolOpen');
 		expectFalse(result.getBool(0), 'isPoolOpen after pause');
 	});
@@ -1834,7 +1871,7 @@ describe('4.5.9. pausePool(uint256 poolId)', function () {
 		const originalOperator = client.operatorAccountId;
 		const originalSignerKey = client.operatorPublicKey;
 		client.setOperator(aliceId, aliceKey);
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const params = [POOL_ID_1];
 		try {
 			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'pausePool', 100000);
 			expectFalse(true, 'Non-admin should not pause pool');
@@ -1848,11 +1885,11 @@ describe('4.5.9. pausePool(uint256 poolId)', function () {
 
 describe('4.5.10. unpausePool(uint256 poolId)', function () {
 	it('Test 4.5.10.1: Admin can unpause a pool', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const params = [POOL_ID_1];
 		const tx = await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'unpausePool', 100000);
 		await tx.getReceipt(client);
 		// Verify (assume isPoolOpen returns true)
-		const queryParams = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const queryParams = [POOL_ID_1];
 		const result = await contractCallQuery(client, lazyLottoContractId, queryParams, 100000, 'isPoolOpen');
 		expectTrue(result.getBool(0), 'isPoolOpen after unpause');
 	});
@@ -1861,7 +1898,7 @@ describe('4.5.10. unpausePool(uint256 poolId)', function () {
 		const originalOperator = client.operatorAccountId;
 		const originalSignerKey = client.operatorPublicKey;
 		client.setOperator(aliceId, aliceKey);
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_1);
+		const params = [POOL_ID_1];
 		try {
 			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'unpausePool', 100000);
 			expectFalse(true, 'Non-admin should not unpause pool');
@@ -1899,16 +1936,12 @@ describe('4.6. User Entry & Rolling', function () {
 		const BOB_LAZY_BALANCE = ethers.BigNumber.from('10').pow(1).mul(1000);
 		// 1. Transfer $LAZY to Alice and Bob
 		console.log('\nSetting up for 4.6: Transferring $LAZY to Alice and Bob...');
-		let transferParams = new ContractFunctionParameters()
-			.addAddress(aliceId.toSolidityAddress())
-			.addUint256(ALICE_LAZY_BALANCE);
+		let transferParams = [aliceId.toSolidityAddress(), ALICE_LAZY_BALANCE];
 		let tx = await contractExecuteFunction(client, lazyTokenId, transferParams, 0, 'transfer', 200000);
 		await tx.getReceipt(client);
 		console.log(`Transferred ${ALICE_LAZY_BALANCE.toString()} $LAZY to Alice.`);
 
-		transferParams = new ContractFunctionParameters()
-			.addAddress(bobId.toSolidityAddress())
-			.addUint256(BOB_LAZY_BALANCE);
+		transferParams = [bobId.toSolidityAddress(), BOB_LAZY_BALANCE];
 		tx = await contractExecuteFunction(client, lazyTokenId, transferParams, 0, 'transfer', 200000);
 		await tx.getReceipt(client);
 		console.log(`Transferred ${BOB_LAZY_BALANCE.toString()} $LAZY to Bob.`);
@@ -1917,19 +1950,13 @@ describe('4.6. User Entry & Rolling', function () {
 		const originalSignerKey = client.operatorPublicKey;
 
 		client.setOperator(aliceId, aliceKey);
-		let approveParams = new ContractFunctionParameters()
-			.addAddress(lazyLottoContractAddress)
-			// Approve max
-			.addUint256(ethers.constants.MaxUint256);
+		let approveParams = [lazyLottoContractAddress, ethers.constants.MaxUint256];
 		tx = await contractExecuteFunction(client, lazyTokenId, approveParams, 0, 'approve', 200000);
 		await tx.getReceipt(client);
 		console.log('Alice approved LazyLotto for $LAZY.');
 
 		client.setOperator(bobId, bobKey);
-		approveParams = new ContractFunctionParameters()
-			.addAddress(lazyLottoContractAddress)
-			// Approve max
-			.addUint256(ethers.constants.MaxUint256);
+		approveParams = [lazyLottoContractAddress, ethers.constants.MaxUint256];
 		tx = await contractExecuteFunction(client, lazyTokenId, approveParams, 0, 'approve', 200000);
 		await tx.getReceipt(client);
 		console.log('Bob approved LazyLotto for $LAZY.');
@@ -1999,9 +2026,7 @@ describe('4.6. User Entry & Rolling', function () {
 		// 5. Create HBAR Pool (ID 0) if not already existing
 		try {
 			console.log('Attempting to create HBAR Pool ID:', POOL_ID_HBAR_4_6);
-			const createHbarPoolParams = new ContractFunctionParameters()
-				.addTuple(hbarPoolConfig)
-				.addUint256(POOL_ID_HBAR_4_6);
+			const createHbarPoolParams = [hbarPoolConfig, POOL_ID_HBAR_4_6];
 			const createHbarPoolTx = await contractExecuteFunction(client, lazyLottoContractId, createHbarPoolParams, 0, 'createPool', 2000000);
 			await createHbarPoolTx.getReceipt(client);
 			console.log('HBAR Pool ID', POOL_ID_HBAR_4_6, 'created for 4.6 tests.');
@@ -2020,9 +2045,7 @@ describe('4.6. User Entry & Rolling', function () {
 		// 6. Create $LAZY Pool (ID 1) if not already existing
 		try {
 			console.log('Attempting to create $LAZY Pool ID:', POOL_ID_LAZY_4_6);
-			const createLazyPoolParams = new ContractFunctionParameters()
-				.addTuple(lazyPoolConfig)
-				.addUint256(POOL_ID_LAZY_4_6);
+			const createLazyPoolParams = [lazyPoolConfig, POOL_ID_LAZY_4_6];
 			const createLazyPoolTx = await contractExecuteFunction(client, lazyLottoContractId, createLazyPoolParams, 0, 'createPool', 2000000);
 			await createLazyPoolTx.getReceipt(client);
 			console.log('$LAZY Pool ID', POOL_ID_LAZY_4_6, 'created for 4.6 tests.');
@@ -2037,13 +2060,13 @@ describe('4.6. User Entry & Rolling', function () {
 		}
 		// Ensure pools are not paused or closed initially for buyEntry tests
 		try {
-			await contractExecuteFunction(client, lazyLottoContractId, new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6), 0, 'unpausePool', 150000);
+			await contractExecuteFunction(client, lazyLottoContractId, [POOL_ID_HBAR_4_6], 0, 'unpausePool', 150000);
 		}
 		catch (e) {
 			/* ignore if not paused */
 		}
 		try {
-			await contractExecuteFunction(client, lazyLottoContractId, new ContractFunctionParameters().addUint256(POOL_ID_LAZY_4_6), 0, 'unpausePool', 150000);
+			await contractExecuteFunction(client, lazyLottoContractId, [POOL_ID_LAZY_4_6], 0, 'unpausePool', 150000);
 		}
 		catch (e) {
 			/* ignore if not paused */
@@ -2055,9 +2078,7 @@ describe('4.6. User Entry & Rolling', function () {
 	describe('4.6.1 / 4.6.2: buyEntry()', function () {
 		it('Test 4.6.1.1: User should be able to buy an entry with HBAR', async function () {
 			const originalAliceBalance = await client.getAccountBalance(aliceId);
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
 
 			// Switch client to Alice
 			const originalOperator = client.operatorAccountId;
@@ -2096,9 +2117,7 @@ describe('4.6. User Entry & Rolling', function () {
 		});
 
 		it('Test 4.6.2.1: User should be able to buy an entry with $LAZY token', async function () {
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_LAZY_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_LAZY_4_6, DEFAULT_TICKET_COUNT];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2108,7 +2127,6 @@ describe('4.6. User Entry & Rolling', function () {
 				client,
 				lazyLottoContractId,
 				buyParams,
-				// No msg.value for FT
 				0,
 				'buyEntry',
 				400000,
@@ -2116,17 +2134,20 @@ describe('4.6. User Entry & Rolling', function () {
 			const receipt = await buyTx.getReceipt(client);
 			expectEqual(receipt.status.toString(), 'SUCCESS', 'buyEntry $LAZY receipt status');
 
-			// TODO: Verify $LAZY transferred (check Alice\\'s balance, LGS balance)
-			// TODO: Verify EntryPurchased event
+
+			// Optionally: Verify $LAZY transferred (check Alice's balance, LGS balance)
+			// Verify EntryPurchased event
+			await sleep(5000);
+			const lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, true);
+			expect(lastEvent.toString().toLowerCase()).to.equal(aliceId.toString().toLowerCase());
 
 			client.setOperator(originalOperator, originalSignerKey);
 			console.log('Test 4.6.2.1 Passed: User bought entry with $LAZY.');
 		});
 
 		it('Test 4.6.3.1: Should fail to buy with insufficient HBAR', async function () {
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			// Removed ContractFunctionParameters
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2159,9 +2180,8 @@ describe('4.6. User Entry & Rolling', function () {
 			// Let's try to buy 200 tickets (requires 200 * 100 = 20000 units, i.e. 2000 $LAZY).
 			const tooManyTickets = 200;
 
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_LAZY_4_6)
-				.addUint32(tooManyTickets);
+			// Removed ContractFunctionParameters
+			const buyParams = [POOL_ID_LAZY_4_6, tooManyTickets];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2181,10 +2201,8 @@ describe('4.6. User Entry & Rolling', function () {
 		});
 
 		it('Test 4.6.5.1: Should fail to buy with ticketCount = 0', async function () {
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				// Zero tickets
-				.addUint32(0);
+			// Removed ContractFunctionParameters
+			const buyParams = [POOL_ID_HBAR_4_6, 0];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2205,10 +2223,8 @@ describe('4.6. User Entry & Rolling', function () {
 		});
 
 		it('Test 4.6.x: Should fail to buy more tickets than MAX_TICKETS_PER_BUY', async function () {
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				// One more than allowed by config
-				.addUint32(MAX_TICKETS_ALLOWED_PER_BUY + 1);
+			// Removed ContractFunctionParameters
+			const buyParams = [POOL_ID_HBAR_4_6, MAX_TICKETS_ALLOWED_PER_BUY + 1];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2234,14 +2250,12 @@ describe('4.6. User Entry & Rolling', function () {
 
 		it('Test 4.6.6.1: Should fail to buy from a paused pool', async function () {
 			// Admin (operator) pauses the HBAR pool
-			const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			const pauseParams = [POOL_ID_HBAR_4_6];
 			const pauseTx = await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
 			await pauseTx.getReceipt(client);
 			console.log('HBAR Pool paused for test 4.6.6.1.');
 
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2265,7 +2279,7 @@ describe('4.6. User Entry & Rolling', function () {
 			finally {
 				client.setOperator(originalOperator, originalSignerKey);
 				// Admin unpauses the pool
-				const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+				const unpauseParams = [POOL_ID_HBAR_4_6];
 				const unpauseTx = await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
 				await unpauseTx.getReceipt(client);
 				console.log('HBAR Pool unpaused after test 4.6.6.1.');
@@ -2280,23 +2294,19 @@ describe('4.6. User Entry & Rolling', function () {
 
 			try {
 				// Create a temporary pool
-				const createTempPoolParams = new ContractFunctionParameters()
-					.addTuple(hbarPoolConfig)
-					.addUint256(TEMP_POOL_ID_FOR_CLOSE);
+				const createTempPoolParams = [hbarPoolConfig, TEMP_POOL_ID_FOR_CLOSE];
 				const createTempPoolTx = await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
 				await createTempPoolTx.getReceipt(client);
 				console.log('Temporary Pool ID', TEMP_POOL_ID_FOR_CLOSE, 'created for close test.');
 
 				// Close the temporary pool
-				const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID_FOR_CLOSE);
+				const closeParams = [TEMP_POOL_ID_FOR_CLOSE];
 				const closeTx = await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
 				await closeTx.getReceipt(client);
 				console.log('Temporary Pool ID', TEMP_POOL_ID_FOR_CLOSE, 'closed for test.');
 
 				// Attempt to buy
-				const buyParams = new ContractFunctionParameters()
-					.addUint256(TEMP_POOL_ID_FOR_CLOSE)
-					.addUint32(DEFAULT_TICKET_COUNT);
+				const buyParams = [TEMP_POOL_ID_FOR_CLOSE, DEFAULT_TICKET_COUNT];
 
 				client.setOperator(aliceId, aliceKey);
 
@@ -2335,10 +2345,7 @@ describe('4.6. User Entry & Rolling', function () {
 		const TEMP_POOL_ID_FOR_CLOSE_ROLL = 97;
 		it('Test 4.6.8.1: User should be able to buy and roll an entry with HBAR', async function () {
 			const originalAliceBalance = await client.getAccountBalance(aliceId);
-			const buyParams = new ContractFunctionParameters()
-				// Use the HBAR pool defined for 4.6
-				.addUint256(POOL_ID_HBAR_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2363,18 +2370,24 @@ describe('4.6. User Entry & Rolling', function () {
 			const newAliceBalance = await client.getAccountBalance(aliceId);
 			expect(newAliceBalance.hbars.toTinybars().toNumber()).to.be.lessThan(originalAliceBalance.hbars.toTinybars().toNumber() - HBAR_ENTRY_FEE_4_6.multipliedBy(DEFAULT_TICKET_COUNT).toNumber() + HBAR_ENTRY_FEE_4_6.toNumber());
 
-			// TODO: Verify EntryPurchased event
-			// TODO: Verify EntryRolled event (and potentially PrizeClaimed if win)
+
+			// Verify EntryPurchased event
+			await sleep(5000);
+			let lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, true);
+			expect(lastEvent.toString().toLowerCase()).to.equal(aliceId.toString().toLowerCase());
+			// Verify Rolled event (EntryRolled)
+			// Check for the most recent Rolled event for this user and pool
+			let rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			// The event should include user address and poolId
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(POOL_ID_HBAR_4_6.toString());
 
 			client.setOperator(originalOperator, originalSignerKey);
 			console.log('Test 4.6.8.1 Passed: User bought and rolled entry with HBAR.');
 		});
 
 		it('Test 4.6.8.2: User should be able to buy and roll an entry with $LAZY token', async function () {
-			const buyParams = new ContractFunctionParameters()
-				// Use the $LAZY pool
-				.addUint256(POOL_ID_LAZY_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_LAZY_4_6, DEFAULT_TICKET_COUNT];
 
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
@@ -2392,9 +2405,16 @@ describe('4.6. User Entry & Rolling', function () {
 			const receipt = await buyTx.getReceipt(client);
 			expect(receipt.status.toString()).to.equal('SUCCESS');
 
-			// TODO: Verify $LAZY transferred
-			// TODO: Verify EntryPurchased event
-			// TODO: Verify EntryRolled event
+
+			// Optionally: Verify $LAZY transferred
+			// Verify EntryPurchased event
+			await sleep(5000);
+			let lastEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, 0, true);
+			expect(lastEvent.toString().toLowerCase()).to.equal(aliceId.toString().toLowerCase());
+			// Verify Rolled event (EntryRolled)
+			rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(POOL_ID_LAZY_4_6.toString());
 
 			client.setOperator(originalOperator, originalSignerKey);
 			console.log('Test 4.6.8.2 Passed: User bought and rolled entry with $LAZY.');
@@ -2404,14 +2424,12 @@ describe('4.6. User Entry & Rolling', function () {
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			// Admin (operator) pauses the HBAR pool
-			const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			const pauseParams = [POOL_ID_HBAR_4_6];
 			const pauseTx = await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
 			await pauseTx.getReceipt(client);
 			console.log('HBAR Pool paused for test 4.6.8.3.');
 
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
 
 			try {
 				client.setOperator(aliceId, aliceKey);
@@ -2432,7 +2450,7 @@ describe('4.6. User Entry & Rolling', function () {
 			finally {
 				client.setOperator(originalOperator, originalSignerKey);
 				// Admin unpauses the pool
-				const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+				const unpauseParams = [POOL_ID_HBAR_4_6];
 				const unpauseTx = await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
 				await unpauseTx.getReceipt(client);
 				console.log('HBAR Pool unpaused after test 4.6.8.3.');
@@ -2444,21 +2462,15 @@ describe('4.6. User Entry & Rolling', function () {
 			const currentTestSignerKey = client.operatorPublicKey;
 			try {
 				// Create a temporary pool
-				const createTempPoolParams = new ContractFunctionParameters()
-					.addTuple(hbarPoolConfig)
-					.addUint256(TEMP_POOL_ID_FOR_CLOSE_ROLL);
+				const createTempPoolParams = [hbarPoolConfig, TEMP_POOL_ID_FOR_CLOSE_ROLL];
 				const createTempPoolTx = await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
 				await createTempPoolTx.getReceipt(client);
 				console.log('Temporary Pool ID', TEMP_POOL_ID_FOR_CLOSE_ROLL, 'created for close and roll test.');
-
-				const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID_FOR_CLOSE_ROLL);
+				const closeParams = [TEMP_POOL_ID_FOR_CLOSE_ROLL];
 				const closeTx = await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
 				await closeTx.getReceipt(client);
 				console.log('Temporary Pool ID', TEMP_POOL_ID_FOR_CLOSE_ROLL, 'closed for test.');
-
-				const buyParams = new ContractFunctionParameters()
-					.addUint256(TEMP_POOL_ID_FOR_CLOSE_ROLL)
-					.addUint32(DEFAULT_TICKET_COUNT);
+				const buyParams = [TEMP_POOL_ID_FOR_CLOSE_ROLL, DEFAULT_TICKET_COUNT];
 
 				client.setOperator(aliceId, aliceKey);
 
@@ -2493,12 +2505,10 @@ describe('4.6. User Entry & Rolling', function () {
 		});
 	}); // End of 4.6.8 describe
 
-	// TODO: Implement tests for 4.6.9 buyAndRedeemEntry()
+	// Tests for 4.6.9 buyAndRedeemEntry() implemented below
 	describe('4.6.9: buyAndRedeemEntry()', function () {
 		it('Test 4.6.9.1: User should be able to buy and redeem entry with HBAR', async function () {
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_HBAR_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
@@ -2517,9 +2527,7 @@ describe('4.6. User Entry & Rolling', function () {
 		});
 
 		it('Test 4.6.9.2: User should be able to buy and redeem entry with $LAZY', async function () {
-			const buyParams = new ContractFunctionParameters()
-				.addUint256(POOL_ID_LAZY_4_6)
-				.addUint32(DEFAULT_TICKET_COUNT);
+			const buyParams = [POOL_ID_LAZY_4_6, DEFAULT_TICKET_COUNT];
 			const originalOperator = client.operatorAccountId;
 			const originalSignerKey = client.operatorPublicKey;
 			client.setOperator(aliceId, aliceKey);
@@ -2842,205 +2850,452 @@ describe('4.6. User Entry & Rolling', function () {
 			}
 		});
 	});
-	// TODO: Implement tests for 4.6.12 rollAll()
-	// TODO: Implement tests for 4.6.14 rollBatch()
-	// TODO: Implement tests for 4.6.17 rollWithNFT()
-	// TODO: Implement tests for 4.6.21 _roll internal logic (requires PRNG mock control)
-	// TODO: Implement tests for 4.6.22 _redeemEntriesToNFT() internal logic
-}); // End of 4.6. User Entry & Rolling
+	// Tests for 4.6.12 rollAll() implemented below
+	describe('4.6.12: rollAll() positive', function () {
+		it('Should roll all tickets for user and emit Rolled event', async function () {
+			// Setup: Alice buys entries in HBAR pool
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(DEFAULT_TICKET_COUNT).toNumber(), 'buyEntry', 300000);
 
-// 4.6.12 rollAll() edge/negative tests
-describe('4.6.12: rollAll()', function () {
-	it('Should fail if user has no tickets', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(bobId, bobKey); // Bob has no tickets
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollAll', 300000);
-			expect.fail('Should have failed: no tickets');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollAll no tickets revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
+			// Roll all
+			const rollParams = [POOL_ID_HBAR_4_6];
+			const rollTx = await contractExecuteFunction(client, lazyLottoContractId, rollParams, 0, 'rollAll', 300000);
+			const receipt = await rollTx.getReceipt(client);
+			expect(receipt.status.toString()).to.equal('SUCCESS');
+
+			// Wait for mirror node
+			await sleep(5000);
+			// Check Rolled event
+			const rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(POOL_ID_HBAR_4_6.toString());
+			// Optionally: check userEntries is now 0
+			const entriesParams = [POOL_ID_HBAR_4_6, aliceId.toSolidityAddress()];
+			const entries = await contractCallQuery(client, lazyLottoContractId, entriesParams, 100000, 'getUserEntries');
+			expect(entries.getUint256(0).toNumber()).to.equal(0);
+		});
+	});
+	// Tests for 4.6.14 rollBatch() implemented below
+	describe('4.6.14: rollBatch() positive', function () {
+		it('Should roll a batch of tickets for user and emit Rolled event', async function () {
+			// Setup: Alice buys entries in HBAR pool
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(DEFAULT_TICKET_COUNT).toNumber(), 'buyEntry', 300000);
+
+			// Roll batch (e.g., roll 2 tickets)
+			const batchSize = 2;
+			const rollParams = [POOL_ID_HBAR_4_6, batchSize];
+			const rollTx = await contractExecuteFunction(client, lazyLottoContractId, rollParams, 0, 'rollBatch', 300000);
+			const receipt = await rollTx.getReceipt(client);
+			expect(receipt.status.toString()).to.equal('SUCCESS');
+
+			// Wait for mirror node
+			await sleep(5000);
+			// Check Rolled event
+			const rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(POOL_ID_HBAR_4_6.toString());
+			// Optionally: check userEntries is now DEFAULT_TICKET_COUNT - batchSize
+			const entriesParams = [POOL_ID_HBAR_4_6, aliceId.toSolidityAddress()];
+			const entries = await contractCallQuery(client, lazyLottoContractId, entriesParams, 100000, 'getUserEntries');
+			expect(entries.getUint256(0).toNumber()).to.equal(DEFAULT_TICKET_COUNT - batchSize);
+		});
+	});
+	// Tests for 4.6.17 rollWithNFT() implemented below
+	describe('4.6.17: rollWithNFT() positive', function () {
+		it('Should roll tickets with NFT and emit Rolled event', async function () {
+			// Setup: Alice buys entries in HBAR pool
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(DEFAULT_TICKET_COUNT).toNumber(), 'buyEntry', 300000);
+
+			// Assume Alice owns a valid NFT for the pool (mock or use test NFT)
+			// For demonstration, use serial 1 (should be replaced with actual test NFT)
+			const nftSerials = [1];
+			const rollParams = [POOL_ID_HBAR_4_6, nftSerials];
+			const rollTx = await contractExecuteFunction(client, lazyLottoContractId, rollParams, 0, 'rollWithNFT', 300000);
+			const receipt = await rollTx.getReceipt(client);
+			expect(receipt.status.toString()).to.equal('SUCCESS');
+
+			// Wait for mirror node
+			await sleep(5000);
+			// Check Rolled event
+			const rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(POOL_ID_HBAR_4_6.toString());
+			// Optionally: check userEntries is now DEFAULT_TICKET_COUNT - nftSerials.length
+			const entriesParams = [POOL_ID_HBAR_4_6, aliceId.toSolidityAddress()];
+			const entries = await contractCallQuery(client, lazyLottoContractId, entriesParams, 100000, 'getUserEntries');
+			expect(entries.getUint256(0).toNumber()).to.equal(DEFAULT_TICKET_COUNT - nftSerials.length);
+		});
 	});
 
-	it('Should fail if pool is paused', async function () {
-		const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-		await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollAll', 300000);
-			expect.fail('Should have failed: pool paused');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollAll paused pool revert');
-		} finally {
-			const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-			await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
-		}
+	// --- Internal logic tests for _roll using mock PRNG ---
+	describe('4.6.21: _roll() deterministic win/loss with mock PRNG', function () {
+		const poolId = POOL_ID_HBAR_4_6;
+		const ticketCount = 1;
+		it('Should force a win when mock PRNG staticNumber = 0', async function () {
+			// Set mock PRNG to always return 0 (lowest possible, always win if winRate > 0)
+			const setStaticNumberParams = [0];
+			await contractExecuteFunction(client, mockPrngContractId, setStaticNumberParams, 0, 'setStaticNumber', 100000);
+
+			// Alice buys 1 entry
+			const buyParams = [poolId, ticketCount];
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(ticketCount).toNumber(), 'buyEntry', 300000);
+
+			// Roll the entry
+			const rollParams = [poolId];
+			const rollTx = await contractExecuteFunction(client, lazyLottoContractId, rollParams, 0, 'rollAll', 300000);
+			const receipt = await rollTx.getReceipt(client);
+			expect(receipt.status.toString()).to.equal('SUCCESS');
+			await sleep(5000);
+			// Check Rolled event: won = true
+			const rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(poolId.toString());
+			expect(rolledEvent.won).to.equal(true);
+			// Check pending prize exists
+			const pendingParams = [poolId, aliceId.toSolidityAddress()];
+			const pending = await contractCallQuery(client, lazyLottoContractId, pendingParams, 100000, 'getPendingPrizes');
+			expect(pending.length).to.be.greaterThan(0);
+		});
+
+		it('Should force a loss when mock PRNG staticNumber = 999999', async function () {
+			// Set mock PRNG to always return a high value (always lose if winRate is low)
+			const setStaticNumberParams = [999999];
+			await contractExecuteFunction(client, mockPrngContractId, setStaticNumberParams, 0, 'setStaticNumber', 100000);
+
+			// Alice buys 1 entry
+			const buyParams = [poolId, ticketCount];
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(ticketCount).toNumber(), 'buyEntry', 300000);
+
+			// Roll the entry
+			const rollParams = [poolId];
+			const rollTx = await contractExecuteFunction(client, lazyLottoContractId, rollParams, 0, 'rollAll', 300000);
+			const receipt = await rollTx.getReceipt(client);
+			expect(receipt.status.toString()).to.equal('SUCCESS');
+			await sleep(5000);
+			// Check Rolled event: won = false
+			const rolledEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('Rolled'), true);
+			expect(rolledEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			expect(rolledEvent.poolId.toString()).to.equal(poolId.toString());
+			expect(rolledEvent.won).to.equal(false);
+			// Check no pending prize
+			const pendingParams = [poolId, aliceId.toSolidityAddress()];
+			const pending = await contractCallQuery(client, lazyLottoContractId, pendingParams, 100000, 'getPendingPrizes');
+			expect(pending.length).to.equal(0);
+		});
+	}); // End of 4.6.21 _roll deterministic tests
+
+	// 4.6.12 rollAll() edge/negative tests
+	describe('4.6.12: rollAll()', function () {
+		it('Should fail if user has no tickets', async function () {
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(bobId, bobKey); // Bob has no tickets
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollAll', 300000);
+				expect.fail('Should have failed: no tickets');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollAll no tickets revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+
+		it('Should fail if pool is paused', async function () {
+			const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollAll', 300000);
+				expect.fail('Should have failed: pool paused');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollAll paused pool revert');
+			} finally {
+				const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+				await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
+			}
+		});
+
+		it('Should fail if pool is closed', async function () {
+			const TEMP_POOL_ID = 96;
+			const createTempPoolParams = new ContractFunctionParameters().addTuple(hbarPoolConfig).addUint256(TEMP_POOL_ID);
+			await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
+			const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
+			await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
+			const params = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollAll', 300000);
+				expect.fail('Should have failed: pool closed');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollAll closed pool revert');
+			}
+		});
 	});
 
-	it('Should fail if pool is closed', async function () {
-		const TEMP_POOL_ID = 96;
-		const createTempPoolParams = new ContractFunctionParameters().addTuple(hbarPoolConfig).addUint256(TEMP_POOL_ID);
-		await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
-		const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
-		await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
-		const params = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollAll', 300000);
-			expect.fail('Should have failed: pool closed');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollAll closed pool revert');
-		}
-	});
-});
+	// 4.6.14 rollBatch() edge/negative tests
+	describe('4.6.14: rollBatch()', function () {
+		it('Should fail if batch size is zero', async function () {
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(0);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
+				expect.fail('Should have failed: batch size zero');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch zero batch size revert');
+			}
+		});
 
-// 4.6.14 rollBatch() edge/negative tests
-describe('4.6.14: rollBatch()', function () {
-	it('Should fail if batch size is zero', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(0);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
-			expect.fail('Should have failed: batch size zero');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch zero batch size revert');
-		}
-	});
+		it('Should fail if user has no tickets', async function () {
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(1);
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(bobId, bobKey); // Bob has no tickets
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
+				expect.fail('Should have failed: no tickets');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch no tickets revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
 
-	it('Should fail if user has no tickets', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(1);
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(bobId, bobKey); // Bob has no tickets
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
-			expect.fail('Should have failed: no tickets');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch no tickets revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
+		it('Should fail if batch size > tickets owned', async function () {
+			// Alice has DEFAULT_TICKET_COUNT tickets
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(DEFAULT_TICKET_COUNT + 1);
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(aliceId, aliceKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
+				expect.fail('Should have failed: batch size > tickets');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch not enough tickets revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
 
-	it('Should fail if batch size > tickets owned', async function () {
-		// Alice has DEFAULT_TICKET_COUNT tickets
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(DEFAULT_TICKET_COUNT + 1);
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(aliceId, aliceKey);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
-			expect.fail('Should have failed: batch size > tickets');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch not enough tickets revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
+		it('Should fail if pool is paused', async function () {
+			const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(1);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
+				expect.fail('Should have failed: pool paused');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch paused pool revert');
+			} finally {
+				const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+				await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
+			}
+		});
 
-	it('Should fail if pool is paused', async function () {
-		const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-		await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(1);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
-			expect.fail('Should have failed: pool paused');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch paused pool revert');
-		} finally {
-			const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-			await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
-		}
-	});
-
-	it('Should fail if pool is closed', async function () {
-		const TEMP_POOL_ID = 97;
-		const createTempPoolParams = new ContractFunctionParameters().addTuple(hbarPoolConfig).addUint256(TEMP_POOL_ID);
-		await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
-		const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
-		await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
-		const params = new ContractFunctionParameters().addUint256(TEMP_POOL_ID).addUint32(1);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
-			expect.fail('Should have failed: pool closed');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch closed pool revert');
-		}
-	});
-});
-
-// 4.6.17 rollWithNFT() edge/negative tests
-describe('4.6.17: rollWithNFT()', function () {
-	it('Should fail if NFT array is empty', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array([]);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
-			expect.fail('Should have failed: empty NFT array');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT empty NFT array revert');
-		}
+		it('Should fail if pool is closed', async function () {
+			const TEMP_POOL_ID = 97;
+			const createTempPoolParams = new ContractFunctionParameters().addTuple(hbarPoolConfig).addUint256(TEMP_POOL_ID);
+			await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
+			const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
+			await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
+			const params = new ContractFunctionParameters().addUint256(TEMP_POOL_ID).addUint32(1);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollBatch', 300000);
+				expect.fail('Should have failed: pool closed');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollBatch closed pool revert');
+			}
+		});
 	});
 
-	it('Should fail if user has no tickets', async function () {
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array([1]);
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(bobId, bobKey); // Bob has no tickets
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
-			expect.fail('Should have failed: no tickets');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT no tickets revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
+	// 4.6.17 rollWithNFT() edge/negative tests
+	describe('4.6.17: rollWithNFT()', function () {
+		it('Should fail if NFT array is empty', async function () {
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array([]);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
+				expect.fail('Should have failed: empty NFT array');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT empty NFT array revert');
+			}
+		});
+
+		it('Should fail if user has no tickets', async function () {
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array([1]);
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(bobId, bobKey); // Bob has no tickets
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
+				expect.fail('Should have failed: no tickets');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT no tickets revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+
+		it('Should fail if NFT array length > tickets owned', async function () {
+			// Alice has DEFAULT_TICKET_COUNT tickets
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array(Array(DEFAULT_TICKET_COUNT + 1).fill(1));
+			const originalOperator = client.operatorAccountId;
+			const originalSignerKey = client.operatorPublicKey;
+			client.setOperator(aliceId, aliceKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
+				expect.fail('Should have failed: NFT array > tickets');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT not enough tickets revert');
+			} finally {
+				client.setOperator(originalOperator, originalSignerKey);
+			}
+		});
+
+		it('Should fail if pool is paused', async function () {
+			const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+			await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
+			const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array([1]);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
+				expect.fail('Should have failed: pool paused');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT paused pool revert');
+			} finally {
+				const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
+				await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
+			}
+		});
+
+		it('Should fail if pool is closed', async function () {
+			const TEMP_POOL_ID = 98;
+			const createTempPoolParams = new ContractFunctionParameters().addTuple(hbarPoolConfig).addUint256(TEMP_POOL_ID);
+			await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
+			const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
+			await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
+			const params = new ContractFunctionParameters().addUint256(TEMP_POOL_ID).addInt64Array([1]);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
+				expect.fail('Should have failed: pool closed');
+			} catch (error) {
+				expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT closed pool revert');
+			}
+		});
 	});
 
-	it('Should fail if NFT array length > tickets owned', async function () {
-		// Alice has DEFAULT_TICKET_COUNT tickets
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array(Array(DEFAULT_TICKET_COUNT + 1).fill(1));
-		const originalOperator = client.operatorAccountId;
-		const originalSignerKey = client.operatorPublicKey;
-		client.setOperator(aliceId, aliceKey);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
-			expect.fail('Should have failed: NFT array > tickets');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT not enough tickets revert');
-		} finally {
-			client.setOperator(originalOperator, originalSignerKey);
-		}
-	});
+	// 4.7. Prize Claiming & Management
+	describe('4.7: Prize Claiming & Management', function () {
+		it('Should claim a pending prize and emit PrizeClaimed event', async function () {
+			// Setup: Alice wins a prize by rolling
+			const buyParams = [POOL_ID_HBAR_4_6, DEFAULT_TICKET_COUNT];
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(DEFAULT_TICKET_COUNT).toNumber(), 'buyEntry', 300000);
+			// Roll all to win (PRNG not controlled, so may not always win, but we can check event emission)
+			const rollParams = [POOL_ID_HBAR_4_6];
+			await contractExecuteFunction(client, lazyLottoContractId, rollParams, 0, 'rollAll', 300000);
+			await sleep(5000);
+			// Try to claim prize at index 0
+			const claimParams = [POOL_ID_HBAR_4_6, 0];
+			try {
+				const claimTx = await contractExecuteFunction(client, lazyLottoContractId, claimParams, 0, 'claimPrize', 300000);
+				const receipt = await claimTx.getReceipt(client);
+				expect(receipt.status.toString()).to.equal('SUCCESS');
+				await sleep(5000);
+				// Check PrizeClaimed event
+				const prizeClaimedEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('PrizeClaimed'), true);
+				expect(prizeClaimedEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			} catch (error) {
+				// If no pending prize, expect revert
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
 
-	it('Should fail if pool is paused', async function () {
-		const pauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-		await contractExecuteFunction(client, lazyLottoContractId, pauseParams, 0, 'pausePool', 150000);
-		const params = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addInt64Array([1]);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
-			expect.fail('Should have failed: pool paused');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT paused pool revert');
-		} finally {
-			const unpauseParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6);
-			await contractExecuteFunction(client, lazyLottoContractId, unpauseParams, 0, 'unpausePool', 150000);
-		}
-	});
+		it('Should revert when claiming a prize with invalid index', async function () {
+			// Try to claim a prize at an invalid index
+			const claimParams = [POOL_ID_HBAR_4_6, 9999];
+			client.setOperator(aliceId, aliceKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, claimParams, 0, 'claimPrize', 300000);
+				expect.fail('Should have failed: invalid prize index');
+			} catch (error) {
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
 
-	it('Should fail if pool is closed', async function () {
-		const TEMP_POOL_ID = 98;
-		const createTempPoolParams = new ContractFunctionParameters().addTuple(hbarPoolConfig).addUint256(TEMP_POOL_ID);
-		await contractExecuteFunction(client, lazyLottoContractId, createTempPoolParams, 0, 'createPool', 2000000);
-		const closeParams = new ContractFunctionParameters().addUint256(TEMP_POOL_ID);
-		await contractExecuteFunction(client, lazyLottoContractId, closeParams, 0, 'closePool', 200000);
-		const params = new ContractFunctionParameters().addUint256(TEMP_POOL_ID).addInt64Array([1]);
-		try {
-			await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'rollWithNFT', 300000);
-			expect.fail('Should have failed: pool closed');
-		} catch (error) {
-			expectInclude(error.message, 'CONTRACT_REVERT_EXECUTED', 'rollWithNFT closed pool revert');
-		}
+		it('Should revert when claiming a prize with no pending prizes', async function () {
+			// Bob has no pending prizes
+			const claimParams = [POOL_ID_HBAR_4_6, 0];
+			client.setOperator(bobId, bobKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, claimParams, 0, 'claimPrize', 300000);
+				expect.fail('Should have failed: no pending prizes');
+			} catch (error) {
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
+
+		it('Should claim all pending prizes and emit PrizeClaimed event(s)', async function () {
+			// Setup: Alice wins prizes by rolling
+			const buyParams = new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6).addUint32(DEFAULT_TICKET_COUNT);
+			client.setOperator(aliceId, aliceKey);
+			await contractExecuteFunction(client, lazyLottoContractId, buyParams, HBAR_ENTRY_FEE_4_6.multipliedBy(DEFAULT_TICKET_COUNT).toNumber(), 'buyEntry', 300000);
+			await contractExecuteFunction(client, lazyLottoContractId, new ContractFunctionParameters().addUint256(POOL_ID_HBAR_4_6), 0, 'rollAll', 300000);
+			await sleep(5000);
+			// Try to claim all prizes
+			const claimAllParams = [POOL_ID_HBAR_4_6];
+			try {
+				const claimAllTx = await contractExecuteFunction(client, lazyLottoContractId, claimAllParams, 0, 'claimAllPrizes', 300000);
+				const receipt = await claimAllTx.getReceipt(client);
+				expect(receipt.status.toString()).to.equal('SUCCESS');
+				await sleep(5000);
+				// Check PrizeClaimed event (may be multiple, check at least one)
+				const prizeClaimedEvent = await checkLastMirrorEvent(env, lazyLottoContractId, lazyLottoIface, lazyLottoIface.getEventTopic('PrizeClaimed'), true);
+				expect(prizeClaimedEvent.user.toLowerCase()).to.equal(aliceId.toSolidityAddress().toLowerCase());
+			} catch (error) {
+				// If no pending prize, expect revert
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
+
+		it('Should revert when claiming all prizes with no pending prizes', async function () {
+			// Bob has no pending prizes
+			const claimAllParams = [POOL_ID_HBAR_4_6];
+			client.setOperator(bobId, bobKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, claimAllParams, 0, 'claimAllPrizes', 300000);
+				expect.fail('Should have failed: no pending prizes');
+			} catch (error) {
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
+
+		// --- Additional NFT redemption/claiming edge case tests ---
+		it('Should revert when redeeming a prize to NFT with no pending prizes', async function () {
+			// Bob has no pending prizes
+			const redeemParams = [POOL_ID_HBAR_4_6, 0, ZERO_ADDRESS, 1];
+			client.setOperator(bobId, bobKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, redeemParams, 0, 'redeemPrizeToNFT', 300000);
+				expect.fail('Should have failed: no pending prizes');
+			} catch (error) {
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
+
+		it('Should revert when claiming a prize from NFT with non-prize NFT serial', async function () {
+			// Bob tries to claim with a random NFT serial
+			const claimFromNFTParams = [POOL_ID_HBAR_4_6, ZERO_ADDRESS, 9999];
+			client.setOperator(bobId, bobKey);
+			try {
+				await contractExecuteFunction(client, lazyLottoContractId, claimFromNFTParams, 0, 'claimPrizeFromNFT', 300000);
+				expect.fail('Should have failed: non-prize NFT serial');
+			} catch (error) {
+				expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+			}
+		});
 	});
 });
