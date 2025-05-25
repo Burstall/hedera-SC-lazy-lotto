@@ -14,4 +14,4 @@ yarn.lock
 logs/*
 .DS_Store
 *.key
-docs/main.js
+docs/*
