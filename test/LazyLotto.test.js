@@ -115,6 +115,7 @@ async function contractCallQuery(env, contractId, iface, functionName, params, f
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 // Example: 10%
 const INITIAL_BURN_PERCENTAGE = 10;
+const MIRROR_NODE_DELAY = 5000; // 5 seconds for mirror node to catch up
 
 
 // Pool constants
@@ -1658,7 +1659,381 @@ describe('LazyLotto Contract Tests', function () {
 				});
 			}); // End of 'Time Bonus Configuration (setTimeBonus, removeTimeBonus)'
 		}); // End of 4.4.3. Bonus Configuration (setLazyBalanceBonus, setNFTBonus, setTimeBonus, etc.)
+
+		describe('4.4.4. createPool() Input Validation', function () {
+			const GAS_FOR_CREATE_POOL_VALIDATION = 1_000_000; // Gas limit for these tests
+
+			// Base valid parameters, modify these for each test
+			const getBasePoolConfig = (type = 1, isRoyalty = false) => ({ // type 1 = FT
+				token: type === 0 ? ZERO_ADDRESS : lazyTokenAddress, // 0 for HBAR
+				ticketPrice: type === 0 ? TICKET_PRICE_HBAR : TICKET_PRICE_LAZY,
+				minEntries: 1,
+				maxEntries: 100,
+				duration: 3600, // 1 hour
+				poolType: type, // 0:HBAR, 1:FT, 2:NFT
+				isWeighted: false,
+				isRoyaltyPool: isRoyalty,
+			});
+
+			const baseName = 'Valid Pool Name';
+			const baseMemo = 'Valid memo';
+			const baseTicketCid = STATIC_TICKET_CID;
+			const baseWinCid = STATIC_WIN_CID;
+			const baseRoyalties = [];
+
+			const getPoolConfigAsArray = (config) => [
+				config.token,
+				config.ticketPrice,
+				config.minEntries,
+				config.maxEntries,
+				config.duration,
+				config.poolType,
+				config.isWeighted,
+				config.isRoyaltyPool,
+			];
+
+			it('Test 4.4.4.1: Should fail to createPool with empty name', async function () {
+				console.log('\\n--- Test 4.4.4.1: Should fail to createPool with empty name ---');
+				const poolConfig = getBasePoolConfig();
+				const params = [getPoolConfigAsArray(poolConfig), '', baseMemo, baseTicketCid, baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted due to empty name');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Name cannot be empty
+					console.log('Test 4.4.4.1 Passed: createPool reverted for empty name.');
+				}
+			});
+
+			it('Test 4.4.4.2: Should fail to createPool with empty ticket CID', async function () {
+				console.log('\\n--- Test 4.4.4.2: Should fail to createPool with empty ticket CID ---');
+				const poolConfig = getBasePoolConfig();
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, '', baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted due to empty ticket CID');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Ticket CID cannot be empty
+					console.log('Test 4.4.4.2 Passed: createPool reverted for empty ticket CID.');
+				}
+			});
+
+			it('Test 4.4.4.3: Should fail to createPool with empty win CID', async function () {
+				console.log('\\n--- Test 4.4.4.3: Should fail to createPool with empty win CID ---');
+				const poolConfig = getBasePoolConfig();
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, '', baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted due to empty win CID');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Win CID cannot be empty
+					console.log('Test 4.4.4.3 Passed: createPool reverted for empty win CID.');
+				}
+			});
+
+			it('Test 4.4.6.1: Should fail to createPool with too many royalties (>10)', async function () {
+				console.log('\\n--- Test 4.4.6.1: Should fail to createPool with too many royalties ---');
+				const poolConfig = getBasePoolConfig(1, true); // FT pool, royalty pool
+				const tooManyRoyalties = [];
+				for (let i = 0; i < 11; i++) { // MAX_ROYALTIES is 10
+					tooManyRoyalties.push({ receiver: aliceId.toSolidityAddress(), percentage: 100 }); // 1%
+				}
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, tooManyRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted due to too many royalties');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Too many royalties
+					console.log('Test 4.4.6.1 Passed: createPool reverted for >10 royalties.');
+				}
+			});
+
+			it('Test 4.4.7.1: Should fail to createPool if total royalty percentages exceed 100%', async function () {
+				console.log('\\n--- Test 4.4.7.1: Should fail for >100% total royalty ---');
+				const poolConfig = getBasePoolConfig(1, true);
+				const invalidRoyalties = [
+					{ receiver: aliceId.toSolidityAddress(), percentage: 6000 }, // 60%
+					{ receiver: bobId.toSolidityAddress(), percentage: 5000 },   // 50% -> total 110%
+				];
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, invalidRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted due to >100% royalty');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Total royalty percentage exceeds max
+					console.log('Test 4.4.7.1 Passed: createPool reverted for >100% royalty.');
+				}
+			});
+
+			it('Test 4.4.8.1: Should fail to createPool with zero ticketPrice', async function () {
+				console.log('\\n--- Test 4.4.8.1: Should fail for zero ticketPrice ---');
+				const poolConfig = { ...getBasePoolConfig(), ticketPrice: 0 };
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted due to zero ticket price');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Ticket price must be > 0
+					console.log('Test 4.4.8.1 Passed: createPool reverted for zero ticket price.');
+				}
+			});
+
+			it('Test 4.4.4.4: Should fail if poolConfig.token is zero address for FT pool', async function () {
+				console.log('\\n--- Test 4.4.4.4: Should fail for zero token address in FT pool ---');
+				const poolConfig = { ...getBasePoolConfig(1), token: ZERO_ADDRESS }; // Type 1 (FT)
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted for zero token in FT pool');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Token address cannot be zero for FT/NFT pools
+					console.log('Test 4.4.4.4 Passed: createPool reverted for zero token in FT pool.');
+				}
+			});
+
+			it('Test 4.4.4.5: Should fail if poolConfig.minEntries is zero', async function () {
+				console.log('\\n--- Test 4.4.4.5: Should fail for zero minEntries ---');
+				const poolConfig = { ...getBasePoolConfig(), minEntries: 0 };
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted for zero minEntries');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Min entries must be > 0
+					console.log('Test 4.4.4.5 Passed: createPool reverted for zero minEntries.');
+				}
+			});
+
+			it('Test 4.4.4.6: Should fail if poolConfig.maxEntries < poolConfig.minEntries', async function () {
+				console.log('\\n--- Test 4.4.4.6: Should fail if maxEntries < minEntries ---');
+				const poolConfig = { ...getBasePoolConfig(), minEntries: 10, maxEntries: 5 };
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted for maxEntries < minEntries');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Max entries >= min entries
+					console.log('Test 4.4.4.6 Passed: createPool reverted for maxEntries < minEntries.');
+				}
+			});
+
+			it('Test 4.4.4.7: Should fail if poolConfig.duration is zero', async function () {
+				console.log('\\n--- Test 4.4.4.7: Should fail for zero duration ---');
+				const poolConfig = { ...getBasePoolConfig(), duration: 0 };
+				const params = [getPoolConfigAsArray(poolConfig), baseName, baseMemo, baseTicketCid, baseWinCid, baseRoyalties];
+				try {
+					await contractExecuteFunction(client, lazyLottoContractId, params, 0, 'createPool', GAS_FOR_CREATE_POOL_VALIDATION);
+					expect.fail('createPool should have reverted for zero duration');
+				} catch (error) {
+					expect(error.message).to.include('CONTRACT_REVERT_EXECUTED');
+					// Contract requires: Duration must be > 0
+					console.log('Test 4.4.4.7 Passed: createPool reverted for zero duration.');
+				}
+			});
+		}); // End of 4.4.4. createPool() Input Validation
+
+		describe('4.4.5. Prize Package Management', function () {
+			const GAS_FOR_PRIZE_MGMT = 1_500_000;
+			let prizeTestPoolIdHbar, prizeTestPoolIdFt, prizeTestPoolIdNft;
+
+			// Helper to create a basic pool for prize tests
+			async function createPrizeTestPool(poolType = 0, tokenAddr = ZERO_ADDRESS, namePrefix = 'PrizePool') {
+				const poolConfig = {
+					token: poolType === 0 ? ZERO_ADDRESS : tokenAddr,
+					ticketPrice: poolType === 0 ? TICKET_PRICE_HBAR : TICKET_PRICE_LAZY, // Assuming LAZY for FT/NFT pools
+					minEntries: 1,
+					maxEntries: 100,
+					duration: 3600 * 24, // 1 day
+					poolType: poolType, // 0:HBAR, 1:FT, 2:NFT
+					isWeighted: false,
+					isRoyaltyPool: false,
+				};
+				const poolConfigArray = [
+					poolConfig.token, poolConfig.ticketPrice, poolConfig.minEntries, poolConfig.maxEntries,
+					poolConfig.duration, poolConfig.poolType, poolConfig.isWeighted, poolConfig.isRoyaltyPool,
+				];
+				const poolName = `${namePrefix}-${poolType === 0 ? 'HBAR' : poolType === 1 ? 'FT' : 'NFT'}-${Date.now()}`;
+				const createPoolTx = await contractExecuteFunction(
+					client, lazyLottoContractId,
+					[poolConfigArray, poolName, 'Prize test pool', STATIC_TICKET_CID, STATIC_WIN_CID, []],
+					0, 'createPool', 1_000_000,
+				);
+				const rec = await createPoolTx.getRecord(client);
+				await sleep(MIRROR_NODE_DELAY);
+				return rec.contractFunctionResult.getUint256(0);
+			}
+
+			before(async function () {
+				// Create one of each pool type for prize tests
+				prizeTestPoolIdHbar = await createPrizeTestPool(0, ZERO_ADDRESS, 'HbarPrizePool');
+				prizeTestPoolIdFt = await createPrizeTestPool(1, lazyTokenAddress, 'FtPrizePool'); // Using $LAZY as test FT
+				prizeTestPoolIdNft = await createPrizeTestPool(2, nftCollections[0].tokenAddress, 'NftPrizePool'); // Using first NFT collection
+
+				console.log(`\nPrize Test Pool IDs: HBAR=${prizeTestPoolIdHbar}, FT=${prizeTestPoolIdFt}, NFT=${prizeTestPoolIdNft}`);
+
+				// For FT prizes, contract needs to own the tokens or have approval.
+				// Transfer some $LAZY to the lotto contract for FT prize tests
+				const { TransferTransaction } = require('@hashgraph/sdk');
+				const ftAmountForPrizes = ethers.BigNumber.from('10').pow(1).mul(1000); // 1000 $LAZY (1 decimal)
+				const transferLazyTx = await new TransferTransaction()
+					.addTokenTransfer(lazyTokenId, operatorId, ftAmountForPrizes.mul(-1))
+					.addTokenTransfer(lazyTokenId, AccountId.fromString(lazyLottoContractId.toString()), ftAmountForPrizes)
+					.freezeWith(client);
+				await transferLazyTx.sign(operatorKey);
+				await (await transferLazyTx.execute(client)).getReceipt(client);
+				console.log(`Transferred ${ftAmountForPrizes.toString()} $LAZY to LazyLotto contract for prize funding.`);
+				await sleep(MIRROR_NODE_DELAY);
+
+				// For NFT prizes, contract needs to own the NFT.
+				// Transfer one NFT from nftCollections[0] (owned by operator) to the lotto contract
+				const nftToPrize = nftCollections[0];
+				const serialToPrize = nftToPrize.serials[0];
+				const transferNftTx = await new TransferTransaction()
+					.addNftTransfer(nftToPrize.tokenId, operatorId, AccountId.fromString(lazyLottoContractId.toString()), serialToPrize.low) // .low because serials are Long
+					.freezeWith(client);
+				await transferNftTx.sign(operatorKey);
+				await (await transferNftTx.execute(client)).getReceipt(client);
+				console.log(`Transferred NFT ${nftToPrize.tokenId.toString()} serial ${serialToPrize.low} to LazyLotto contract for prize funding.`);
+				await sleep(MIRROR_NODE_DELAY);
+			});
+
+			describe('4.4.10 - 4.4.19: addPrizePackage()', function () {
+				it('Test 4.4.10.1: Admin should be able to add an HBAR prize package', async function () {
+					console.log('\n--- Test 4.4.10.1: Add HBAR prize ---');
+					const prizeAmountHbar = new Hbar(10).toTinybars(); // 10 HBAR
+					const prizeStruct = [0, ZERO_ADDRESS, prizeAmountHbar, 'HBAR Prize CID']; // PrizeType.HBAR = 0
+
+					const tx = await contractExecuteFunction(
+						client, lazyLottoContractId,
+						[prizeTestPoolIdHbar, prizeStruct],
+						prizeAmountHbar, // msg.value for HBAR prize
+						'addPrizePackage', GAS_FOR_PRIZE_MGMT
+					);
+					await tx.getRecord(client); // Ensure transaction succeeded
+					await sleep(MIRROR_NODE_DELAY);
+					// Verification: Check PoolPrizesUpdated event or getPoolPrizes view function
+					const eventData = await checkLastMirrorEvent(lazyLottoIface, 'PoolPrizesUpdated', lazyLottoContractAddress, MIRROR_NODE_DELAY);
+					expect(eventData).to.not.be.null;
+					expectEqual(eventData.poolId.toString(), prizeTestPoolIdHbar.toString(), 'Event poolId mismatch');
+					console.log('Test 4.4.10.1 Passed: HBAR prize added.');
+				});
+
+				it('Test 4.4.11.1: Admin should be able to add an FT prize package ($LAZY)', async function () {
+					console.log('\n--- Test 4.4.11.1: Add FT ($LAZY) prize ---');
+					const prizeAmountFt = ethers.BigNumber.from('10').pow(1).mul(50); // 50 $LAZY (1 decimal)
+					const prizeStruct = [1, lazyTokenAddress, prizeAmountFt, 'FT Prize CID']; // PrizeType.FUNGIBLE_TOKEN = 1
+
+					const tx = await contractExecuteFunction(
+						client, lazyLottoContractId,
+						[prizeTestPoolIdFt, prizeStruct],
+						0, // No msg.value for FT prize if contract already owns/approved
+						'addPrizePackage', GAS_FOR_PRIZE_MGMT
+					);
+					await tx.getRecord(client);
+					await sleep(MIRROR_NODE_DELAY);
+					const eventData = await checkLastMirrorEvent(lazyLottoIface, 'PoolPrizesUpdated', lazyLottoContractAddress, MIRROR_NODE_DELAY);
+					expect(eventData).to.not.be.null;
+					expectEqual(eventData.poolId.toString(), prizeTestPoolIdFt.toString(), 'Event poolId mismatch for FT prize');
+					console.log('Test 4.4.11.1 Passed: FT prize added.');
+				});
+
+				it('Test 4.4.12.1: Admin should be able to add an NFT prize package', async function () {
+					console.log('\n--- Test 4.4.12.1: Add NFT prize ---');
+					const nftToPrize = nftCollections[0]; // This was transferred to contract in before()
+					const serialToPrize = nftToPrize.serials[0].low;
+					const prizeStruct = [2, nftToPrize.tokenAddress, serialToPrize, 'NFT Prize CID']; // PrizeType.NON_FUNGIBLE_TOKEN = 2
+
+					const tx = await contractExecuteFunction(
+						client, lazyLottoContractId,
+						[prizeTestPoolIdNft, prizeStruct],
+						0, // No msg.value for NFT prize
+						'addPrizePackage', GAS_FOR_PRIZE_MGMT
+					);
+					await tx.getRecord(client);
+					await sleep(MIRROR_NODE_DELAY);
+					const eventData = await checkLastMirrorEvent(lazyLottoIface, 'PoolPrizesUpdated', lazyLottoContractAddress, MIRROR_NODE_DELAY);
+					expect(eventData).to.not.be.null;
+					expectEqual(eventData.poolId.toString(), prizeTestPoolIdNft.toString(), 'Event poolId mismatch for NFT prize');
+					console.log('Test 4.4.12.1 Passed: NFT prize added.');
+				});
+
+				// Additional tests for addPrizePackage validations and edge cases
+			});
+
+			describe('addMultipleFungiblePrizes()', function () {
+				// Additional tests for addMultipleFungiblePrizes
+			});
+		}); // End of 4.4.5. Prize Package Management
 	}); // End of 4.4. Bonus Configuration
+
+	// ----------------------------------------------------------------------------
+	// Pool Closing Scenarios
+	// ----------------------------------------------------------------------------
+	describe("Pool Closing Scenarios", function () {
+		let poolId;
+
+		beforeEach(async function () {
+			// Create a new pool for each test
+			const tx = await lazyLotto.connect(admin).createPool(
+				"Test Pool",
+				"TP",
+				"Test Pool Memo",
+				ethers.ZeroAddress, // feeToken (HBAR)
+				1000, // entryFee (10 HBAR)
+				5000, // winRateTenThousandthsOfBps (5%)
+				"ticket_cid_data_here",
+				"win_cid_data_here",
+				[], // royalties
+				false // autoClaimPrizes
+			);
+			const receipt = await tx.wait();
+			// Find the PoolCreated event to get the poolId
+			const event = receipt.logs.find(e => e.fragment && e.fragment.name === 'PoolCreated');
+			poolId = event.args[0]; // Assuming poolId is the first argument
+		});
+
+		// Test 4.4.26: closePool() by admin on an open pool with no outstanding entries/tokens.
+		it("Test 4.4.26: Should allow admin to close an open pool with no entries or tokens", async function () {
+			await expect(lazyLotto.connect(admin).closePool(poolId))
+				.to.emit(lazyLotto, "PoolClosed")
+				.withArgs(poolId);
+			const poolDetails = await lazyLotto.getPoolDetails(poolId);
+			expect(poolDetails.closed).to.be.true;
+		});
+
+		// Test 4.4.27: closePool() with outstanding entries.
+		it("Test 4.4.27: Should revert when closing a pool with outstanding entries", async function () {
+			// Buy an entry to create outstanding entries
+			await lazyLotto.connect(user1).buyEntry(poolId, 1, { value: ethers.parseUnits("10", "ether") }); // Assuming entryFee is 10 HBAR
+			await expect(lazyLotto.connect(admin).closePool(poolId))
+				.to.be.revertedWithCustomError(lazyLotto, "EntriesOutstanding");
+		});
+
+		// Test 4.4.28: closePool() with outstanding pool tokens (NFTs minted for entries).
+		it("Test 4.4.28: Should revert when closing a pool with outstanding pool tokens (NFTs)", async function () {
+			// Buy and redeem an entry to create an outstanding pool token
+			await lazyLotto.connect(user1).buyAndRedeemEntry(poolId, 1, { value: ethers.parseUnits("10", "ether") });
+			await expect(lazyLotto.connect(admin).closePool(poolId))
+				.to.be.revertedWithCustomError(lazyLotto, "EntriesOutstanding");
+		});
+
+		// Test 4.4.29: closePool() by non-admin.
+		it("Test 4.4.29: Should revert when non-admin tries to close a pool", async function () {
+			await expect(lazyLotto.connect(user1).closePool(poolId))
+				.to.be.revertedWithCustomError(lazyLotto, "NotAdmin");
+		});
+	});
+
+	// ----------------------------------------------------------------------------
 
 	describe('4.5. Pool Management', function () {
 		// Assumptions:
