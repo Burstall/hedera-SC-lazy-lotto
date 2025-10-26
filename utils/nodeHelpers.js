@@ -24,8 +24,13 @@ async function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function isBytes32(str) {
-	return /^0x([A-Fa-f0-9]{64})$/.test(str);
+function hex_to_ascii(hex) {
+	const r = [];
+	for (let i = 0; i < hex.length - 1; i += 2) {
+		const v = parseInt(hex.charAt(i) + hex.charAt(i + 1), 16);
+		if (v) r.push(String.fromCharCode(v));
+	}
+	return r.join('');
 }
 
-module.exports = { getArgFlag, getArg, sleep, isBytes32 };
+module.exports = { getArgFlag, getArg, sleep, hex_to_ascii };

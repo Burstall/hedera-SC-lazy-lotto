@@ -3,6 +3,7 @@ const axios = require('axios');
 const dotenv = require('dotenv');
 const { ContractCallQuery, Client, TransactionRecordQuery, ContractExecuteTransaction, ContractCreateFlow } = require('@hashgraph/sdk');
 const { getBaseURL } = require('./hederaMirrorHelpers');
+const { formatTransactionAnalysis } = require('./transactionHelpers');
 dotenv.config();
 
 const SLEEP_TIME = process.env.SLEEP_TIME ?? 5000;
@@ -89,7 +90,7 @@ function parseError(iface, errorData) {
 
 	try {
 		const errDescription = iface.parseError(errorData);
-		return errDescription;
+		return !errDescription ? `UNKNOWN ERROR: ${errorData}` : errDescription;
 	}
 	catch (e) {
 		console.error(errorData, e);
@@ -111,8 +112,14 @@ async function parseErrorTransactionId(envOrClient, transactionId, iface) {
 			.setTransactionId(transactionId)
 			.setValidateReceiptStatus(false)
 			.execute(envOrClient);
-
+		console.log(' -Got record from network for transaction:', transactionId.toString());
+		console.log(' -Status:', record.receipt.status.toString());
+		console.log(' -Error message:', record.contractFunctionResult.errorMessage, 'calling:', record.contractFunctionResult.contractId.toString(), 'with gas used:', record.contractFunctionResult.gasUsed.toString());
 		try {
+			if (!record?.contractFunctionResult?.errorMessage || record?.contractFunctionResult?.errorMessage == '0x') {
+				console.log('NO CONTRACT ERROR MESSAGE:', transactionId.toString(), formatTransactionAnalysis(record));
+				return `POORLY FORMED ERROR: ${transactionId}`;
+			}
 			return parseError(iface, record.contractFunctionResult.errorMessage);
 		}
 		catch (e) {
@@ -136,7 +143,7 @@ async function parseErrorTransactionId(envOrClient, transactionId, iface) {
 		console.log(' -ERROR', response.status, ' from mirror node');
 	}
 	else {
-		// console.log(' -Got', response.data.error_message, 'from mirror node');
+		console.log(' -Got', response.data.error_message, 'from mirror node');
 		return parseError(iface, response.data.error_message);
 	}
 }
@@ -148,20 +155,21 @@ async function parseErrorTransactionId(envOrClient, transactionId, iface) {
  * @param {AccountId} from
  * @param {Boolean} estimate gas estimate
  * @param {Number} gas gas limit
+ * @param {Number} value amount of hbar to send in tinybars
  * @returns {String} encoded result
  */
-async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate = true, gas = 300_000) {
+async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate = true, gas = 300_000, value = 0) {
 	const baseUrl = getBaseURL(env);
 
 	const body = {
 		'block': 'latest',
 		'data': data,
 		'estimate': estimate,
-		'from': from.toSolidityAddress(),
+		'from': typeof from === 'string' ? from : from.toSolidityAddress(),
 		'gas': gas,
 		'gasPrice': 100000000,
 		'to': contractId.toSolidityAddress(),
-		'value': 0,
+		'value': value,
 	};
 
 	const url = `${baseUrl}/api/v1/contracts/call`;
@@ -258,9 +266,10 @@ async function contractExecuteFunction(contractId, iface, client, gasLim, fcnNam
 	}
 	catch (err) {
 		if (flagError) console.log('ERROR: Contract Transaction Failed');
+
 		if (!err?.contractFunctionResult?.errorMessage) {
-			console.log('Malformed Error:');
-			console.dir(err, { depth: 5, colors: true });
+			console.log('TX FAILED - NO CONTRACT ERROR MESSAGE:', contractExecuteTx?.transactionId?.toString(), contractExecuteTx, err);
+			return [{ status: err }, `${contractExecuteTx?.transactionId?.toString()} : ${contractId.toString()} : ${fcnName} : ${params}`, null];
 		}
 
 		return [(parseError(iface, err?.contractFunctionResult?.errorMessage))];
@@ -315,7 +324,7 @@ async function contractExecuteFunction(contractId, iface, client, gasLim, fcnNam
 function linkBytecode(bytecode, libNameArray, libAddressArray) {
 	for (let i = 0; i < libNameArray.length; i++) {
 		const libName = libNameArray[i];
-		const libAddress = libAddressArray[i].toSolidityAddress();
+		const libAddress = typeof libAddressArray[i] == 'object' ? libAddressArray[i].toSolidityAddress() : libAddressArray[i];
 
 		const nameToHash = `contracts/${libName}.sol:${libName}`;
 

@@ -1,5 +1,6 @@
 const { AccountId } = require('@hashgraph/sdk');
 const { default: axios } = require('axios');
+const { ethers } = require('hardhat');
 
 function getBaseURL(env) {
 	if (env.toLowerCase() == 'test' || env.toLowerCase() == 'testnet') {
@@ -41,12 +42,47 @@ async function checkMirrorAllowance(env, _userId, _tokenId, _spenderId) {
 				}
 			});
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return 0;
 		});
 
 	return rtnVal;
+}
+
+async function getNFTApprovedForAllAllowances(env, _userId) {
+	const baseUrl = getBaseURL(env);
+	const url = `${baseUrl}/api/v1/accounts/${_userId.toString()}/allowances/nfts?limit=100`;
+
+	const spenderTokenMap = new Map();
+
+	await axios.get(url)
+		.then((response) => {
+			const jsonResponse = response.data;
+
+			const allowances = jsonResponse.allowances;
+
+			for (let n = 0; n < allowances.length; n++) {
+				const value = allowances[n];
+				if (value.approved_for_all) {
+					// check if the map already has the key (spender)
+					if (spenderTokenMap.has(value.spender)) {
+						const tokenList = spenderTokenMap.get(value.spender);
+						tokenList.push(value.token_id);
+						spenderTokenMap.set(value.spender, tokenList);
+					}
+					else {
+						spenderTokenMap.set(value.spender, [value.token_id]);
+					}
+				}
+			}
+		})
+		.catch(function (err) {
+			console.error(err);
+			return 0;
+		});
+
+	return spenderTokenMap;
 }
 
 async function checkMirrorNFTAllowance(env, _userId, _tokenId, _serial) {
@@ -65,7 +101,7 @@ async function checkMirrorNFTAllowance(env, _userId, _tokenId, _serial) {
 				}
 			});
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return 0;
 		});
@@ -88,7 +124,7 @@ async function checkFTAllowances(env, _userId) {
 			});
 			return rtnVal;
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return 0;
 		});
@@ -110,60 +146,39 @@ async function checkHbarAllowances(env, _userId) {
 			});
 			return rtnVal;
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return 0;
 		});
-}
-
-/**
- * Check mirror for hbar allowance
- * @param {string} env
- * @param {*} _userId
- * @param {*} _spenderId
- * @returns {Number | null} the amount of hbar allowed (or null if none found)
- */
-async function checkMirrorHbarAllowance(env, _userId, _spenderId) {
-	const baseUrl = getBaseURL(env);
-	const url = `${baseUrl}/api/v1/accounts/${_userId.toString()}/allowances/crypto`;
-
-	let rtnVal = 0;
-	await axios.get(url)
-		.then((response) => {
-			const jsonResponse = response.data;
-
-			jsonResponse.allowances.forEach(allowance => {
-				if (allowance.spender == _spenderId.toString()) {
-					// console.log(' -Mirror Node: Found hbar allowance for', allowance.owner, 'with allowance', allowance.amount);
-					rtnVal = Number(allowance.amount);
-				}
-			});
-		})
-		.catch(function(err) {
-			console.error(err);
-			return 0;
-		});
-
-	return rtnVal;
 }
 
 async function getSerialsOwned(env, _userId, _tokenId) {
 	const baseUrl = getBaseURL(env);
-	const url = `${baseUrl}/api/v1/tokens/${_tokenId.toString()}/nfts?account.id=${_userId.toString()}`;
+	let url = `${baseUrl}/api/v1/tokens/${_tokenId.toString()}/nfts?account.id=${_userId.toString()}&limit=100`;
 
 	const rtnVal = [];
-	return axios.get(url)
-		.then((response) => {
+
+	try {
+		do {
+			const response = await axios.get(url);
 			const jsonResponse = response.data;
+
 			jsonResponse.nfts.forEach(token => {
 				rtnVal.push(Number(token.serial_number));
 			});
-			return rtnVal;
-		})
-		.catch(function(err) {
-			console.error(err);
-			return null;
-		});
+
+			// Check for pagination - follow the cursor to get all NFTs
+			if (!jsonResponse.links || !jsonResponse.links.next) break;
+			url = `${baseUrl}${jsonResponse.links.next}`;
+		}
+		while (url);
+
+		return rtnVal;
+	}
+	catch (err) {
+		console.error(err);
+		return null;
+	}
 }
 
 /**
@@ -182,7 +197,7 @@ async function checkLastMirrorEvent(env, contractId, iface, offset = 1, account 
 
 	let rtnVal;
 	await axios.get(url)
-		.then(function(response) {
+		.then(function (response) {
 			const jsonResponse = response.data;
 
 			jsonResponse.logs.forEach(log => {
@@ -191,8 +206,8 @@ async function checkLastMirrorEvent(env, contractId, iface, offset = 1, account 
 				const event = iface.parseLog({ topics: log.topics, data: log.data });
 
 				let outputStr = 'Block: ' + log.block_number
-						+ ' : Tx Hash: ' + log.transaction_hash
-						+ ' : Event: ' + event.name + ' : ';
+					+ ' : Tx Hash: ' + log.transaction_hash
+					+ ' : Event: ' + event.name + ' : ';
 
 				for (let f = 0; f < event.args.length; f++) {
 					const field = event.args[f];
@@ -212,7 +227,7 @@ async function checkLastMirrorEvent(env, contractId, iface, offset = 1, account 
 				rtnVal = account ? AccountId.fromEvmAddress(0, 0, event.args[offset]) : Number(event.args[offset]);
 			});
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return null;
 		});
@@ -226,7 +241,7 @@ async function getEventsFromMirror(env, contractId, iface) {
 
 	const eventsToReturn = [];
 	return axios.get(url)
-		.then(function(response) {
+		.then(function (response) {
 			const jsonResponse = response.data;
 			jsonResponse.logs.forEach(log => {
 				// decode the event data
@@ -234,8 +249,8 @@ async function getEventsFromMirror(env, contractId, iface) {
 				const event = iface.parseLog({ topics: log.topics, data: log.data });
 
 				let outputStr = 'Block: ' + log.block_number
-						+ ' : Tx Hash: ' + log.transaction_hash
-						+ ' : Event: ' + event.name + ' : ';
+					+ ' : Tx Hash: ' + log.transaction_hash
+					+ ' : Event: ' + event.name + ' : ';
 
 				for (let f = 0; f < event.args.length; f++) {
 					const field = event.args[f];
@@ -255,7 +270,7 @@ async function getEventsFromMirror(env, contractId, iface) {
 			});
 			return eventsToReturn;
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 		});
 }
@@ -283,11 +298,40 @@ async function checkMirrorBalance(env, _userId, _tokenId) {
 				}
 			});
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return null;
 		});
 
+	// if null then check hasUserGotAutoAssociations
+	if (rtnVal === null) {
+		if (await hasUserGotAutoAssociations(env, _userId)) {
+			rtnVal = 0;
+		}
+	}
+
+	return rtnVal;
+}
+
+async function hasUserGotAutoAssociations(env, _userId, requiredAssociations = 1) {
+	const baseUrl = getBaseURL(env);
+	const url = `${baseUrl}/api/v1/accounts/${_userId.toString()}`;
+
+	// look for max_automatic_token_associations field
+	// if requiredAssociations == -1 or > requiredAssociations, return true
+	let rtnVal = false;
+	await axios.get(url)
+		.then((response) => {
+			const jsonResponse = response.data;
+			if (jsonResponse.max_automatic_token_associations != null) {
+				if (requiredAssociations == -1) {
+					rtnVal = true;
+				}
+				else if (jsonResponse.max_automatic_token_associations > requiredAssociations) {
+					rtnVal = true;
+				}
+			}
+		});
 	return rtnVal;
 }
 
@@ -301,7 +345,7 @@ async function checkMirrorHbarBalance(env, _userId) {
 			const jsonResponse = response.data;
 			rtnVal = jsonResponse.balance.balance;
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return null;
 		});
@@ -329,7 +373,7 @@ async function checkNFTOwnership(env, _tokenId, _serial) {
 				modified_time: jsonResponse.modified_timestamp,
 			};
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 		});
 
@@ -355,11 +399,12 @@ async function getTokenDetails(env, _tokenId) {
 				name: jsonResponse.name,
 				decimals: jsonResponse.decimals,
 				total_supply: jsonResponse.total_supply,
+				max_supply: jsonResponse.max_supply,
 				treasury_account_id: jsonResponse.treasury_account_id,
 				type: jsonResponse.type,
 			};
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return null;
 		});
@@ -450,10 +495,61 @@ async function getContractEVMAddress(env, contractId) {
 			const jsonResponse = response.data;
 			return jsonResponse.evm_address;
 		})
-		.catch(function(err) {
+		.catch(function (err) {
 			console.error(err);
 			return null;
 		});
+}
+
+/**
+ * Uses mirror to get the correct EVM address
+ * @param {string} env
+ * @param {AccountId | string} accountId
+ * @returns string
+ */
+async function homebrewPopulateAccountEvmAddress(env, accountId) {
+	if (accountId === null) {
+		throw new Error('field `accountId` should not be null');
+	}
+
+	const baseUrl = getBaseURL(env);
+
+	const acctId = (typeof accountId === 'string') ? AccountId.fromString(accountId) : accountId;
+
+	if (acctId.num === null) {
+		throw new Error('field `num` should not be null');
+	}
+
+	if (acctId.num.toString() === '0') {
+		return ethers.ZeroAddress;
+	}
+
+	let evmAddress;
+	try {
+		const url = `${baseUrl}/api/v1/accounts/${acctId.num.toString()}`;
+		const mirrorAccountId = (await axios.get(url)).data.evm_address;
+		evmAddress = ethers.getAddress(mirrorAccountId);
+	}
+	catch (error) {
+		console.error('Error fetching EVM address:', error);
+		evmAddress = acctId.toSolidityAddress();
+	}
+	return evmAddress;
+}
+
+async function homebrewPopulateAccountNum(env, evmAddress) {
+	if (evmAddress === null) {
+		throw new Error('field `evmAddress` should not be null');
+	}
+
+	const baseUrl = getBaseURL(env);
+
+	const url = `${baseUrl}/api/v1/accounts/${evmAddress}`;
+	const mirrorAccountId = (await axios.get(url)).data.account;
+	const acctId = AccountId.fromString(mirrorAccountId);
+	const accountId = acctId.toString();
+
+	return accountId;
 }
 
 module.exports = {
@@ -470,7 +566,10 @@ module.exports = {
 	translateTransactionForWebCall,
 	getContractEVMAddress,
 	checkMirrorHbarBalance,
-	checkMirrorHbarAllowance,
 	checkHbarAllowances,
 	checkNFTOwnership,
+	getNFTApprovedForAllAllowances,
+	homebrewPopulateAccountEvmAddress,
+	homebrewPopulateAccountNum,
+	hasUserGotAutoAssociations,
 };
