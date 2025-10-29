@@ -6,9 +6,6 @@ const {
 	Client,
 	AccountId,
 	PrivateKey,
-	// eslint-disable-next-line no-unused-vars
-	TokenId,
-	// eslint-disable-next-line no-unused-vars
 	ContractId,
 	ContractFunctionParameters,
 	Hbar,
@@ -44,7 +41,7 @@ try {
 	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 	operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 }
-catch (err) {
+catch {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 

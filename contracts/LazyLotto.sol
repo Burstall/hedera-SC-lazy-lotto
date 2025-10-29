@@ -1,7 +1,52 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.12 <0.9.0;
 
-/// @title Farming mission
+/*
+ * ⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
+ * ⚡                                                             ⚡
+ * ⚡                        LAZY SUPERHEROES                     ⚡
+ * ⚡                      The OG Hedera Project                  ⚡
+ * ⚡                                                             ⚡
+ * ⚡                        %%%%#####%%@@@@                      ⚡
+ * ⚡                   @%%%@%###%%%%###%%%%%@@                   ⚡
+ * ⚡                %%%%%%@@@@@@@@@@@@@@@@%##%%@@                ⚡
+ * ⚡              @%%@#@@@@@@@@@@@@@@@@@@@@@@@@*%%@@             ⚡
+ * ⚡            @%%%%@@@@@@@@@@@@@@@@@@@@@@@@@@@@%*%@@           ⚡
+ * ⚡           %%%#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@%#%@@         ⚡
+ * ⚡          %%%@@@@@@@@@@@@@@#-:--==+#@@@@@@@@@@@@@*%@@        ⚡
+ * ⚡         %@#@@@@@@@@@@@@@@*-------::%@@@@@@@@%%%%%*%@@       ⚡
+ * ⚡        %%#@@@@@@@@@@@@@@@=-------:#@@@@@@@@@%%%%%%*%@@      ⚡
+ * ⚡       %%#@@@@@@@@@@@@@@@#-------:+@@@@@@@@@@%%%%%%%#%@@     ⚡
+ * ⚡       %%#@@@@@@@@@@@@@@@=------:=@@@@@@@@@@@%%%%%%%%#@@     ⚡
+ * ⚡      #%#@@@%%%%%%%@@@@@%------:-@@@@@@@@@@@@@%%%%%%%#%@@    ⚡
+ * ⚡      %%#@@@%%%%%%%%@@@@=------------:::@@@@@@@@%%%%%#%@@    ⚡
+ * ⚡      %%#@@%%%%%%%%%@@@%:------------::%@@@@@@@@@%%%%#%@@    ⚡
+ * ⚡      %%#@@%%%%%%%%%@@@=:::---------:-@@@@@@@@@@@@@@@#@@@    ⚡
+ * ⚡      #%#@@@%%%%%%%@@@@*:::::::----:-@@@@@@@@@@@@@@@@#@@@    ⚡
+ * ⚡      %%%%@@@@%%%%%@@@@@@@@@@-:---:=@@@@@@@@@@@@@@@@@%@@@    ⚡
+ * ⚡       %%#@@@@%%%%@@@@@@@@@@@::--:*@@@@@@@@@@@@@@@@@%@@@     ⚡
+ * ⚡       %#%#@@@%@%%%@@@@@@@@@#::::#@@@@@@@@@@@@@@@@@@%@@@     ⚡
+ * ⚡        %%%%@@@%%%%%%@@@@@@@*:::%@@@@@@@@@@@@@@@@@@%@@@      ⚡
+ * ⚡         %%#%@@%%%%%%%@@@@@@=.-%@@@@@@@@@@@@@@@@@@%@@@       ⚡
+ * ⚡          %##*@%%%%%%%%%@@@@=+@@@@@@@@@@@@@@@@@@%%@@@        ⚡
+ * ⚡           %##*%%%%%%%%%%@@@@@@@@@@@@@@@@@@@@@@%@@@@         ⚡
+ * ⚡             %##+#%%%%%%%%@@@@@@@@@@@@@@@@@@@%@@@@           ⚡
+ * ⚡               %##*=%%%%%%%@@@@@@@@@@@@@@@#@@@@@             ⚡
+ * ⚡                 %##%#**#@@@@@@@@@@@@%%%@@@@@@               ⚡
+ * ⚡                    %%%%@@%@@@%%@@@@@@@@@@@                  ⚡
+ * ⚡                         %%%%%%%%%%%@@                       ⚡
+ * ⚡                                                             ⚡
+ * ⚡                 Development Team Focused on                 ⚡
+ * ⚡                   Decentralized Solutions                   ⚡
+ * ⚡                                                             ⚡
+ * ⚡         Visit: http://lazysuperheroes.com/                  ⚡
+ * ⚡            or: https://dapp.lazysuperheroes.com/            ⚡
+ * ⚡                   to get your LAZY on!                      ⚡
+ * ⚡                                                             ⚡
+ * ⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
+ */
+
+/// @title Lazy Lotto
 /// @author stowerling.eth / stowerling.hbar
 /// @notice Degens going to degen - this contract allows users to spend their $LAZY in the hope
 /// of getting prizes from the lotto.
@@ -145,7 +190,6 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     mapping(address => uint256) private ftTokensForPrizes;
 
     // Bonus config
-    uint16 public timeBonusBps;
     mapping(address => uint16) public nftBonusBps;
     address[] public nftBonusTokens;
     uint256 public lazyBalanceThreshold;
@@ -188,6 +232,12 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         _;
     }
 
+    // --- CONSTRUCTOR ---
+    /// @param _lazyToken The address of the $LAZY token
+    /// @param _lazyGasStation The address of the LazyGasStation contract
+    /// @param _lazyDelegateRegistry The address of the LazyDelegateRegistry contract
+    /// @param _prng The address of the PrngSystemContract
+    /// @param _burnPercentage The percentage of the entry fee to burn on entry (0-100)
     constructor(
         address _lazyToken,
         address _lazyGasStation,
@@ -218,6 +268,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     }
 
     // --- ADMIN FUNCTIONS ---
+    /// @notice Adds a new admin address
+    /// @param a The address of the new admin
     function addAdmin(address a) external onlyAdmin {
         if (a == address(0)) revert BadParameters();
         if (!_isAddressAdmin[a]) {
@@ -227,6 +279,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
     }
 
+    /// @notice Removes an admin address
+    /// @param a The address of the admin to remove
     function removeAdmin(address a) external onlyAdmin {
         if (a == address(0)) revert BadParameters();
         if (_adminCount <= 1) {
@@ -241,6 +295,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
     }
 
+    /// @notice Sets the burn percentage for the entry fee
+    /// @param _burnPercentage The new burn percentage (0-100)
     function setBurnPercentage(uint256 _burnPercentage) external onlyAdmin {
         if (_burnPercentage > 100) {
             revert BadParameters();
@@ -248,6 +304,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         burnPercentage = _burnPercentage;
     }
 
+    /// @notice Sets the lazy balance bonus parameters
+    /// @param _threshold The threshold for the lazy balance bonus
+    /// @param _bonusBps The bonus in basis points (0-10000)
     function setLazyBalanceBonus(
         uint256 _threshold,
         uint16 _bonusBps
@@ -260,6 +319,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         emit LazyBalanceBonusSet(_threshold, _bonusBps);
     }
 
+    /// @notice Sets an NFT bonus token and its bonus bps
+    /// @param _token The address of the NFT token
+    /// @param _bonusBps The bonus in basis points (0-10000)
     function setNFTBonus(address _token, uint16 _bonusBps) external onlyAdmin {
         if (_token == address(0) || _bonusBps > 10000) {
             revert BadParameters();
@@ -269,6 +331,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         emit NFTBonusSet(_token, _bonusBps);
     }
 
+    /// @notice Sets a time-based bonus window
+    /// @param _start The start time of the bonus window
+    /// @param _end The end time of the bonus window
+    /// @param _bonusBps The bonus in basis points (0-10000)
     function setTimeBonus(
         uint256 _start,
         uint256 _end,
@@ -281,6 +347,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         emit TimeBonusAdded(_start, _end, _bonusBps);
     }
 
+    /// @notice Removes a time-based bonus window
+    /// @param index The index of the bonus window to remove
     function removeTimeBonus(uint256 index) external onlyAdmin {
         if (index >= timeBonuses.length) {
             revert BadParameters();
@@ -289,6 +357,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         timeBonuses.pop();
     }
 
+    /// @notice Removes an NFT bonus token
+    /// @param index The index of the NFT bonus token to remove
     function removeNFTBonus(uint256 index) external onlyAdmin {
         if (index >= nftBonusTokens.length) {
             revert BadParameters();
@@ -296,6 +366,15 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         nftBonusTokens[index] = nftBonusTokens[nftBonusTokens.length - 1];
         delete nftBonusBps[nftBonusTokens[index]];
         nftBonusTokens.pop();
+    }
+
+    /// @notice Sets the PRNG contract address (for testing purposes)
+    /// @param _prng The address of the new PRNG contract
+    function setPrng(address _prng) external onlyAdmin {
+        if (_prng == address(0)) {
+            revert BadParameters();
+        }
+        prng = IPrngSystemContract(_prng);
     }
 
     /// Initializes a fresh Lotto pool with the given parameters
@@ -306,6 +385,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @param _ticketCID The CID for the (unrolled) ticket metadata
     /// @param _winCID The CID for the winning metadata
     /// @param _winRateTenThousandthsOfBps The winning rate in basis points (0-100_000_000)
+    /// @param _entryFee The entry fee for the pool
+    /// @param _feeToken The token to use for fees
+    /// @return poolId The ID of the created pool
     function createPool(
         string memory _name,
         string memory _symbol,
@@ -316,7 +398,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 _winRateTenThousandthsOfBps,
         uint256 _entryFee,
         address _feeToken
-    ) external onlyAdmin {
+    ) external payable onlyAdmin returns (uint256 poolId) {
         // check the parameters are valid
         if (
             bytes(_name).length == 0 ||
@@ -373,9 +455,16 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             })
         );
 
-        emit PoolCreated(pools.length - 1);
+        poolId = pools.length - 1;
+
+        emit PoolCreated(poolId);
     }
 
+    /// Admin can add prizes to a pool
+    /// @param poolId The ID of the pool to add prizes to
+    /// @param token The address of the token to add as a prize
+    /// @param amount The amount of the token to add as a prize
+    /// @param nftTokens The addresses of the NFT tokens to add as prizes
     function addPrizePackage(
         uint256 poolId,
         address token,
@@ -407,6 +496,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         );
     }
 
+    /// Admin can add multiple fungible prizes to a pool in one call
+    /// @param poolId The ID of the pool to add prizes to
+    /// @param tokenId The address of the token to add as a prize
+    /// @param amounts The amounts of the token to add as prizes
     function addMultipleFungiblePrizes(
         uint256 poolId,
         address tokenId,
@@ -451,6 +544,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     }
 
     /// Admin can pause a pool preventing the purchase of further tickets
+    /// @param poolId The ID of the pool to pause
     function pausePool(uint256 poolId) external onlyAdmin validPool(poolId) {
         LottoPool storage p = pools[poolId];
         p.paused = true;
@@ -458,6 +552,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     }
 
     /// Admin can unpause a pool allowing the purchase of further tickets
+    /// @param poolId The ID of the pool to unpause
     function unpausePool(uint256 poolId) external onlyAdmin validPool(poolId) {
         LottoPool storage p = pools[poolId];
         p.paused = false;
@@ -466,6 +561,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// Admin can permanently close a pool preventing any further actions
     /// Required to be able to remove prizes from the pool
+    /// @param poolId The ID of the pool to close
     function closePool(uint256 poolId) external onlyAdmin validPool(poolId) {
         LottoPool storage p = pools[poolId];
 
@@ -484,6 +580,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     }
 
     /// Admin can remove prizes from a pool if closed
+    /// @param poolId The ID of the pool to remove prizes from
+    /// @param prizeIndex The index of the prize to remove
     function removePrizes(
         uint256 poolId,
         uint256 prizeIndex
@@ -530,22 +628,23 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     }
 
     // PAUSE
+    /// @notice Pauses the contract
     function pause() external onlyAdmin {
         _pause();
     }
+    /// @notice Unpauses the contract
     function unpause() external onlyAdmin {
         _unpause();
     }
 
     // --- USER ACTIONS ---
+    /// User buys entries in the specified pool
+    /// @param poolId The ID of the pool to buy an entry in
+    /// @param ticketCount The number of tickets to buy
     function buyEntry(
         uint256 poolId,
         uint256 ticketCount
     ) external payable whenNotPaused validPool(poolId) nonReentrant {
-        if (ticketCount == 0) {
-            revert BadParameters();
-        }
-
         _buyEntry(poolId, ticketCount, false);
     }
 
@@ -555,41 +654,44 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     function buyAndRollEntry(
         uint256 poolId,
         uint256 ticketCount
-    ) external payable whenNotPaused validPool(poolId) nonReentrant {
-        if (ticketCount == 0) {
-            revert BadParameters();
-        }
-
+    )
+        external
+        payable
+        whenNotPaused
+        validPool(poolId)
+        nonReentrant
+        returns (uint256 wins, uint256 offset)
+    {
         _buyEntry(poolId, ticketCount, false);
-        _roll(poolId, ticketCount);
+        (wins, offset) = _roll(poolId, ticketCount);
     }
 
+    /// Helper function to allow the user to buy and redeem to NFT in one transaction
+    /// @param poolId The ID of the pool to buy an entry in
+    /// @param ticketCount The number of tickets to buy
     function buyAndRedeemEntry(
         uint256 poolId,
         uint256 ticketCount
     ) external payable whenNotPaused validPool(poolId) nonReentrant {
-        if (ticketCount == 0) {
-            revert BadParameters();
-        }
-
         _buyEntry(poolId, ticketCount, false);
         _redeemEntriesToNFT(poolId, ticketCount, msg.sender);
     }
 
+    /// Admin function to buy entries on behalf of a user
+    /// @param poolId The ID of the pool to buy an entry in
+    /// @param ticketCount The number of tickets to buy
+    /// @param onBehalfOf The address to buy the tickets for
     function adminBuyEntry(
         uint256 poolId,
         uint256 ticketCount,
         address onBehalfOf
     ) external whenNotPaused onlyAdmin validPool(poolId) nonReentrant {
-        if (ticketCount == 0) {
-            revert BadParameters();
-        }
-
         _buyEntry(poolId, ticketCount, false);
         _redeemEntriesToNFT(poolId, ticketCount, onBehalfOf);
     }
 
     /// User rolls all tickets in the pool (in memory not any NFT entries)
+    /// @param poolId The ID of the pool to roll tickets in
     function rollAll(
         uint256 poolId
     )
@@ -605,6 +707,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         return _roll(poolId, userEntries[poolId][msg.sender]);
     }
 
+    /// User rolls a batch of tickets in the pool (in memory not any NFT entries)
+    /// @param poolId The ID of the pool to roll tickets in
+    /// @param numberToRoll The number of tickets to roll
     function rollBatch(
         uint256 poolId,
         uint256 numberToRoll
@@ -629,6 +734,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         return _roll(poolId, numberToRoll);
     }
 
+    /// User rolls tickets redeemed from NFTs
+    /// @param poolId The ID of the pool to roll tickets in
+    /// @param serialNumbers The serial numbers of the NFTs to roll
     function rollWithNFT(
         uint256 poolId,
         int64[] memory serialNumbers
@@ -648,12 +756,17 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         return _roll(poolId, serialNumbers.length);
     }
 
+    /// User redeems pending prizes to NFTs
+    /// @param indices The indices of the pending prizes to redeem
     function redeemPrizeToNFT(
         uint256[] memory indices
     ) external nonReentrant returns (int64[] memory serials) {
         return _redeemPendingPrizeToNFT(indices);
     }
 
+    /// User claims prizes redeemed from NFTs
+    /// @param tokenId The NFT tokenId to claim prizes from
+    /// @param serialNumbers The serial numbers of the NFTs to claim prizes from
     function claimPrizeFromNFT(
         address tokenId,
         int64[] memory serialNumbers
@@ -672,10 +785,13 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
     }
 
+    /// User claims a specific prize by index
+    /// @param pkgIdx The index of the prize package to claim
     function claimPrize(uint256 pkgIdx) external nonReentrant {
         _claimPrize(pkgIdx);
     }
 
+    /// User claims all pending prizes
     function claimAllPrizes() external nonReentrant {
         if (pending[msg.sender].length == 0) {
             revert NoPendingPrizes();
@@ -688,9 +804,15 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     }
 
     /// --- VIEWS (Getters) ---
+    /// @notice Get the total number of pools
+    /// @return uint256 The total number of pools
     function totalPools() external view returns (uint256) {
         return pools.length;
     }
+
+    /// @notice Get the details of a specific pool
+    /// @param id The ID of the pool to get details for
+    /// @return LottoPool The details of the specified pool
     function getPoolDetails(
         uint256 id
     ) external view returns (LottoPool memory) {
@@ -700,12 +822,21 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             revert LottoPoolNotFound(id);
         }
     }
+
+    /// @notice Get the user's entries for a specific pool
+    /// @param poolId The ID of the pool to get entries for
+    /// @param user The address of the user to get entries for
+    /// @return uint256 The number of entries the user has in the specified pool
     function getUsersEntries(
         uint256 poolId,
         address user
     ) external view returns (uint256) {
         return userEntries[poolId][user];
     }
+
+    /// @notice Get the user's entries across all pools
+    /// @param user The address of the user to get entries for
+    /// @return uint256[] memory The number of entries the user has in each pool
     function getUserEntries(
         address user
     ) external view returns (uint256[] memory) {
@@ -715,11 +846,20 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
         return entries;
     }
+
+    /// @notice Get the user's pending prizes (all)
+    /// @param user The address of the user to get pending prizes for
+    /// @return PendingPrize[] memory The user's pending prizes
     function getPendingPrizes(
         address user
     ) external view returns (PendingPrize[] memory) {
         return pending[user];
     }
+
+    /// @notice Get a specific pending prize for a user by index
+    /// @param user The address of the user to get the pending prize for
+    /// @param index The index of the pending prize to retrieve
+    /// @return PendingPrize The pending prize at the specified index for the user
     function getPendingPrize(
         address user,
         uint256 index
@@ -730,18 +870,49 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
         return pending[user][index];
     }
+
+    /// @notice Get a specific pending prize for a user by NFT tokenId and serial number
+    /// @param tokenId The NFT tokenId to get the pending prize for
+    /// @param serialNumber The serial number of the NFT to get the pending prize for
+    /// @return PendingPrize The pending prize for the specified NFT
     function getPendingPrizes(
         address tokenId,
         uint256 serialNumber
     ) external view returns (PendingPrize memory) {
         return pendingNFTs[keccak256(abi.encode(tokenId, serialNumber))];
     }
+
+    /// @notice Get a specific prize package from a pool by index
+    /// @param poolId The ID of the pool to get the prize package from
+    /// @param prizeIndex The index of the prize package to retrieve
+    /// @return PrizePackage The prize package at the specified index in the pool
+    function getPrizePackage(
+        uint256 poolId,
+        uint256 prizeIndex
+    ) external view returns (PrizePackage memory) {
+        if (poolId >= pools.length) {
+            revert LottoPoolNotFound(poolId);
+        }
+        if (prizeIndex >= pools[poolId].prizes.length) {
+            revert BadParameters();
+        }
+        return pools[poolId].prizes[prizeIndex];
+    }
+
+    /// @notice Check if an address is an admin
+    /// @param a The address to check
     function isAdmin(address a) external view returns (bool) {
         return _isAddressAdmin[a];
     }
+
+    /// @notice Get the total number of time-based bonuses
+    /// @return uint256 The total number of time-based bonuses
     function totalTimeBonuses() external view returns (uint256) {
         return timeBonuses.length;
     }
+
+    /// @notice Get the total number of NFT bonus tokens
+    /// @return uint256 The total number of NFT bonus tokens
     function totalNFTBonusTokens() external view returns (uint256) {
         return nftBonusTokens.length;
     }
@@ -785,6 +956,11 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// --- INTERNAL FUNCTIONS ---
     function _checkAndPullFungible(address tokenId, uint256 amount) internal {
+        // only pull the fungible token if amount > 0
+        if (amount == 0) {
+            return;
+        }
+
         ftTokensForPrizes[tokenId] += amount;
 
         if (tokenId == address(0)) {
@@ -1126,6 +1302,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             revert BadParameters();
         }
 
+        if (poolId >= pools.length) {
+            revert LottoPoolNotFound(poolId);
+        }
         LottoPool storage p = pools[poolId];
 
         if (p.paused) {

@@ -335,6 +335,12 @@ async function hasUserGotAutoAssociations(env, _userId, requiredAssociations = 1
 	return rtnVal;
 }
 
+/**
+ * Basic query of mirror node for Hbar balance
+ * @param {string} env
+ * @param {AccountId} _userId
+ * @returns {Number} balance of Hbar in tinybars
+ */
 async function checkMirrorHbarBalance(env, _userId) {
 	const baseUrl = getBaseURL(env);
 	const url = `${baseUrl}/api/v1/accounts/${_userId.toString()}`;

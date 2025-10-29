@@ -96,6 +96,15 @@ Users can receive win rate bonuses through:
 4. User can trade these prize NFTs on secondary markets
 5. Final holder calls `claimPrizeFromNFT(tokenId, serialNumbers)` to claim actual prizes
 
+**Prize Inspection Flow**:
+1. User calls `getPendingPrizes(userAddress)` to see all won prizes
+2. Each `PendingPrize` object contains a `poolId` and `prize` (PrizePackage)
+3. To inspect prize details, user calls `getPrizePackage(poolId, prizeIndex)` 
+4. Returns detailed breakdown: token address, amount, NFT collections, and serial numbers
+5. Frontend can display: "Prize #1: 100 HBAR + 5 $LAZY + 3 NFTs from Collection X"
+
+**Use Case**: Before claiming or converting to NFT, users can inspect exactly what prizes they've won, enabling informed decision-making about whether to claim immediately or trade the prize NFT.
+
 ### 5. Batch Operations & Gas Optimization
 
 **User Story**: "As a user, I want to efficiently manage multiple tickets and prizes"
