@@ -1302,9 +1302,6 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             revert BadParameters();
         }
 
-        if (poolId >= pools.length) {
-            revert LottoPoolNotFound(poolId);
-        }
         LottoPool storage p = pools[poolId];
 
         if (p.paused) {
