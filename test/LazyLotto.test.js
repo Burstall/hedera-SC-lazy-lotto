@@ -53,8 +53,8 @@ let operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 // Contract names
 const contractName = 'LazyLotto';
 const libraryName = 'HTSLazyLottoLibrary';
-const lazyContractCreator = 'FungibleTokenCreator';
-const prngContractName = 'PrngGenerator';
+const lazyContractCreator = 'LAZYTokenCreator';
+const prngContractName = 'PrngSystemContract';
 const lazyGasStationName = 'LazyGasStation';
 const lazyDelegateRegistryName = 'LazyDelegateRegistry';
 
@@ -140,7 +140,7 @@ describe('LazyLotto - Deployment & Setup:', function () {
 
 		// Create test accounts: Alice, Bob, Carol, Admin
 		alicePK = PrivateKey.generateED25519();
-		aliceId = await accountCreator(client, alicePK, 20);
+		aliceId = await accountCreator(client, alicePK, 250);
 		createdAccounts.push({ id: aliceId, key: alicePK });
 		console.log('Alice account ID:', aliceId.toString());
 
@@ -150,7 +150,7 @@ describe('LazyLotto - Deployment & Setup:', function () {
 		console.log('Bob account ID:', bobId.toString());
 
 		carolPK = PrivateKey.generateED25519();
-		carolId = await accountCreator(client, carolId, 20);
+		carolId = await accountCreator(client, carolPK, 20);
 		createdAccounts.push({ id: carolId, key: carolPK });
 		console.log('Carol account ID:', carolId.toString());
 
@@ -165,7 +165,7 @@ describe('LazyLotto - Deployment & Setup:', function () {
 	it('Should deploy or reuse LAZY token and SCT', async function () {
 		const lazyJson = JSON.parse(
 			fs.readFileSync(
-				`./artifacts/contracts/${lazyContractCreator}.sol/${lazyContractCreator}.json`,
+				`./artifacts/contracts/legacy/${lazyContractCreator}.sol/${lazyContractCreator}.json`,
 			),
 		);
 		lazyIface = new ethers.Interface(lazyJson.abi);
@@ -304,21 +304,29 @@ describe('LazyLotto - Deployment & Setup:', function () {
 			fs.readFileSync('./artifacts/contracts/mocks/MockPrngSystemContract.sol/MockPrngSystemContract.json'),
 		);
 
-		// Constructor: (bytes32 _seed, uint256 _number)
-		// Set staticNumber to 0 to always return the winning index (lo)
-		const mockConstructorParams = new ContractFunctionParameters()
-			.addBytes32(Buffer.from('0'.repeat(64), 'hex'))
-			.addUint256(0);
+		if (process.env.MOCK_PRNG_CONTRACT_ID) {
+			mockPrngId = ContractId.fromString(process.env.MOCK_PRNG_CONTRACT_ID);
+			console.log('\n-Using existing Mock PRNG:', mockPrngId.toString());
+		}
+		else {
+			console.log('\n-Deploying Mock PRNG...');
 
-		[mockPrngId] = await contractDeployFunction(
-			client,
-			mockPrngJson.bytecode,
-			1_000_000,
-			mockConstructorParams,
-		);
+			// Constructor: (bytes32 _seed, uint256 _number)
+			// Set staticNumber to 0 to always return the winning index (lo)
+			const mockConstructorParams = new ContractFunctionParameters()
+				.addBytes32(Buffer.from('0'.repeat(64), 'hex'))
+				.addUint256(0);
 
-		console.log('Mock PRNG deployed:', mockPrngId.toString());
-		expect(mockPrngId.toString().match(addressRegex).length == 2).to.be.true;
+			[mockPrngId] = await contractDeployFunction(
+				client,
+				mockPrngJson.bytecode,
+				1_000_000,
+				mockConstructorParams,
+			);
+
+			console.log('Mock PRNG deployed:', mockPrngId.toString());
+			expect(mockPrngId.toString().match(addressRegex).length == 2).to.be.true;
+		}
 	});
 
 	it('Should create test fungible tokens for prizes', async function () {
@@ -460,16 +468,21 @@ describe('LazyLotto - Deployment & Setup:', function () {
 	});
 
 	it('Should deploy HTSLazyLottoLibrary', async function () {
-		console.log('\n-Deploying library:', libraryName);
+		if (process.env.HTS_LAZY_LOTTO_LIBRARY) {
+			libraryId = ContractId.fromString(process.env.HTS_LAZY_LOTTO_LIBRARY);
+		}
+		else {
+			console.log('\n-Deploying library:', libraryName);
 
-		const libraryBytecode = JSON.parse(
-			fs.readFileSync(`./artifacts/contracts/${libraryName}.sol/${libraryName}.json`),
-		).bytecode;
+			const libraryBytecode = JSON.parse(
+				fs.readFileSync(`./artifacts/contracts/${libraryName}.sol/${libraryName}.json`),
+			).bytecode;
 
-		[libraryId] = await contractDeployFunction(client, libraryBytecode, 2_500_000);
-		console.log(`Library created with ID: ${libraryId} / ${libraryId.toSolidityAddress()}`);
+			[libraryId] = await contractDeployFunction(client, libraryBytecode, 3_500_000);
+			console.log(`Library created with ID: ${libraryId} / ${libraryId.toSolidityAddress()}`);
 
-		expect(libraryId.toString().match(addressRegex).length == 2).to.be.true;
+			expect(libraryId.toString().match(addressRegex).length == 2).to.be.true;
+		}
 	});
 
 	it('Should deploy LazyLotto contract with library linking', async function () {
@@ -488,6 +501,7 @@ describe('LazyLotto - Deployment & Setup:', function () {
 		lazyLottoIface = new ethers.Interface(json.abi);
 
 		const gasLimit = 6_000_000;
+		// uses ~5,55000 gas on local node
 
 		console.log('\n-Deploying contract...', contractName, '\n\tgas@', gasLimit);
 
@@ -637,7 +651,7 @@ describe('LazyLotto - Admin Management:', function () {
 				[bobId.toSolidityAddress()],
 			);
 
-			if (result[0]?.status != 'REVERT: Ownable: caller is not the owner') {
+			if (result[0]?.status.name != 'NotAdmin') {
 				console.log('Configuration update succeeded unexpectedly:', result);
 				unexpectedErrors++;
 			}
@@ -658,7 +672,7 @@ describe('LazyLotto - Admin Management:', function () {
 		client.setOperator(operatorId, operatorKey);
 
 		// First remove the admin we added, leaving only operator
-		const gasEstimate = await estimateGas(
+		let gasEstimate = await estimateGas(
 			env,
 			contractId,
 			lazyLottoIface,
@@ -715,6 +729,17 @@ describe('LazyLotto - Admin Management:', function () {
 		expect(unexpectedErrors).to.be.equal(0);
 		console.log('-Last admin removal prevented');
 
+		// fresh gas estimate
+		gasEstimate = await estimateGas(
+			env,
+			contractId,
+			lazyLottoIface,
+			operatorId,
+			'addAdmin',
+			[adminId.toSolidityAddress()],
+			500_000,
+		);
+
 		// Re-add admin for future tests
 		const readdResult = await contractExecuteFunction(
 			contractId,
@@ -726,7 +751,7 @@ describe('LazyLotto - Admin Management:', function () {
 		);
 
 		if (readdResult[0]?.status?.toString() !== 'SUCCESS') {
-			fail('Failed to re-add admin for future tests');
+			fail('Failed to re-add admin for future tests', readdResult);
 		}
 	});
 });
@@ -1055,7 +1080,7 @@ describe('LazyLotto - Pool Creation:', function () {
 				new Hbar(MINT_PAYMENT, HbarUnit.Hbar),
 			);
 
-			if (result[0]?.status != 'REVERT: Ownable: caller is not the owner') {
+			if (result[0]?.status?.name != 'NotAdmin') {
 				console.log('Pool Create succeeded unexpectedly:', result);
 				unexpectedErrors++;
 			}
@@ -1478,7 +1503,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 			gasEstimate.gasLimit,
 			'buyEntry',
 			[poolId, ticketCount],
-			entryFee,
+			new Hbar(entryFee, HbarUnit.Tinybar),
 		);
 
 		if (result[0]?.status?.toString() !== 'SUCCESS') {
@@ -1506,7 +1531,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 				1_000_000,
 				'buyEntry',
 				[poolId, ticketCount],
-				insufficientEntryFee,
+				new Hbar(insufficientEntryFee, HbarUnit.Tinybar),
 			);
 			if (result[0]?.status?.name != 'InsufficientPayment') {
 				console.log('Expected failure but got:', result);
@@ -1548,7 +1573,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 			gasEstimate.gasLimit,
 			'buyAndRedeemEntry',
 			[poolId, ticketCount],
-			entryFee,
+			new Hbar(entryFee, HbarUnit.Tinybar),
 		);
 
 		if (result[0]?.status?.toString() !== 'SUCCESS') {
@@ -4790,10 +4815,12 @@ describe('LazyLotto - Cleanup:', function () {
 	});
 
 	it('Should sweep HBAR from test accounts', async function () {
+		await sleep(5000);
+		client.setOperator(operatorId, operatorKey);
 		// Parallelize HBAR sweeping
 		const sweepPromises = createdAccounts.map(async (account) => {
 			const hbarAmount = await checkMirrorHbarBalance(env, account.id);
-			if (hbarAmount && hbarAmount > 100000) {
+			if (hbarAmount && hbarAmount > 1000000) {
 				console.log(`-Account ${account.id.toString()} HBAR balance: ${hbarAmount} tinybars`);
 
 				const sweepResult = await sweepHbar(
@@ -4801,7 +4828,7 @@ describe('LazyLotto - Cleanup:', function () {
 					account.id,
 					account.key,
 					operatorId,
-					new Hbar(hbarAmount - 50000, HbarUnit.Tinybar),
+					new Hbar(hbarAmount - 500000, HbarUnit.Tinybar),
 				);
 				if (sweepResult !== 'SUCCESS') {
 					console.log(`HBAR sweep failed for ${account.id.toString()}:`, sweepResult);

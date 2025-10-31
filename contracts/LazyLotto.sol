@@ -420,7 +420,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             _feeToken != lazyToken &&
             IERC20(_feeToken).balanceOf(address(this)) == 0
         ) {
-            bool success = HTSLazyLottoLibrary.tokenAssociate(_feeToken);
+            bool success = HTSLazyLottoLibrary.tokenAssociate(
+                address(this),
+                _feeToken
+            );
             if (!success) {
                 revert AssociationFailed(_feeToken);
             }
@@ -982,7 +985,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             ) {
                 // first check if the contract has a balance > 0 (else try to associate)
                 if (IERC20(tokenId).balanceOf(address(this)) == 0) {
-                    bool success = HTSLazyLottoLibrary.tokenAssociate(tokenId);
+                    bool success = HTSLazyLottoLibrary.tokenAssociate(
+                        address(this),
+                        tokenId
+                    );
                     if (!success) {
                         revert AssociationFailed(tokenId);
                     }

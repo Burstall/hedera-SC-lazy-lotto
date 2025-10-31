@@ -696,7 +696,7 @@ async function sweepHbar(client, sourceId, sourcePK, targetId, amount) {
 		return transferRx.status.toString();
 	}
 	catch (error) {
-		console.error('Error sweeping HBAR:', targetId.toString(), amount, error);
+		console.error('Error sweeping HBAR from:', sourceId.toString(), 'to:', targetId.toString(), 'amount:', amount.toString(), error);
 		return 'ERROR';
 	}
 }

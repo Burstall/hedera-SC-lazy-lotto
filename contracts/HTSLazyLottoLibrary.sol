@@ -71,7 +71,7 @@ library HTSLazyLottoLibrary {
     // -- PUBLIC FUNCTIONS
     /**
      * @dev Creates a new non-fungible token (NFT) for a new prize pool.
-     * @param _treasury The address of the treasury account for the token.
+     * @param _callingContract The address of the calling contract (for auto-renew account).
      * @param _name The name of the token.
      * @param _symbol The symbol of the token.
      * @param _memo A memo for the token.
@@ -80,7 +80,7 @@ library HTSLazyLottoLibrary {
      * @return tokenAddress The address of the newly created token.
      */
     function createTokenForNewPool(
-        address _treasury,
+        address _callingContract,
         string memory _name,
         string memory _symbol,
         string memory _memo,
@@ -95,14 +95,14 @@ library HTSLazyLottoLibrary {
             HTSLazyLottoLibrary.KeyType.SUPPLY,
             HTSLazyLottoLibrary.KeyType.WIPE,
             HTSLazyLottoLibrary.KeyValueType.CONTRACT_ID,
-            _treasury
+            _callingContract
         );
 
         IHederaTokenServiceLite.HederaToken memory _token;
         _token.name = _name;
         _token.symbol = _symbol;
         _token.memo = _memo;
-        _token.treasury = _treasury;
+        _token.treasury = _callingContract;
         _token.tokenKeys = _keys;
         _token.tokenSupplyType = false;
         // int64 max value
@@ -110,7 +110,7 @@ library HTSLazyLottoLibrary {
 
         // create the expiry schedule for the token using ExpiryHelper
         _token.expiry = createAutoRenewExpiry(
-            address(this),
+            _callingContract,
             HTSLazyLottoLibrary.DEFAULT_AUTO_RENEW_PERIOD
         );
 
@@ -191,11 +191,15 @@ library HTSLazyLottoLibrary {
 
     /**
      * @dev Associates the calling contract with a token on the Hedera network.
+     * @param callingContract The address of the contract to associate the token with.
      * @param tokenId The address of the token to associate with.
      * @return True if the association was successful or if the token was already associated, false otherwise.
      */
-    function tokenAssociate(address tokenId) public returns (bool) {
-        int256 response = associateToken(address(this), tokenId);
+    function tokenAssociate(
+        address callingContract,
+        address tokenId
+    ) public returns (bool) {
+        int256 response = associateToken(callingContract, tokenId);
 
         if (
             !(response == SUCCESS ||
@@ -225,8 +229,11 @@ library HTSLazyLottoLibrary {
         uint256 _length = nftTokens.length;
         for (uint256 i = 0; i < _length; ) {
             if (_direction == TransferDirection.STAKING) {
-                if (IERC721(nftTokens[i]).balanceOf(address(this)) == 0) {
-                    bool success = tokenAssociate(nftTokens[i]);
+                if (IERC721(nftTokens[i]).balanceOf(_contractAddress) == 0) {
+                    bool success = tokenAssociate(
+                        _contractAddress,
+                        nftTokens[i]
+                    );
                     if (!success) {
                         revert AssociationFailed(nftTokens[i]);
                     }
@@ -267,6 +274,30 @@ library HTSLazyLottoLibrary {
         tokenKey = IHederaTokenServiceLite.TokenKey(
             getDuplexKeyType(firstType, secondType),
             getKeyValueType(keyValueType, keyAddress)
+        );
+    }
+
+    /**
+     * @dev Creates a delegated token key structure for HTS operations via library calls.
+     * Sets both contractId and delegatableContractId to support DELEGATECALL patterns.
+     * @param firstType The primary type of the key (e.g., SUPPLY).
+     * @param secondType The secondary type of the key (e.g., WIPE). Can be the same as firstType if only one type is needed.
+     * @param keyAddress The address associated with the key (e.g., contract address).
+     * @return tokenKey The constructed TokenKey struct with both contract ID fields set.
+     */
+    function getDelegatedKey(
+        KeyType firstType,
+        KeyType secondType,
+        address keyAddress
+    ) internal pure returns (IHederaTokenServiceLite.TokenKey memory tokenKey) {
+        IHederaTokenServiceLite.KeyValue memory keyValue;
+        keyValue.inheritAccountKey = true;
+        keyValue.contractId = keyAddress;
+        keyValue.delegatableContractId = keyAddress;
+
+        tokenKey = IHederaTokenServiceLite.TokenKey(
+            getDuplexKeyType(firstType, secondType),
+            keyValue
         );
     }
 
