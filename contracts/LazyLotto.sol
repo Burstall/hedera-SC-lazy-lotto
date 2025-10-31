@@ -60,14 +60,26 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.
 import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 
 import {IPrngSystemContract} from "./interfaces/IPrngSystemContract.sol";
-import {HTSLazyLottoLibrary} from "./HTSLazyLottoLibrary.sol";
-import {ILazyGasStation} from "./interfaces/ILazyGasStation.sol";
-import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
+import {HTSLottoUtils} from "./HTSLottoUtils.sol";
+import {IHederaTokenServiceLite} from "./interfaces/IHederaTokenServiceLite.sol";
 
 /// @title  LazyLottoV2
 /// @notice On-chain lotto pools with Hedera VRF randomness, multi-roll batching, burn on entry, and transparent prize management.
-contract LazyLotto is ReentrancyGuard, Pausable {
+contract LazyLotto is ReentrancyGuard, Pausable, HTSLottoUtils {
     // --- DATA STRUCTURES ---
+    /**
+     * @dev Defines the structure for royalty fees on an NFT.
+     * @param numerator The numerator of the royalty fee fraction.
+     * @param denominator The denominator of the royalty fee fraction.
+     * @param fallbackfee The fallback fee in HBAR if the royalty fee cannot be paid (e.g., 0 denominator).
+     * @param account The account that will receive the royalty fee.
+     */
+    struct NFTFeeObject {
+        uint32 numerator;
+        uint32 denominator;
+        uint32 fallbackfee;
+        address account;
+    }
     struct PrizePackage {
         address token; // HTS token address (0 = HBAR)
         uint256 amount; // amount for fungible prizes
@@ -102,6 +114,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @dev Expressed as integer from 0-100,000,000 where 100,000,000 represents 100%
     uint256 public constant MAX_WIN_RATE_THRESHOLD = 100_000_000;
     uint256 public constant NFT_BATCH_SIZE = 10;
+    int32 private constant DEFAULT_AUTO_RENEW_PERIOD = 7776000; // Default auto-renew period for tokens (90 days in seconds)
 
     // --- ENUMS ---
     enum MethodEnum {
@@ -118,7 +131,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 _balance,
         uint256 _requestedAmount
     );
-    error AssociationFailed(address _tokenAddress);
+
     error BadParameters();
     error NotAdmin();
     error FungibleTokenTransferFailed();
@@ -198,40 +211,6 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     // mapping of poolId -> User -> entries in state
     mapping(uint256 => mapping(address => uint256)) public userEntries;
 
-    address public lazyToken;
-    ILazyGasStation public lazyGasStation;
-    ILazyDelegateRegistry public lazyDelegateRegistry;
-
-    // --- MODIFIERS ---
-    modifier onlyAdmin() {
-        if (!_isAddressAdmin[msg.sender]) {
-            revert NotAdmin();
-        }
-        _;
-    }
-    modifier validPool(uint256 id) {
-        if (id >= pools.length) {
-            revert LottoPoolNotFound(id);
-        }
-
-        if (pools[id].closed) {
-            revert PoolIsClosed();
-        }
-        _;
-    }
-
-    modifier refill() {
-        // check the $LAZY balance of the contract and refill if necessary
-        if (IERC20(lazyToken).balanceOf(address(this)) < 20) {
-            lazyGasStation.refillLazy(50);
-        }
-        // check the balance of the contract and refill if necessary
-        if (address(this).balance < 20) {
-            lazyGasStation.refillHbar(50);
-        }
-        _;
-    }
-
     // --- CONSTRUCTOR ---
     /// @param _lazyToken The address of the $LAZY token
     /// @param _lazyGasStation The address of the LazyGasStation contract
@@ -254,9 +233,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             revert BadParameters();
         }
 
-        lazyToken = _lazyToken;
-        lazyGasStation = ILazyGasStation(_lazyGasStation);
-        lazyDelegateRegistry = ILazyDelegateRegistry(_lazyDelegateRegistry);
+        _initContracts(_lazyToken, _lazyGasStation, _lazyDelegateRegistry);
         prng = IPrngSystemContract(_prng);
 
         burnPercentage = _burnPercentage;
@@ -267,10 +244,29 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         emit AdminAdded(msg.sender);
     }
 
+    // --- INTERNAL REQUIREMENT FUNCTIONS ---
+    /// @dev Internal function to check if caller is admin (replaces onlyAdmin modifier)
+    function _requireAdmin() internal view {
+        if (!_isAddressAdmin[msg.sender]) {
+            revert NotAdmin();
+        }
+    }
+
+    /// @dev Internal function to validate pool exists and is not closed (replaces validPool modifier)
+    function _requireValidPool(uint256 id) internal view {
+        if (id >= pools.length) {
+            revert LottoPoolNotFound(id);
+        }
+        if (pools[id].closed) {
+            revert PoolIsClosed();
+        }
+    }
+
     // --- ADMIN FUNCTIONS ---
     /// @notice Adds a new admin address
     /// @param a The address of the new admin
-    function addAdmin(address a) external onlyAdmin {
+    function addAdmin(address a) external {
+        _requireAdmin();
         if (a == address(0)) revert BadParameters();
         if (!_isAddressAdmin[a]) {
             _isAddressAdmin[a] = true;
@@ -281,7 +277,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// @notice Removes an admin address
     /// @param a The address of the admin to remove
-    function removeAdmin(address a) external onlyAdmin {
+    function removeAdmin(address a) external {
+        _requireAdmin();
         if (a == address(0)) revert BadParameters();
         if (_adminCount <= 1) {
             revert LastAdminError();
@@ -297,7 +294,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// @notice Sets the burn percentage for the entry fee
     /// @param _burnPercentage The new burn percentage (0-100)
-    function setBurnPercentage(uint256 _burnPercentage) external onlyAdmin {
+    function setBurnPercentage(uint256 _burnPercentage) external {
+        _requireAdmin();
         if (_burnPercentage > 100) {
             revert BadParameters();
         }
@@ -310,7 +308,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     function setLazyBalanceBonus(
         uint256 _threshold,
         uint16 _bonusBps
-    ) external onlyAdmin {
+    ) external {
+        _requireAdmin();
         if (_threshold == 0 || _bonusBps > 10000) {
             revert BadParameters();
         }
@@ -322,7 +321,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @notice Sets an NFT bonus token and its bonus bps
     /// @param _token The address of the NFT token
     /// @param _bonusBps The bonus in basis points (0-10000)
-    function setNFTBonus(address _token, uint16 _bonusBps) external onlyAdmin {
+    function setNFTBonus(address _token, uint16 _bonusBps) external {
+        _requireAdmin();
         if (_token == address(0) || _bonusBps > 10000) {
             revert BadParameters();
         }
@@ -339,7 +339,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 _start,
         uint256 _end,
         uint16 _bonusBps
-    ) external onlyAdmin {
+    ) external {
+        _requireAdmin();
         if (_start == 0 || _end == 0 || _bonusBps > 10000) {
             revert BadParameters();
         }
@@ -349,7 +350,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// @notice Removes a time-based bonus window
     /// @param index The index of the bonus window to remove
-    function removeTimeBonus(uint256 index) external onlyAdmin {
+    function removeTimeBonus(uint256 index) external {
+        _requireAdmin();
         if (index >= timeBonuses.length) {
             revert BadParameters();
         }
@@ -359,7 +361,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// @notice Removes an NFT bonus token
     /// @param index The index of the NFT bonus token to remove
-    function removeNFTBonus(uint256 index) external onlyAdmin {
+    function removeNFTBonus(uint256 index) external {
+        _requireAdmin();
         if (index >= nftBonusTokens.length) {
             revert BadParameters();
         }
@@ -370,7 +373,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// @notice Sets the PRNG contract address (for testing purposes)
     /// @param _prng The address of the new PRNG contract
-    function setPrng(address _prng) external onlyAdmin {
+    function setPrng(address _prng) external {
+        _requireAdmin();
         if (_prng == address(0)) {
             revert BadParameters();
         }
@@ -392,13 +396,14 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         string memory _name,
         string memory _symbol,
         string memory _memo,
-        HTSLazyLottoLibrary.NFTFeeObject[] memory _royalties,
+        NFTFeeObject[] memory _royalties,
         string memory _ticketCID,
         string memory _winCID,
         uint256 _winRateTenThousandthsOfBps,
         uint256 _entryFee,
         address _feeToken
-    ) external payable onlyAdmin returns (uint256 poolId) {
+    ) external payable returns (uint256 poolId) {
+        _requireAdmin();
         // check the parameters are valid
         if (
             bytes(_name).length == 0 ||
@@ -420,25 +425,71 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             _feeToken != lazyToken &&
             IERC20(_feeToken).balanceOf(address(this)) == 0
         ) {
-            bool success = HTSLazyLottoLibrary.tokenAssociate(
-                address(this),
-                _feeToken
+            _tokenAssociate(_feeToken);
+        }
+
+        // now mint the token for the pool making the SC the treasury
+        IHederaTokenServiceLite.TokenKey[]
+            memory _keys = new IHederaTokenServiceLite.TokenKey[](1);
+
+        // make the contract the sole supply / wipe key
+        _keys[0] = getSingleKey(
+            KeyType.SUPPLY,
+            KeyType.WIPE,
+            KeyValueType.CONTRACT_ID,
+            address(this)
+        );
+
+        IHederaTokenServiceLite.HederaToken memory _token;
+        _token.name = _name;
+        _token.symbol = _symbol;
+        _token.memo = _memo;
+        _token.treasury = address(this);
+        _token.tokenKeys = _keys;
+        _token.tokenSupplyType = false;
+        // int64 max value
+        _token.maxSupply = 0x7FFFFFFFFFFFFFFF;
+
+        // create the expiry schedule for the token using ExpiryHelper
+        _token.expiry = createAutoRenewExpiry(
+            address(this),
+            DEFAULT_AUTO_RENEW_PERIOD
+        );
+
+        IHederaTokenServiceLite.RoyaltyFee[]
+            memory _fees = new IHederaTokenServiceLite.RoyaltyFee[](
+                _royalties.length
             );
-            if (!success) {
-                revert AssociationFailed(_feeToken);
+
+        uint256 _length = _royalties.length;
+        for (uint256 f = 0; f < _length; ) {
+            IHederaTokenServiceLite.RoyaltyFee memory _fee;
+            _fee.numerator = _royalties[f].numerator;
+            _fee.denominator = _royalties[f].denominator;
+            _fee.feeCollector = _royalties[f].account;
+
+            if (_royalties[f].fallbackfee != 0) {
+                _fee.amount = _royalties[f].fallbackfee;
+                _fee.useHbarsForPayment = true;
+            }
+
+            _fees[f] = _fee;
+
+            unchecked {
+                ++f;
             }
         }
 
-        (int256 responseCode, address tokenAddress) = HTSLazyLottoLibrary
-            .createTokenForNewPool(
-                address(this),
-                _name,
-                _symbol,
-                _memo,
-                _royalties
+        (
+            int32 responseCode,
+            address tokenAddress
+        ) = createNonFungibleTokenWithCustomFees(
+                _token,
+                new IHederaTokenServiceLite.FixedFee[](0),
+                _fees
             );
 
-        if (responseCode != HTSLazyLottoLibrary.SUCCESS) {
+        if (responseCode != SUCCESS) {
             revert FailedNFTCreate();
         }
 
@@ -474,17 +525,17 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 amount,
         address[] memory nftTokens,
         uint256[][] memory nftSerials
-    ) external payable validPool(poolId) refill {
+    ) external payable {
+        _requireValidPool(poolId);
         if (nftTokens.length != nftSerials.length) {
             revert BadParameters();
         }
 
         _checkAndPullFungible(token, amount);
-        HTSLazyLottoLibrary.bulkTransfer(
-            HTSLazyLottoLibrary.TransferDirection.STAKING,
+        _bulkTransfer(
+            TransferDirection.STAKING,
             nftTokens,
             nftSerials,
-            address(this),
             msg.sender
         );
 
@@ -507,7 +558,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 poolId,
         address tokenId,
         uint256[] memory amounts
-    ) external payable validPool(poolId) {
+    ) external payable {
+        _requireValidPool(poolId);
         if (amounts.length == 0) {
             revert BadParameters();
         }
@@ -548,7 +600,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// Admin can pause a pool preventing the purchase of further tickets
     /// @param poolId The ID of the pool to pause
-    function pausePool(uint256 poolId) external onlyAdmin validPool(poolId) {
+    function pausePool(uint256 poolId) external {
+        _requireAdmin();
+        _requireValidPool(poolId);
         LottoPool storage p = pools[poolId];
         p.paused = true;
         emit PoolPaused(poolId);
@@ -556,7 +610,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     /// Admin can unpause a pool allowing the purchase of further tickets
     /// @param poolId The ID of the pool to unpause
-    function unpausePool(uint256 poolId) external onlyAdmin validPool(poolId) {
+    function unpausePool(uint256 poolId) external {
+        _requireAdmin();
+        _requireValidPool(poolId);
         LottoPool storage p = pools[poolId];
         p.paused = false;
         emit PoolOpened(poolId);
@@ -565,7 +621,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// Admin can permanently close a pool preventing any further actions
     /// Required to be able to remove prizes from the pool
     /// @param poolId The ID of the pool to close
-    function closePool(uint256 poolId) external onlyAdmin validPool(poolId) {
+    function closePool(uint256 poolId) external {
+        _requireAdmin();
+        _requireValidPool(poolId);
         LottoPool storage p = pools[poolId];
 
         // we can only close a pool if there are no outstanding entries and no oustanding tokens too
@@ -585,10 +643,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// Admin can remove prizes from a pool if closed
     /// @param poolId The ID of the pool to remove prizes from
     /// @param prizeIndex The index of the prize to remove
-    function removePrizes(
-        uint256 poolId,
-        uint256 prizeIndex
-    ) external onlyAdmin refill {
+    function removePrizes(uint256 poolId, uint256 prizeIndex) external {
+        _requireAdmin();
         LottoPool storage p = pools[poolId];
         if (!p.closed) {
             revert PoolNotClosed();
@@ -621,22 +677,23 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
 
         // then transfer the NFTs back to the caller
-        HTSLazyLottoLibrary.bulkTransfer(
-            HTSLazyLottoLibrary.TransferDirection.WITHDRAWAL,
+        _bulkTransfer(
+            TransferDirection.WITHDRAWAL,
             prize.nftTokens,
             prize.nftSerials,
-            address(this),
             msg.sender
         );
     }
 
     // PAUSE
     /// @notice Pauses the contract
-    function pause() external onlyAdmin {
+    function pause() external {
+        _requireAdmin();
         _pause();
     }
     /// @notice Unpauses the contract
-    function unpause() external onlyAdmin {
+    function unpause() external {
+        _requireAdmin();
         _unpause();
     }
 
@@ -647,7 +704,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     function buyEntry(
         uint256 poolId,
         uint256 ticketCount
-    ) external payable whenNotPaused validPool(poolId) nonReentrant {
+    ) external payable whenNotPaused nonReentrant {
+        _requireValidPool(poolId);
         _buyEntry(poolId, ticketCount, false);
     }
 
@@ -661,10 +719,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         external
         payable
         whenNotPaused
-        validPool(poolId)
         nonReentrant
         returns (uint256 wins, uint256 offset)
     {
+        _requireValidPool(poolId);
         _buyEntry(poolId, ticketCount, false);
         (wins, offset) = _roll(poolId, ticketCount);
     }
@@ -675,7 +733,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     function buyAndRedeemEntry(
         uint256 poolId,
         uint256 ticketCount
-    ) external payable whenNotPaused validPool(poolId) nonReentrant {
+    ) external payable whenNotPaused nonReentrant {
+        _requireValidPool(poolId);
         _buyEntry(poolId, ticketCount, false);
         _redeemEntriesToNFT(poolId, ticketCount, msg.sender);
     }
@@ -688,7 +747,9 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 poolId,
         uint256 ticketCount,
         address onBehalfOf
-    ) external whenNotPaused onlyAdmin validPool(poolId) nonReentrant {
+    ) external whenNotPaused nonReentrant {
+        _requireAdmin();
+        _requireValidPool(poolId);
         _buyEntry(poolId, ticketCount, false);
         _redeemEntriesToNFT(poolId, ticketCount, onBehalfOf);
     }
@@ -700,10 +761,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     )
         external
         whenNotPaused
-        validPool(poolId)
         nonReentrant
         returns (uint256 wins, uint256 offset)
     {
+        _requireValidPool(poolId);
         if (userEntries[poolId][msg.sender] == 0) {
             revert NoTickets(poolId, msg.sender);
         }
@@ -719,10 +780,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     )
         external
         whenNotPaused
-        validPool(poolId)
         nonReentrant
         returns (uint256 wins, uint256 offset)
     {
+        _requireValidPool(poolId);
         if (numberToRoll == 0) {
             revert BadParameters();
         }
@@ -746,10 +807,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     )
         external
         whenNotPaused
-        validPool(poolId)
         nonReentrant
         returns (uint256 wins, uint256 offset)
     {
+        _requireValidPool(poolId);
         if (serialNumbers.length == 0) {
             revert BadParameters();
         }
@@ -985,13 +1046,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             ) {
                 // first check if the contract has a balance > 0 (else try to associate)
                 if (IERC20(tokenId).balanceOf(address(this)) == 0) {
-                    bool success = HTSLazyLottoLibrary.tokenAssociate(
-                        address(this),
-                        tokenId
-                    );
-                    if (!success) {
-                        revert AssociationFailed(tokenId);
-                    }
+                    _tokenAssociate(tokenId);
                 }
 
                 // now try and move the token to the contract (needs an allowance to be in place)
@@ -1062,13 +1117,13 @@ contract LazyLotto is ReentrancyGuard, Pausable {
                 false
             );
 
-            int256 response = HTSLazyLottoLibrary.wipeTokenAccountNFT(
+            int256 response = wipeTokenAccountNFT(
                 p.poolTokenId,
                 msg.sender,
                 batchSerialsForBurn
             );
 
-            if (response != HTSLazyLottoLibrary.SUCCESS) {
+            if (response != SUCCESS) {
                 revert FailedNFTWipe();
             }
 
@@ -1133,14 +1188,14 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             (
                 int32 responseCode,
                 int64[] memory mintedSerials
-            ) = HTSLazyLottoLibrary.mintAndTransferNFT(
+            ) = _mintAndTransferNFT(
                     poolTokenIdForPrizeNFT,
                     address(this),
                     msg.sender,
                     metadata
                 );
 
-            if (responseCode != HTSLazyLottoLibrary.SUCCESS) {
+            if (responseCode != SUCCESS) {
                 revert FailedNFTMintAndSend();
             }
 
@@ -1203,13 +1258,13 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             // Wipe the NFT voucher from the sender's account
             int64[] memory singleSerialArray = new int64[](1);
             singleSerialArray[0] = serialNumbers[i];
-            int256 responseWipe = HTSLazyLottoLibrary.wipeTokenAccountNFT(
+            int256 responseWipe = wipeTokenAccountNFT(
                 poolTokenId,
                 msg.sender,
                 singleSerialArray
             );
 
-            if (responseWipe != HTSLazyLottoLibrary.SUCCESS) {
+            if (responseWipe != SUCCESS) {
                 // If wipe fails, the state might be inconsistent. Reverting is safest.
                 // Consider if this should revert all or just this specific redemption.
                 revert FailedNFTWipe();
@@ -1277,15 +1332,14 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
             int32 responseCode;
 
-            (responseCode, mintedSerials) = HTSLazyLottoLibrary
-                .mintAndTransferNFT(
-                    p.poolTokenId,
-                    address(this),
-                    _onBehalfOf,
-                    batchMetadataForMint
-                );
+            (responseCode, mintedSerials) = _mintAndTransferNFT(
+                p.poolTokenId,
+                address(this),
+                _onBehalfOf,
+                batchMetadataForMint
+            );
 
-            if (responseCode != HTSLazyLottoLibrary.SUCCESS) {
+            if (responseCode != SUCCESS) {
                 revert FailedNFTMintAndSend();
             }
 
@@ -1476,11 +1530,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             );
         }
 
-        HTSLazyLottoLibrary.bulkTransfer(
-            HTSLazyLottoLibrary.TransferDirection.WITHDRAWAL,
+        _bulkTransfer(
+            TransferDirection.WITHDRAWAL,
             claimedPrize.prize.nftTokens,
             claimedPrize.prize.nftSerials,
-            address(this),
             msg.sender
         );
     }
@@ -1492,7 +1545,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     function transferHbar(
         address payable receiverAddress,
         uint256 amount
-    ) external onlyAdmin {
+    ) external {
+        _requireAdmin();
         if (receiverAddress == address(0) || amount == 0) {
             revert BadParameters();
         }
@@ -1511,7 +1565,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         address _tokenAddress,
         address _receiver,
         uint256 _amount
-    ) external onlyAdmin {
+    ) external {
+        _requireAdmin();
         if (
             _receiver == address(0) ||
             _amount == 0 ||
