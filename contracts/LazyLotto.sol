@@ -785,7 +785,7 @@ contract LazyLotto is
     ) external whenNotPaused nonReentrant {
         _requireAdmin();
         _requireValidPool(poolId);
-        _buyEntry(poolId, ticketCount, false);
+        _buyEntry(poolId, ticketCount, true);
         _redeemEntriesToNFT(poolId, ticketCount, onBehalfOf);
     }
 
