@@ -61,37 +61,18 @@ import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {IPrngSystemContract} from "./interfaces/IPrngSystemContract.sol";
-import {IHederaTokenServiceLite} from "./interfaces/IHederaTokenServiceLite.sol";
-import {HederaTokenServiceLite} from "./HederaTokenServiceLite.sol";
-import {KeyHelperLite} from "./KeyHelperLite.sol";
 import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {ILazyGasStation} from "./interfaces/ILazyGasStation.sol";
 import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
+import {ILazyLottoStorage} from "./interfaces/ILazyLottoStorage.sol";
 
 /// @title  LazyLottoV2
 /// @notice On-chain lotto pools with Hedera VRF randomness, multi-roll batching, burn on entry, and transparent prize management.
-contract LazyLotto is
-    ReentrancyGuard,
-    Pausable,
-    HederaTokenServiceLite,
-    KeyHelperLite
-{
+/// @dev All HTS operations are delegated to LazyLottoStorage contract. Users must approve tokens to LazyLottoStorage address.
+contract LazyLotto is ReentrancyGuard, Pausable {
     using SafeCast for uint256;
     using SafeCast for int256;
     // --- DATA STRUCTURES ---
-    /**
-     * @dev Defines the structure for royalty fees on an NFT.
-     * @param numerator The numerator of the royalty fee fraction.
-     * @param denominator The denominator of the royalty fee fraction.
-     * @param fallbackfee The fallback fee in HBAR if the royalty fee cannot be paid (e.g., 0 denominator).
-     * @param account The account that will receive the royalty fee.
-     */
-    struct NFTFeeObject {
-        uint32 numerator;
-        uint32 denominator;
-        uint32 fallbackfee;
-        address account;
-    }
     struct PrizePackage {
         address token; // HTS token address (0 = HBAR)
         uint256 amount; // amount for fungible prizes
@@ -127,7 +108,6 @@ contract LazyLotto is
     uint256 public constant MAX_WIN_RATE_THRESHOLD = 100_000_000;
     uint256 public constant NFT_BATCH_SIZE = 10;
     int32 private constant DEFAULT_AUTO_RENEW_PERIOD = 7776000; // Default auto-renew period for tokens (90 days in seconds)
-    uint256 private constant MAX_NFTS_PER_TX = 8; // Maximum NFTs per HTS transaction
 
     // --- ENUMS ---
     enum MethodEnum {
@@ -135,11 +115,6 @@ contract LazyLotto is
         RECEIVE,
         FT_TRANSFER,
         HBAR_TRANSFER
-    }
-
-    enum TransferDirection {
-        STAKING,
-        WITHDRAWAL
     }
 
     // --- ERRORS ---
@@ -173,8 +148,6 @@ contract LazyLotto is
     error NoPrizesAvailable();
     error AlreadyWinningTicket();
     error FailedToInitialize();
-    error NFTTransferFailed(TransferDirection _direction);
-    error AssociationFailed(address tokenAddress);
 
     /// --- EVENTS ---
     event AdminAdded(address indexed admin);
@@ -183,6 +156,18 @@ contract LazyLotto is
     event PoolPaused(uint256 indexed poolId);
     event PoolClosed(uint256 indexed poolId);
     event PoolOpened(uint256 indexed poolId);
+    event PrizeAdded(
+        uint256 indexed poolId,
+        uint256 indexed prizeIndex,
+        address indexed admin,
+        PrizePackage prize
+    );
+    event PrizeRemoved(
+        uint256 indexed poolId,
+        uint256 indexed prizeIndex,
+        address indexed admin,
+        PrizePackage prize
+    );
     event EntryPurchased(
         address indexed user,
         uint256 indexed poolId,
@@ -218,6 +203,7 @@ contract LazyLotto is
     address public lazyToken;
     ILazyGasStation public lazyGasStation;
     ILazyDelegateRegistry public lazyDelegateRegistry;
+    ILazyLottoStorage public storageContract;
 
     LottoPool[] private pools;
     // allow a lookup of prizes available to a user
@@ -243,31 +229,33 @@ contract LazyLotto is
     /// @param _lazyDelegateRegistry The address of the LazyDelegateRegistry contract
     /// @param _prng The address of the PrngSystemContract
     /// @param _burnPercentage The percentage of the entry fee to burn on entry (0-100)
+    /// @param _storageContract The address of the LazyLottoStorage contract (immutable, set once)
     constructor(
         address _lazyToken,
         address _lazyGasStation,
         address _lazyDelegateRegistry,
         address _prng,
-        uint256 _burnPercentage
+        uint256 _burnPercentage,
+        address _storageContract
     ) {
         if (
             _lazyToken == address(0) ||
             _lazyGasStation == address(0) ||
             _lazyDelegateRegistry == address(0) ||
-            _prng == address(0)
+            _prng == address(0) ||
+            _storageContract == address(0)
         ) {
             revert BadParameters();
         }
 
-        // Initialize HTS helper contracts (inlined from _initContracts)
+        // Initialize HTS helper contracts
         lazyToken = _lazyToken;
         lazyGasStation = ILazyGasStation(_lazyGasStation);
         lazyDelegateRegistry = ILazyDelegateRegistry(_lazyDelegateRegistry);
+        storageContract = ILazyLottoStorage(_storageContract);
 
-        int256 response = associateToken(address(this), lazyToken);
-        if (response != HederaResponseCodes.SUCCESS) {
-            revert FailedToInitialize();
-        }
+        // Associate lazyToken to storage contract (storage holds all tokens)
+        storageContract.associateTokenToStorage(lazyToken);
 
         prng = IPrngSystemContract(_prng);
 
@@ -431,7 +419,7 @@ contract LazyLotto is
         string memory _name,
         string memory _symbol,
         string memory _memo,
-        NFTFeeObject[] memory _royalties,
+        ILazyLottoStorage.NFTFeeObject[] memory _royalties,
         string memory _ticketCID,
         string memory _winCID,
         uint256 _winRateTenThousandthsOfBps,
@@ -454,79 +442,13 @@ contract LazyLotto is
             revert BadParameters();
         }
 
-        // we need to associate the _feeToken with the contract
-        if (
-            _feeToken != address(0) &&
-            _feeToken != lazyToken &&
-            IERC20(_feeToken).balanceOf(address(this)) == 0
-        ) {
-            _tokenAssociate(_feeToken);
-        }
-
-        // now mint the token for the pool making the SC the treasury
-        IHederaTokenServiceLite.TokenKey[]
-            memory _keys = new IHederaTokenServiceLite.TokenKey[](1);
-
-        // make the contract the sole supply / wipe key
-        _keys[0] = getSingleKey(
-            KeyType.SUPPLY,
-            KeyType.WIPE,
-            KeyValueType.CONTRACT_ID,
-            address(this)
+        // Create token via storage contract (storage is treasury and auto-renew payer)
+        address tokenAddress = storageContract.createToken(
+            _name,
+            _symbol,
+            _memo,
+            _royalties
         );
-
-        IHederaTokenServiceLite.HederaToken memory _token;
-        _token.name = _name;
-        _token.symbol = _symbol;
-        _token.memo = _memo;
-        _token.treasury = address(this);
-        _token.tokenKeys = _keys;
-        _token.tokenSupplyType = false;
-        // int64 max value
-        _token.maxSupply = 0x7FFFFFFFFFFFFFFF;
-
-        // create the expiry schedule for the token using ExpiryHelper
-        _token.expiry = createAutoRenewExpiry(
-            address(this),
-            DEFAULT_AUTO_RENEW_PERIOD
-        );
-
-        IHederaTokenServiceLite.RoyaltyFee[]
-            memory _fees = new IHederaTokenServiceLite.RoyaltyFee[](
-                _royalties.length
-            );
-
-        uint256 _length = _royalties.length;
-        for (uint256 f = 0; f < _length; ) {
-            IHederaTokenServiceLite.RoyaltyFee memory _fee;
-            _fee.numerator = _royalties[f].numerator;
-            _fee.denominator = _royalties[f].denominator;
-            _fee.feeCollector = _royalties[f].account;
-
-            if (_royalties[f].fallbackfee != 0) {
-                _fee.amount = _royalties[f].fallbackfee;
-                _fee.useHbarsForPayment = true;
-            }
-
-            _fees[f] = _fee;
-
-            unchecked {
-                ++f;
-            }
-        }
-
-        (
-            int32 responseCode,
-            address tokenAddress
-        ) = createNonFungibleTokenWithCustomFees(
-                _token,
-                new IHederaTokenServiceLite.FixedFee[](0),
-                _fees
-            );
-
-        if (responseCode != SUCCESS) {
-            revert FailedNFTCreate();
-        }
 
         // now create the pool and add it to the list of pools;
         pools.push(
@@ -567,8 +489,8 @@ contract LazyLotto is
         }
 
         _checkAndPullFungible(token, amount);
-        _bulkTransfer(
-            TransferDirection.STAKING,
+        storageContract.bulkTransferNFTs(
+            true, // staking (user -> storage)
             nftTokens,
             nftSerials,
             msg.sender
@@ -582,6 +504,13 @@ contract LazyLotto is
                 nftTokens: nftTokens,
                 nftSerials: nftSerials
             })
+        );
+
+        emit PrizeAdded(
+            poolId,
+            p.prizes.length - 1, // prizeIndex
+            msg.sender,
+            p.prizes[p.prizes.length - 1]
         );
     }
 
@@ -625,6 +554,13 @@ contract LazyLotto is
                     nftTokens: new address[](0),
                     nftSerials: new uint256[][](0)
                 })
+            );
+
+            emit PrizeAdded(
+                poolId,
+                p.prizes.length - 1, // prizeIndex
+                msg.sender,
+                p.prizes[p.prizes.length - 1]
             );
 
             unchecked {
@@ -699,21 +635,27 @@ contract LazyLotto is
         // reduce the amount of the token needed for prizes
         ftTokensForPrizes[prize.token] -= prize.amount;
 
-        // transfer the token amount back to the caller
+        emit PrizeRemoved(poolId, prizeIndex, msg.sender, prize);
+
+        // transfer the token amount back to the caller from storage
         if (prize.token == address(0)) {
-            // transfer the HBAR to the caller
-            Address.sendValue(payable(msg.sender), prize.amount);
+            // transfer the HBAR from storage to the caller
+            storageContract.withdrawHbar(payable(msg.sender), prize.amount);
         } else if (prize.token == lazyToken) {
             // transfer the $LAZY to the caller
             lazyGasStation.payoutLazy(msg.sender, prize.amount, 0);
         } else {
-            // attempt to transfer the token to the caller
-            IERC20(prize.token).transfer(msg.sender, prize.amount);
+            // transfer the token from storage to the caller
+            storageContract.transferFungible(
+                prize.token,
+                msg.sender,
+                prize.amount
+            );
         }
 
         // then transfer the NFTs back to the caller
-        _bulkTransfer(
-            TransferDirection.WITHDRAWAL,
+        storageContract.bulkTransferNFTs(
+            false, // withdrawal (storage -> user)
             prize.nftTokens,
             prize.nftSerials,
             msg.sender
@@ -741,7 +683,7 @@ contract LazyLotto is
         uint256 ticketCount
     ) external payable whenNotPaused nonReentrant {
         _requireValidPool(poolId);
-        _buyEntry(poolId, ticketCount, false);
+        _buyEntry(poolId, ticketCount, false, msg.sender);
     }
 
     /// Helper function to allow the user to buy and roll in one transaction
@@ -758,35 +700,58 @@ contract LazyLotto is
         returns (uint256 wins, uint256 offset)
     {
         _requireValidPool(poolId);
-        _buyEntry(poolId, ticketCount, false);
+        _buyEntry(poolId, ticketCount, false, msg.sender);
         (wins, offset) = _roll(poolId, ticketCount);
     }
 
     /// Helper function to allow the user to buy and redeem to NFT in one transaction
     /// @param poolId The ID of the pool to buy an entry in
     /// @param ticketCount The number of tickets to buy
+    /// @return serials The minted NFT serial numbers
     function buyAndRedeemEntry(
         uint256 poolId,
         uint256 ticketCount
-    ) external payable whenNotPaused nonReentrant {
+    )
+        external
+        payable
+        whenNotPaused
+        nonReentrant
+        returns (int64[] memory serials)
+    {
         _requireValidPool(poolId);
-        _buyEntry(poolId, ticketCount, false);
-        _redeemEntriesToNFT(poolId, ticketCount, msg.sender);
+        _buyEntry(poolId, ticketCount, false, msg.sender);
+        return _redeemEntriesToNFT(poolId, ticketCount);
     }
 
-    /// Admin function to buy entries on behalf of a user
+    /// Admin function to buy free entries for themselves and redeem to NFT
     /// @param poolId The ID of the pool to buy an entry in
     /// @param ticketCount The number of tickets to buy
-    /// @param onBehalfOf The address to buy the tickets for
-    function adminBuyEntry(
+    /// @return serials The minted NFT serial numbers
+    function adminBuyAndRedeemEntry(
+        uint256 poolId,
+        uint256 ticketCount
+    ) external whenNotPaused nonReentrant returns (int64[] memory serials) {
+        _requireAdmin();
+        _requireValidPool(poolId);
+        _buyEntry(poolId, ticketCount, true, msg.sender);
+        return _redeemEntriesToNFT(poolId, ticketCount);
+    }
+
+    /// Admin function to grant free entries to another user (as in-memory entries, not NFTs)
+    /// @param poolId The ID of the pool to buy an entry in
+    /// @param ticketCount The number of tickets to buy
+    /// @param recipient The address to grant the tickets to
+    function adminGrantEntry(
         uint256 poolId,
         uint256 ticketCount,
-        address onBehalfOf
+        address recipient
     ) external whenNotPaused nonReentrant {
         _requireAdmin();
         _requireValidPool(poolId);
-        _buyEntry(poolId, ticketCount, true);
-        _redeemEntriesToNFT(poolId, ticketCount, onBehalfOf);
+        if (recipient == address(0)) {
+            revert BadParameters();
+        }
+        _buyEntry(poolId, ticketCount, true, recipient);
     }
 
     /// User rolls all tickets in the pool (in memory not any NFT entries)
@@ -860,7 +825,107 @@ contract LazyLotto is
     function redeemPrizeToNFT(
         uint256[] memory indices
     ) external nonReentrant returns (int64[] memory serials) {
-        return _redeemPendingPrizeToNFT(indices);
+        uint256 count = indices.length;
+        if (count == 0) {
+            revert BadParameters();
+        }
+
+        // Sort indices descending to handle removals from pending[msg.sender] correctly
+        for (uint256 i = 0; i < count; ) {
+            for (uint256 j = i + 1; j < count; ) {
+                if (indices[i] < indices[j]) {
+                    uint256 tmp = indices[i];
+                    indices[i] = indices[j];
+                    indices[j] = tmp;
+                }
+                unchecked {
+                    ++j;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        // Store prize info before removal
+        PendingPrize[] memory prizesToConvert = new PendingPrize[](count);
+        for (uint256 k = 0; k < count; ) {
+            uint256 prizeIndexInPendingArray = indices[k];
+
+            if (prizeIndexInPendingArray >= pending[msg.sender].length) {
+                revert BadParameters();
+            }
+
+            prizesToConvert[k] = pending[msg.sender][prizeIndexInPendingArray];
+
+            // Remove from pending array
+            if (prizeIndexInPendingArray < pending[msg.sender].length - 1) {
+                pending[msg.sender][prizeIndexInPendingArray] = pending[
+                    msg.sender
+                ][pending[msg.sender].length - 1];
+            }
+            pending[msg.sender].pop();
+
+            unchecked {
+                ++k;
+            }
+        }
+
+        // Get pool info from first prize
+        uint256 poolId = prizesToConvert[0].poolId;
+        address poolTokenId = pools[poolId].poolTokenId;
+        string memory winCID = pools[poolId].winCID;
+
+        // Mint prize NFTs in batches
+        serials = new int64[](count);
+        uint256 serialIndex = 0;
+
+        for (uint256 outer = 0; outer < count; outer += NFT_BATCH_SIZE) {
+            uint256 thisBatch = (count - outer) >= NFT_BATCH_SIZE
+                ? NFT_BATCH_SIZE
+                : (count - outer);
+
+            // Prepare metadata for batch
+            bytes[] memory batchMetadata = new bytes[](thisBatch);
+            for (uint256 inner = 0; inner < thisBatch; ) {
+                batchMetadata[inner] = abi.encodePacked(winCID);
+                unchecked {
+                    ++inner;
+                }
+            }
+
+            // Mint batch
+            int64[] memory batchSerials = storageContract.mintAndTransferNFT(
+                poolTokenId,
+                msg.sender,
+                batchMetadata
+            );
+
+            // Store in pendingNFTs mapping and copy serials
+            for (uint256 i = 0; i < batchSerials.length; ) {
+                uint256 prizeIdx = outer + i;
+                serials[serialIndex] = batchSerials[i];
+
+                prizesToConvert[prizeIdx].asNFT = true;
+                bytes32 nftKey = keccak256(
+                    abi.encode(poolTokenId, batchSerials[i])
+                );
+                pendingNFTs[nftKey] = prizesToConvert[prizeIdx];
+
+                unchecked {
+                    ++serialIndex;
+                    ++i;
+                }
+            }
+
+            emit TicketEvent(
+                poolId,
+                poolTokenId,
+                msg.sender,
+                batchSerials,
+                true
+            );
+        }
     }
 
     /// User claims prizes redeemed from NFTs
@@ -1054,6 +1119,43 @@ contract LazyLotto is
     }
 
     /// --- INTERNAL FUNCTIONS ---
+    /// @dev Shared payment handling logic for HBAR, LAZY, and other fungibles
+    /// @param tokenId The token address (address(0) for HBAR)
+    /// @param amount The amount to pull from msg.sender
+    /// @param burnPercentageForLazy The burn percentage to apply if token is LAZY (0-100)
+    function _pullPayment(
+        address tokenId,
+        uint256 amount,
+        uint256 burnPercentageForLazy
+    ) internal {
+        if (amount == 0) {
+            return;
+        }
+
+        if (tokenId == address(0)) {
+            // HBAR - forward to storage contract
+            if (msg.value < amount) {
+                revert NotEnoughHbar(amount, msg.value);
+            }
+            // Refund excess HBAR first (before forwarding to storage)
+            if (msg.value > amount) {
+                Address.sendValue(payable(msg.sender), msg.value - amount);
+            }
+            // Forward exact amount to storage
+            storageContract.depositHbar{value: amount}();
+        } else if (tokenId == lazyToken) {
+            // Transfer $LAZY to LGS (with optional burn)
+            lazyGasStation.drawLazyFrom(
+                msg.sender,
+                amount,
+                burnPercentageForLazy
+            );
+        } else {
+            // Other FT tokens - delegate to storage for associate-pull-verify
+            storageContract.ensureFungibleBalance(tokenId, msg.sender, amount);
+        }
+    }
+
     function _checkAndPullFungible(address tokenId, uint256 amount) internal {
         // only pull the fungible token if amount > 0
         if (amount == 0) {
@@ -1061,45 +1163,7 @@ contract LazyLotto is
         }
 
         ftTokensForPrizes[tokenId] += amount;
-
-        if (tokenId == address(0)) {
-            if (address(this).balance < ftTokensForPrizes[tokenId]) {
-                revert BalanceError(
-                    address(0),
-                    address(this).balance,
-                    ftTokensForPrizes[address(0)]
-                );
-            }
-        } else if (tokenId == lazyToken) {
-            // transfer the $LAZY to the LGS
-            lazyGasStation.drawLazyFrom(msg.sender, amount, 0);
-        } else {
-            // attempt to transfer the token to the contract
-            if (
-                IERC20(tokenId).balanceOf(address(this)) <
-                ftTokensForPrizes[tokenId]
-            ) {
-                // first check if the contract has a balance > 0 (else try to associate)
-                if (IERC20(tokenId).balanceOf(address(this)) == 0) {
-                    _tokenAssociate(tokenId);
-                }
-
-                // now try and move the token to the contract (needs an allowance to be in place)
-                IERC20(tokenId).transferFrom(msg.sender, address(this), amount);
-
-                // check the contract has enough of the token to pay the prize
-                if (
-                    IERC20(tokenId).balanceOf(address(this)) <
-                    ftTokensForPrizes[tokenId]
-                ) {
-                    revert BalanceError(
-                        tokenId,
-                        IERC20(tokenId).balanceOf(address(this)),
-                        ftTokensForPrizes[tokenId]
-                    );
-                }
-            }
-        }
+        _pullPayment(tokenId, amount, 0); // No burn for prize deposits
     }
 
     function _redeemEntriesFromNFT(
@@ -1107,24 +1171,22 @@ contract LazyLotto is
         int64[] memory serialNumbers
     ) internal {
         LottoPool storage p = pools[_poolId];
-
-        // check the serials are not winning tickets
-        // then wipe the NFTs from the user
-        // and credit the entries
         uint256 _numTickets = serialNumbers.length;
+
+        // Check for winning tickets - all business logic stays here
         for (uint256 outer = 0; outer < _numTickets; outer += NFT_BATCH_SIZE) {
             uint256 thisBatch = (_numTickets - outer) >= NFT_BATCH_SIZE
                 ? NFT_BATCH_SIZE
                 : (_numTickets - outer);
+
             int64[] memory batchSerialsForBurn = new int64[](thisBatch);
             for (
                 uint256 inner = 0;
                 ((outer + inner) < _numTickets) && (inner < thisBatch);
 
             ) {
-                // check the serial is not a winning ticket
+                // Check the serial is not a winning ticket
                 if (
-                    // hash the tokenId and serial number to get the key
                     pendingNFTs[
                         keccak256(
                             abi.encode(
@@ -1152,111 +1214,21 @@ contract LazyLotto is
                 false
             );
 
-            int256 response = wipeTokenAccountNFT(
+            // Call storage to wipe the NFTs
+            storageContract.wipeNFT(
                 p.poolTokenId,
                 msg.sender,
                 batchSerialsForBurn
             );
 
-            if (response != SUCCESS) {
-                revert FailedNFTWipe();
-            }
-
-            // now credit the entries to the user
+            // Credit the entries to the user
             userEntries[_poolId][msg.sender] += thisBatch;
             p.outstandingEntries += thisBatch;
         }
     }
 
-    function _redeemPendingPrizeToNFT(
-        uint256[] memory _idxs
-    ) internal returns (int64[] memory mintedSerialsToUser) {
-        uint256 count = _idxs.length;
-        if (count == 0) {
-            revert BadParameters();
-        }
-        mintedSerialsToUser = new int64[](count);
-
-        // Sort _idxs descending to handle removals from pending[msg.sender] correctly
-        for (uint256 i = 0; i < count; ) {
-            for (uint256 j = i + 1; j < count; ) {
-                if (_idxs[i] < _idxs[j]) {
-                    uint256 tmp = _idxs[i];
-                    _idxs[i] = _idxs[j];
-                    _idxs[j] = tmp;
-                }
-                unchecked {
-                    ++j;
-                }
-            }
-            unchecked {
-                ++i;
-            }
-        }
-
-        for (uint256 k = 0; k < count; ) {
-            uint256 prizeIndexInPendingArray = _idxs[k];
-
-            if (prizeIndexInPendingArray >= pending[msg.sender].length) {
-                revert BadParameters(); // Index out of bounds
-            }
-
-            PendingPrize memory prizeToConvert = pending[msg.sender][
-                prizeIndexInPendingArray
-            ];
-
-            // Remove from pending[msg.sender] by swapping with the last element and popping
-            if (prizeIndexInPendingArray < pending[msg.sender].length - 1) {
-                pending[msg.sender][prizeIndexInPendingArray] = pending[
-                    msg.sender
-                ][pending[msg.sender].length - 1];
-            }
-            pending[msg.sender].pop();
-
-            prizeToConvert.asNFT = true; // Mark that this prize is now represented by an NFT
-
-            bytes[] memory metadata = new bytes[](1);
-            metadata[0] = abi.encodePacked(pools[prizeToConvert.poolId].winCID);
-            address poolTokenIdForPrizeNFT = pools[prizeToConvert.poolId]
-                .poolTokenId;
-
-            (
-                int32 responseCode,
-                int64[] memory mintedSerials
-            ) = _mintAndTransferNFT(
-                    poolTokenIdForPrizeNFT,
-                    address(this),
-                    msg.sender,
-                    metadata
-                );
-
-            if (responseCode != SUCCESS) {
-                revert FailedNFTMintAndSend();
-            }
-
-            // 3. Store in pendingNFTs mapping
-            bytes32 nftKey = keccak256(
-                abi.encode(poolTokenIdForPrizeNFT, mintedSerials[0])
-            );
-            pendingNFTs[nftKey] = prizeToConvert;
-            mintedSerialsToUser[k] = mintedSerials[0];
-
-            emit TicketEvent(
-                prizeToConvert.poolId,
-                poolTokenIdForPrizeNFT,
-                msg.sender,
-                mintedSerials,
-                true
-            );
-
-            unchecked {
-                ++k;
-            }
-        }
-    }
-
     function _redeemPendingPrizeFromNFT(
-        address poolTokenId, // This is the poolTokenId of the NFT voucher
+        address poolTokenId,
         int64[] memory serialNumbers
     ) internal returns (uint256[] memory prizeSlotsInPendingArray) {
         uint256 numSerials = serialNumbers.length;
@@ -1265,9 +1237,9 @@ contract LazyLotto is
         }
 
         prizeSlotsInPendingArray = new uint256[](numSerials);
-        uint256 successfullyRedeemedCount = 0;
         uint256 poolId = 0;
 
+        // Retrieve prizes from pendingNFTs and add back to pending
         for (uint256 i = 0; i < numSerials; ) {
             bytes32 nftKey = keccak256(
                 abi.encode(poolTokenId, serialNumbers[i])
@@ -1275,65 +1247,50 @@ contract LazyLotto is
             PendingPrize memory prize = pendingNFTs[nftKey];
 
             if (!prize.asNFT) {
-                // If asNFT is false, it's not a valid entry from pendingNFTs or was already processed.
-                // Could revert, or skip this serial. For now, revert.
                 revert BadParameters();
             }
 
-            delete pendingNFTs[nftKey]; // Remove from NFT voucher mapping
-
-            prize.asNFT = false; // Mark as a regular pending prize again
+            delete pendingNFTs[nftKey];
+            prize.asNFT = false;
             poolId = prize.poolId;
             pending[msg.sender].push(prize);
-            prizeSlotsInPendingArray[successfullyRedeemedCount] =
-                pending[msg.sender].length -
-                1;
-            successfullyRedeemedCount++;
-
-            // Wipe the NFT voucher from the sender's account
-            int64[] memory singleSerialArray = new int64[](1);
-            singleSerialArray[0] = serialNumbers[i];
-            int256 responseWipe = wipeTokenAccountNFT(
-                poolTokenId,
-                msg.sender,
-                singleSerialArray
-            );
-
-            if (responseWipe != SUCCESS) {
-                // If wipe fails, the state might be inconsistent. Reverting is safest.
-                // Consider if this should revert all or just this specific redemption.
-                revert FailedNFTWipe();
-            }
+            prizeSlotsInPendingArray[i] = pending[msg.sender].length - 1;
 
             unchecked {
                 ++i;
             }
         }
 
-        emit TicketEvent(poolId, poolTokenId, msg.sender, serialNumbers, false);
+        // Wipe NFTs in batches
+        for (uint256 outer = 0; outer < numSerials; outer += NFT_BATCH_SIZE) {
+            uint256 thisBatch = (numSerials - outer) >= NFT_BATCH_SIZE
+                ? NFT_BATCH_SIZE
+                : (numSerials - outer);
 
-        // If some redemptions failed and we chose to skip (not current logic), resize array.
-        // For now, successfullyRedeemedCount should equal numSerials if no reverts.
-        if (successfullyRedeemedCount < numSerials) {
-            uint256[] memory sizedPrizeSlots = new uint256[](
-                successfullyRedeemedCount
-            );
-            for (uint256 j = 0; j < successfullyRedeemedCount; ) {
-                sizedPrizeSlots[j] = prizeSlotsInPendingArray[j];
+            int64[] memory batchSerialsForWipe = new int64[](thisBatch);
+            for (uint256 inner = 0; inner < thisBatch; ) {
+                batchSerialsForWipe[inner] = serialNumbers[outer + inner];
                 unchecked {
-                    ++j;
+                    ++inner;
                 }
             }
-            return sizedPrizeSlots;
+
+            storageContract.wipeNFT(
+                poolTokenId,
+                msg.sender,
+                batchSerialsForWipe
+            );
         }
+
+        emit TicketEvent(poolId, poolTokenId, msg.sender, serialNumbers, false);
+
         return prizeSlotsInPendingArray;
     }
 
     function _redeemEntriesToNFT(
         uint256 _poolId,
-        uint256 _numTickets,
-        address _onBehalfOf
-    ) internal returns (int64[] memory mintedSerials) {
+        uint256 _numTickets
+    ) internal returns (int64[] memory allSerials) {
         if (userEntries[_poolId][msg.sender] < _numTickets) {
             revert NotEnoughTickets(
                 _poolId,
@@ -1346,43 +1303,44 @@ contract LazyLotto is
         userEntries[_poolId][msg.sender] -= _numTickets;
 
         LottoPool storage p = pools[_poolId];
-        // @dev: not adjusting the oustanding entries here, as the tickets are not being rolled yet
 
-        // mint the NFTs for the user
+        // Pre-allocate array for all serials
+        allSerials = new int64[](_numTickets);
+        uint256 serialIndex = 0;
+
+        // Mint NFTs in batches
         for (uint256 outer = 0; outer < _numTickets; outer += NFT_BATCH_SIZE) {
             uint256 thisBatch = (_numTickets - outer) >= NFT_BATCH_SIZE
                 ? NFT_BATCH_SIZE
                 : (_numTickets - outer);
-            bytes[] memory batchMetadataForMint = new bytes[](thisBatch);
-            for (
-                uint256 inner = 0;
-                ((outer + inner) < _numTickets) && (inner < thisBatch);
 
-            ) {
-                batchMetadataForMint[inner] = bytes(p.ticketCID);
+            bytes[] memory batchMetadata = new bytes[](thisBatch);
+            for (uint256 inner = 0; inner < thisBatch; ) {
+                batchMetadata[inner] = bytes(p.ticketCID);
                 unchecked {
                     ++inner;
                 }
             }
 
-            int32 responseCode;
-
-            (responseCode, mintedSerials) = _mintAndTransferNFT(
+            int64[] memory batchSerials = storageContract.mintAndTransferNFT(
                 p.poolTokenId,
-                address(this),
-                _onBehalfOf,
-                batchMetadataForMint
+                msg.sender,
+                batchMetadata
             );
 
-            if (responseCode != SUCCESS) {
-                revert FailedNFTMintAndSend();
+            // Copy batch serials to result array
+            for (uint256 i = 0; i < batchSerials.length; ) {
+                allSerials[serialIndex++] = batchSerials[i];
+                unchecked {
+                    ++i;
+                }
             }
 
             emit TicketEvent(
                 _poolId,
                 p.poolTokenId,
                 msg.sender,
-                mintedSerials,
+                batchSerials,
                 true
             );
         }
@@ -1391,7 +1349,8 @@ contract LazyLotto is
     function _buyEntry(
         uint256 poolId,
         uint256 ticketCount,
-        bool isFreeOfPayment
+        bool isFreeOfPayment,
+        address recipient
     ) internal {
         if (ticketCount == 0) {
             revert BadParameters();
@@ -1405,43 +1364,12 @@ contract LazyLotto is
 
         if (!isFreeOfPayment) {
             uint256 totalFee = p.entryFee * ticketCount;
-
-            if (p.feeToken == address(0)) {
-                if (msg.value < totalFee) {
-                    revert NotEnoughHbar(totalFee, msg.value);
-                }
-                // Refund excess HBAR
-                if (msg.value > totalFee) {
-                    Address.sendValue(
-                        payable(msg.sender),
-                        msg.value - totalFee
-                    );
-                }
-            } else if (p.feeToken == lazyToken) {
-                // If the token is $LAZY, take payment to LGS and burn part of the fee
-
-                // This is a SAFE transfer method and will revert if the transfer fails
-                lazyGasStation.drawLazyFrom(
-                    msg.sender,
-                    totalFee,
-                    burnPercentage
-                );
-            } else {
-                bool success = IERC20(p.feeToken).transferFrom(
-                    msg.sender,
-                    address(this),
-                    totalFee
-                );
-
-                if (!success) {
-                    revert NotEnoughFungible(totalFee, msg.value);
-                }
-            }
+            _pullPayment(p.feeToken, totalFee, burnPercentage);
         }
 
         p.outstandingEntries += ticketCount;
-        userEntries[poolId][msg.sender] += ticketCount;
-        emit EntryPurchased(msg.sender, poolId, ticketCount);
+        userEntries[poolId][recipient] += ticketCount;
+        emit EntryPurchased(recipient, poolId, ticketCount);
     }
 
     function _roll(
@@ -1458,9 +1386,6 @@ contract LazyLotto is
             revert NoPrizesAvailable();
         }
 
-        if (p.outstandingEntries < numberToRoll) {
-            revert NotEnoughTickets(poolId, numberToRoll, p.outstandingEntries);
-        }
         if (userEntries[poolId][msg.sender] < numberToRoll) {
             revert NotEnoughTickets(
                 poolId,
@@ -1481,6 +1406,7 @@ contract LazyLotto is
 
         offset = pending[msg.sender].length;
 
+        // Generate random numbers for win determination
         uint256[] memory rolls = prng.getPseudorandomNumberArray(
             0, // min value for random number
             MAX_WIN_RATE_THRESHOLD, // max value for random number (exclusive for PRNG, so 0 to 99,999,999)
@@ -1497,16 +1423,32 @@ contract LazyLotto is
             numberToRoll
         );
 
+        // Generate separate random numbers for prize selection (avoids modulo bias and ensures independence)
+        uint256[] memory prizeRolls = prng.getPseudorandomNumberArray(
+            0, // min value
+            type(uint256).max, // max value (full range for better distribution)
+            uint256(
+                keccak256(
+                    abi.encodePacked(
+                        block.timestamp,
+                        msg.sender,
+                        poolId,
+                        numberToRoll,
+                        "prize" // different seed domain
+                    )
+                )
+            ), // different seed from win rolls
+            numberToRoll
+        );
+
         for (uint256 i = 0; i < numberToRoll; i++) {
             bool won = rolls[i] < winRateWithBoost;
             emit Rolled(msg.sender, poolId, won, rolls[i]); // Emit roll event regardless of win
 
             if (won && totalPrizesAvailable > 0) {
-                // Use a different random number for prize selection to avoid bias from the win roll
-                // Or, if PRNG is good enough, can use a portion of the same roll or a subsequent one if available.
-                // For simplicity, let's use a modulo of the win roll for now, assuming PRNG distribution is fine.
-                // A more robust way would be another PRNG call or a hash-based selection.
-                uint256 prizeSelectionIndex = rolls[i] % totalPrizesAvailable;
+                // Use independent random number for prize selection
+                uint256 prizeSelectionIndex = prizeRolls[i] %
+                    totalPrizesAvailable;
                 PrizePackage memory pkg = p.prizes[prizeSelectionIndex];
 
                 // Remove prize from pool by swapping with last and popping
@@ -1550,254 +1492,37 @@ contract LazyLotto is
             .prize
             .amount;
 
-        // time to pay out the prize and update ftTokensForPrizes
+        // time to pay out the prize from storage contract
         if (claimedPrize.prize.token == address(0)) {
-            // transfer the HBAR to the user
-            Address.sendValue(payable(msg.sender), claimedPrize.prize.amount);
+            // transfer the HBAR from storage to the user
+            storageContract.withdrawHbar(
+                payable(msg.sender),
+                claimedPrize.prize.amount
+            );
         } else if (claimedPrize.prize.token == lazyToken) {
             // transfer the $LAZY to the user
             lazyGasStation.payoutLazy(msg.sender, claimedPrize.prize.amount, 0);
         } else {
-            // attempt to transfer the token to the user
-            IERC20(claimedPrize.prize.token).transfer(
+            // transfer the token from storage to the user
+            storageContract.transferFungible(
+                claimedPrize.prize.token,
                 msg.sender,
                 claimedPrize.prize.amount
             );
         }
 
-        _bulkTransfer(
-            TransferDirection.WITHDRAWAL,
+        storageContract.bulkTransferNFTs(
+            false, // withdrawal (storage -> user)
             claimedPrize.prize.nftTokens,
             claimedPrize.prize.nftSerials,
             msg.sender
         );
     }
 
-    /// --- HTS HELPER FUNCTIONS (inlined from HTSLottoUtils) ---
-
-    /**
-     * @dev Internal function to move a batch of NFTs (up to MAX_NFTS_PER_TX).
-     * It constructs the necessary transfer lists for HBAR (tinybar dust for discovery) and NFTs,
-     * then calls the cryptoTransfer precompile.
-     * @param _direction The direction of the transfer (STAKING or WITHDRAWAL).
-     * @param _collectionAddress The address of the NFT collection.
-     * @param _serials An array of serial numbers for the NFTs to transfer (max length MAX_NFTS_PER_TX).
-     * @param _contractAddress The address of the contract (e.g., staking contract).
-     * @param _eoaAddress The address of the EOA involved in the transfer.
-     */
-    function _moveNFTs(
-        TransferDirection _direction,
-        address _collectionAddress,
-        uint256[] memory _serials,
-        address _contractAddress,
-        address _eoaAddress
-    ) internal {
-        if (_serials.length > 8) revert BadParameters();
-        address receiverAddress;
-        address senderAddress;
-        bool isHbarApproval;
-
-        if (_direction == TransferDirection.STAKING) {
-            receiverAddress = _contractAddress;
-            senderAddress = _eoaAddress;
-        } else {
-            receiverAddress = _eoaAddress;
-            senderAddress = _contractAddress;
-            isHbarApproval = true;
-        }
-
-        // hbar moves sit separate from NFT moves (max 8 NFTs + 2 hbar legs +1/-1 tiny bar)
-        IHederaTokenServiceLite.TokenTransferList[]
-            memory _transfers = new IHederaTokenServiceLite.TokenTransferList[](
-                _serials.length
-            );
-
-        // prep the hbar transfer
-        IHederaTokenServiceLite.TransferList memory _hbarTransfer;
-        _hbarTransfer.transfers = new IHederaTokenServiceLite.AccountAmount[](
-            2
-        );
-
-        _hbarTransfer.transfers[0].accountID = receiverAddress;
-        _hbarTransfer.transfers[0].amount = -1;
-        _hbarTransfer.transfers[0].isApproval = isHbarApproval;
-
-        _hbarTransfer.transfers[1].accountID = senderAddress;
-        _hbarTransfer.transfers[1].amount = 1;
-
-        // transfer NFT
-        for (uint256 i = 0; i < _serials.length; i++) {
-            IHederaTokenServiceLite.NftTransfer memory _nftTransfer;
-            _nftTransfer.senderAccountID = senderAddress;
-            _nftTransfer.receiverAccountID = receiverAddress;
-            _nftTransfer.isApproval = !isHbarApproval;
-
-            if (_serials[i] == 0) {
-                continue;
-            }
-            _transfers[i].token = _collectionAddress;
-
-            _transfers[i]
-                .nftTransfers = new IHederaTokenServiceLite.NftTransfer[](1);
-
-            _nftTransfer.serialNumber = int256(_serials[i]).toInt64();
-            _transfers[i].nftTransfers[0] = _nftTransfer;
-        }
-
-        int256 response = cryptoTransfer(_hbarTransfer, _transfers);
-
-        if (response != SUCCESS) {
-            revert NFTTransferFailed(_direction);
-        }
-    }
-
-    /**
-     * @dev Associates the calling contract with a token on the Hedera network.
-     * @param tokenId The address of the token to associate with.
-     * @return True if the association was successful or if the token was already associated, false otherwise.
-     */
-    function _tokenAssociate(address tokenId) internal returns (bool) {
-        int256 response = associateToken(address(this), tokenId);
-
-        if (
-            !(response == SUCCESS ||
-                response == TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT)
-        ) {
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * @dev Transfers multiple NFTs in bulk, either for staking or withdrawal.
-     * If staking, it first associates the contract with the token if not already associated.
-     * @param _direction The direction of the transfer (STAKING or WITHDRAWAL).
-     * @param nftTokens An array of NFT collection addresses.
-     * @param nftSerials A 2D array where each inner array contains the serial numbers of NFTs from the corresponding collection in nftTokens.
-     * @param _eoaAddress The address of the externally owned account (EOA) involved in the transfer.
-     */
-    function _bulkTransfer(
-        TransferDirection _direction,
-        address[] memory nftTokens,
-        uint256[][] memory nftSerials,
-        address _eoaAddress
-    ) internal {
-        if (address(this).balance < 20) {
-            lazyGasStation.refillHbar(100);
-        }
-
-        uint256 _length = nftTokens.length;
-        for (uint256 i = 0; i < _length; ) {
-            if (_direction == TransferDirection.STAKING) {
-                if (IERC721(nftTokens[i]).balanceOf(address(this)) == 0) {
-                    bool success = _tokenAssociate(nftTokens[i]);
-                    if (!success) {
-                        revert AssociationFailed(nftTokens[i]);
-                    }
-                }
-            }
-
-            // now stake the NFTs for the prize
-            _batchMoveNFTs(
-                _direction,
-                nftTokens[i],
-                nftSerials[i],
-                _eoaAddress
-            );
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /**
-     * @dev Internal function to move NFTs in batches, respecting MAX_NFTS_PER_TX.
-     * It iterates through the provided serials and calls `moveNFTs` for each batch.
-     * @param _direction The direction of the transfer (STAKING or WITHDRAWAL).
-     * @param _collectionAddress The address of the NFT collection.
-     * @param _serials An array of serial numbers for all NFTs to transfer.
-     * @param _eoaAddress The address of the EOA involved in the transfer.
-     */
-    function _batchMoveNFTs(
-        TransferDirection _direction,
-        address _collectionAddress,
-        uint256[] memory _serials,
-        address _eoaAddress
-    ) internal {
-        // check the number of serials and send in batches of 8
-        for (
-            uint256 outer = 0;
-            outer < _serials.length;
-            outer += MAX_NFTS_PER_TX
-        ) {
-            uint256 batchSize = (_serials.length - outer) >= MAX_NFTS_PER_TX
-                ? MAX_NFTS_PER_TX
-                : (_serials.length - outer);
-            uint256[] memory serials = new uint256[](batchSize);
-            for (
-                uint256 inner = 0;
-                ((outer + inner) < _serials.length) &&
-                    (inner < MAX_NFTS_PER_TX);
-                inner++
-            ) {
-                if (outer + inner < _serials.length) {
-                    serials[inner] = _serials[outer + inner];
-                }
-            }
-            _moveNFTs(
-                _direction,
-                _collectionAddress,
-                serials,
-                address(this),
-                _eoaAddress
-            );
-        }
-    }
-
-    /**
-     * @dev Mints new NFTs and transfers them to a receiver.
-     * @param token The address of the NFT collection.
-     * @param sender The address of the sender (contract treasury).
-     * @param receiver The address of the receiver.
-     * @param metadata An array of metadata for the new NFTs.
-     * @return responseCode The response code from the HTS precompile.
-     * @return serialNumbers An array of serial numbers for the minted NFTs.
-     */
-    function _mintAndTransferNFT(
-        address token,
-        address sender,
-        address receiver,
-        bytes[] memory metadata
-    ) internal returns (int32 responseCode, int64[] memory serialNumbers) {
-        // 1. Mint NFT to contract (treasury)
-        (responseCode, , serialNumbers) = mintToken(token, 0, metadata);
-
-        if (responseCode != SUCCESS || serialNumbers.length == 0) {
-            return (responseCode, serialNumbers);
-        }
-
-        // 2. Transfer the minted NFTs
-        address[] memory senderAddresses = new address[](serialNumbers.length);
-        address[] memory receiverAddresses = new address[](
-            serialNumbers.length
-        );
-
-        for (uint256 i = 0; i < serialNumbers.length; i++) {
-            senderAddresses[i] = sender;
-            receiverAddresses[i] = receiver;
-        }
-        responseCode = transferNFTs(
-            token,
-            senderAddresses,
-            receiverAddresses,
-            serialNumbers
-        );
-    }
-
     /// --- Token Transfer Functions ---
 
-    /// @param receiverAddress address in EVM fomat of the reciever of the token
+    /// @notice Transfer HBAR from LazyLotto contract (for any HBAR sent directly to this contract)
+    /// @param receiverAddress address in EVM format of the receiver of the token
     /// @param amount number of tokens to send (in tinybar i.e. adjusted for decimal)
     function transferHbar(
         address payable receiverAddress,
@@ -1818,6 +1543,43 @@ contract LazyLotto is
         emit ContractUpdate(MethodEnum.HBAR_TRANSFER, msg.sender, amount);
     }
 
+    /// @notice Transfer HBAR from LazyLottoStorage contract (with safety checks for prize obligations)
+    /// @param receiverAddress address in EVM format of the receiver of the token
+    /// @param amount number of tokens to send (in tinybar i.e. adjusted for decimal)
+    function transferHbarFromStorage(
+        address payable receiverAddress,
+        uint256 amount
+    ) external {
+        _requireAdmin();
+        if (receiverAddress == address(0) || amount == 0) {
+            revert BadParameters();
+        }
+
+        // Safety check: ensure storage retains enough HBAR for all outstanding prizes
+        uint256 storageBalance = address(storageContract).balance;
+        uint256 requiredForPrizes = ftTokensForPrizes[address(0)];
+
+        if (storageBalance < amount) {
+            revert BalanceError(address(0), storageBalance, amount);
+        }
+
+        if (storageBalance - amount < requiredForPrizes) {
+            revert BalanceError(
+                address(0),
+                storageBalance - amount,
+                requiredForPrizes
+            );
+        }
+
+        storageContract.withdrawHbar(receiverAddress, amount);
+
+        emit ContractUpdate(MethodEnum.HBAR_TRANSFER, msg.sender, amount);
+    }
+
+    /// @notice Transfer fungible tokens from LazyLottoStorage contract (with safety checks for prize obligations)
+    /// @param _tokenAddress The token address
+    /// @param _receiver The receiver address
+    /// @param _amount The amount to transfer
     function transferFungible(
         address _tokenAddress,
         address _receiver,
@@ -1832,19 +1594,25 @@ contract LazyLotto is
             revert BadParameters();
         }
 
-        if (IERC20(_tokenAddress).balanceOf(address(this)) < _amount) {
+        // Safety check: ensure storage retains enough tokens for all outstanding prizes
+        uint256 storageBalance = IERC20(_tokenAddress).balanceOf(
+            address(storageContract)
+        );
+        uint256 requiredForPrizes = ftTokensForPrizes[_tokenAddress];
+
+        if (storageBalance < _amount) {
+            revert BalanceError(_tokenAddress, storageBalance, _amount);
+        }
+
+        if (storageBalance - _amount < requiredForPrizes) {
             revert BalanceError(
                 _tokenAddress,
-                IERC20(_tokenAddress).balanceOf(address(this)),
-                _amount
+                storageBalance - _amount,
+                requiredForPrizes
             );
         }
 
-        bool success = IERC20(_tokenAddress).transfer(_receiver, _amount);
-
-        if (!success) {
-            revert FungibleTokenTransferFailed();
-        }
+        storageContract.withdrawFungible(_tokenAddress, _receiver, _amount);
 
         emit ContractUpdate(MethodEnum.FT_TRANSFER, msg.sender, _amount);
     }

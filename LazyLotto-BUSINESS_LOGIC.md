@@ -85,6 +85,31 @@ Users can receive win rate bonuses through:
 - `closePool()`: Permanently disable pool (requires no outstanding entries)
 - `removePrizes()`: Recover prizes from closed pools
 
+**Token Withdrawal Operations** (Admin Safety):
+
+Admins can withdraw excess tokens from storage, but the system enforces safety checks to protect user prize obligations:
+
+1. **Withdraw HBAR from Storage**: `transferHbarFromStorage(recipient, amount)`
+   - Checks: `storageBalance - amount >= ftTokensForPrizes[address(0)]`
+   - Use case: Withdraw royalty payments, excess HBAR accidentally sent to storage
+   - Safety: Cannot withdraw if it would leave insufficient HBAR for prizes
+
+2. **Withdraw Fungible Tokens from Storage**: `transferFungible(token, recipient, amount)`
+   - Checks: `storageBalance - amount >= ftTokensForPrizes[token]`
+   - Use case: Withdraw excess tokens, recover accidentally sent tokens
+   - Safety: Cannot withdraw if it would leave insufficient tokens for prizes
+
+3. **Withdraw HBAR from LazyLotto**: `transferHbar(recipient, amount)`
+   - No safety check (LazyLotto doesn't hold prize funds)
+   - Use case: Withdraw HBAR accidentally sent directly to LazyLotto contract
+   - Note: Regular operations send HBAR to storage, not LazyLotto
+
+**Key Points**:
+- All withdrawals from storage must go through LazyLotto facade methods
+- `ftTokensForPrizes[token]` mapping tracks total token obligations for all prizes
+- Storage methods (`withdrawHbar`, `withdrawFungible`) are `onlyContractUser` - cannot be called directly
+- This ensures users always have certainty their prizes can be paid out
+
 ### 4. Prize Trading System
 
 **User Story**: "As a user, I want to trade my won prizes before claiming them"
@@ -187,12 +212,90 @@ The contract includes automatic resource management through the `refill` modifie
 
 ### 1. External Dependencies
 
-**LazyGasStation**: Provides automatic HBAR/$LAZY refilling and manages $LAZY burns
+**LazyGasStation**: Provides automatic HBAR refilling and manages $LAZY burns
 **LazyDelegateRegistry**: Handles delegation and permission management
 **PrngSystemContract**: Provides verifiable random numbers for fair gameplay
-**HTSLazyLottoLibrary**: Handles complex HTS operations (NFT minting, transfers, burns)
+**LazyLottoStorage**: Isolated storage contract handling all HTS token operations (transfers, burns, associations)
 
-### 2. Token Standards
+### 2. Storage Pattern Architecture
+
+**LazyLotto** and **LazyLottoStorage** implement a split-contract architecture to stay within Hedera's 24 KB contract size limit while maintaining full functionality:
+
+**LazyLotto (22.939 KB)**:
+- Pure business logic (pools, tickets, prizes, gameplay)
+- References `storageContract` (set once in constructor, immutable)
+- Delegates all token operations to storage
+- Maintains accounting state (`ftTokensForPrizes` mapping)
+- **Acts as the sole interface for all operations** - users and admins interact only with LazyLotto
+
+**LazyLottoStorage (11.218 KB)**:
+- All HTS token operations (transfers, associations, burns, minting)
+- Holds all prize tokens (HBAR, FT, NFT) as treasury
+- Access controlled via `onlyContractUser` modifier (only LazyLotto can call)
+- No direct user interaction - all operations delegated from LazyLotto
+- Permanently paired 1:1 with its LazyLotto instance
+
+**Deployment Flow**:
+1. Deploy LazyLottoStorage
+2. Deploy LazyLotto with storage address
+3. Call `storage.setContractUser(lazyLotto.address)` - locks permanently
+4. Users approve tokens to storage address (query via `lazyLotto.storageContract()`)
+
+**Token Flow Architecture**:
+```
+User → LazyLotto (validates & checks) → LazyLottoStorage (executes HTS operations)
+
+Entry Fees:
+  User.buyEntry{value: 100}() 
+  → LazyLotto validates pool, refunds excess
+  → storageContract.depositHbar{value: 100}() 
+  → HBAR held in LazyLottoStorage
+
+Prize Deposits:
+  Admin.addPrizePackage{value: 500}()
+  → LazyLotto tracks in ftTokensForPrizes[token]
+  → storageContract.depositHbar{value: 500}()
+  → HBAR held in LazyLottoStorage
+
+Prize Payouts:
+  User.claimPrize(index)
+  → LazyLotto verifies prize, updates ftTokensForPrizes[token]
+  → storageContract.withdrawHbar(user, amount)
+  → User receives HBAR from storage
+```
+
+**Admin Withdrawal Safety Pattern**:
+
+All admin withdrawals must go through LazyLotto's facade methods to ensure prize obligations are protected:
+
+```solidity
+// LazyLotto.transferHbarFromStorage() - Safe withdrawal from storage
+1. Admin calls LazyLotto.transferHbarFromStorage(recipient, amount)
+2. LazyLotto checks: storageBalance - amount >= ftTokensForPrizes[address(0)]
+3. If safe: LazyLotto → storageContract.withdrawHbar(recipient, amount)
+4. If unsafe: Reverts with BalanceError (insufficient for prize obligations)
+
+// LazyLotto.transferFungible() - Safe withdrawal from storage  
+1. Admin calls LazyLotto.transferFungible(token, recipient, amount)
+2. LazyLotto checks: storageBalance - amount >= ftTokensForPrizes[token]
+3. If safe: LazyLotto → storageContract.withdrawFungible(token, recipient, amount)
+4. If unsafe: Reverts with BalanceError (insufficient for prize obligations)
+
+// LazyLotto.transferHbar() - Direct withdrawal from LazyLotto itself
+1. Admin calls LazyLotto.transferHbar(recipient, amount)
+2. Only withdraws HBAR sent directly to LazyLotto contract (not prize funds)
+3. No safety check needed (not prize obligations)
+```
+
+**Why This Matters**:
+- **User Protection**: `ftTokensForPrizes` mapping ensures funds for all outstanding prizes remain in storage
+- **No Direct Storage Access**: LazyLottoStorage methods are `onlyContractUser` - admins cannot bypass safety checks
+- **Facade Pattern**: LazyLotto is the single point of entry for all operations, enforcing business rules
+- **Accidental Deposits**: Any tokens accidentally sent to either contract can be safely recovered without affecting prizes
+
+**Key Principle**: LazyLottoStorage never makes business logic decisions - it only executes HTS operations as instructed by LazyLotto after all safety checks pass.
+
+### 3. Token Standards
 
 **HTS Compatibility**: Full integration with Hedera Token Service
 **ERC20/ERC721 Interfaces**: Standard token interactions for maximum compatibility

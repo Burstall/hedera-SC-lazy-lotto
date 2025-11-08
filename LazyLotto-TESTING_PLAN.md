@@ -31,13 +31,20 @@ This testing plan provides a systematic approach to validating the LazyLotto sma
 - ✅ Hardhat testing framework with Chai assertions  
 - ✅ Real contract integration (no mocks needed for core testing)
 - ✅ External dependencies: LAZY token, LazyGasStation, DelegateRegistry, PRNG
+- ✅ LazyLottoStorage contract (deployed before LazyLotto)
 - ✅ Test token collections (fungible and NFT) created
 
 ### Test Data Requirements ✅ COMPLETED
 - ✅ Multiple test accounts with HBAR and token balances
 - ✅ Pre-deployed test tokens (fungible and NFT collections)
-- ✅ Token associations and allowances configured
+- ✅ Token associations and allowances configured to **storage contract address**
 - ✅ Sample metadata and test configurations
+
+### Deployment Sequence ✅ COMPLETED
+1. ✅ Deploy LazyLottoStorage contract
+2. ✅ Deploy LazyLotto with storage address in constructor
+3. ✅ Call `storage.addAdmin(lazyLotto.address)` - locks admin permanently
+4. ✅ Configure token allowances to storage address (via `lazyLotto.storageContract()`)
 
 ## 📊 Implementation Progress Summary
 
@@ -48,15 +55,20 @@ This testing plan provides a systematic approach to validating the LazyLotto sma
 **Test Suite: Deployment**
 
 **Test Cases:**
-- ✅ Deploy with valid parameters
-- ✅ Deploy all dependencies (LAZY, gas station, delegate registry, PRNG)
+- ✅ Deploy LazyLottoStorage first
+- ✅ Deploy LazyLotto with all dependencies (including storage address)
+- ✅ Set LazyLotto as admin on storage contract (locks permanently)
 - ✅ Verify initial admin setup
 - ✅ Verify initial state values
 - ✅ Verify immutable variable configuration
 
 **Acceptance Criteria:**
+- ✅ LazyLottoStorage deploys successfully (8.910 KB)
+- ✅ LazyLotto deploys successfully with storage address (23.518 KB)
 - ✅ Contract deploys successfully with all dependencies set
 - ✅ Deployer is automatically set as first admin
+- ✅ Storage contract admin is locked after setting LazyLotto as admin
+- ✅ Storage contract getter available: `lazyLotto.storageContract()`
 - ✅ All state variables initialized correctly
 - ✅ Constructor parameter validation complete
 

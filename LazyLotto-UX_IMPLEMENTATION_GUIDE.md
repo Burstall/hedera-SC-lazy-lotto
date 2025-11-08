@@ -10,6 +10,52 @@
 
 This guide provides comprehensive instructions for building user-facing applications that interact with the LazyLotto smart contract. It covers all user flows, required contract method calls, data presentation patterns, error handling, and best practices for creating an intuitive lottery experience.
 
+### Architecture Note
+
+LazyLotto uses a **split-contract architecture** for size optimization:
+
+- **LazyLotto** (22.939 KB): Your primary interface - handles all business logic, user interactions, and admin operations
+- **LazyLottoStorage** (11.218 KB): Internal contract that holds tokens and executes HTS operations
+
+**Important for Frontend Developers**:
+1. **Only interact with LazyLotto** - all user and admin functions are exposed here
+2. **Token approvals must go to the storage contract** - get the address via `contract.storageContract()`
+3. **Never call LazyLottoStorage directly** - it's access-controlled and only accepts calls from LazyLotto
+
+```javascript
+// STEP 1: Get storage address for token approvals
+const storageAddress = await lazyLottoContract.storageContract();
+console.log('Storage contract:', storageAddress);
+// Example output: "0x0000000000000000000000000000000000123456"
+
+// STEP 2: Approve tokens to storage (required before buying tickets with tokens)
+// For fungible tokens (like custom prize tokens):
+await tokenContract.approve(storageAddress, amount);
+
+// For NFT operations (like redeeming ticket NFTs):
+await nftContract.setApprovalForAll(storageAddress, true);
+
+// STEP 3: Call LazyLotto methods (not storage)
+// The LazyLotto contract will internally delegate to storage for token operations
+await lazyLottoContract.buyEntry(poolId, ticketCount);
+```
+
+**Why This Architecture?**
+- **Size Limit**: Hedera has a 24 KB contract size limit
+- **Separation of Concerns**: Business logic (LazyLotto) separate from token operations (Storage)
+- **User Experience**: Users only need to know about LazyLotto - storage is invisible
+- **Safety**: Storage contract is permanently locked to LazyLotto (set once via `setContractUser()`)
+
+**Critical Token Approval Pattern**:
+```javascript
+// ❌ WRONG - Approving to LazyLotto won't work for token transfers
+await tokenContract.approve(lazyLottoAddress, amount);
+
+// ✅ CORRECT - Approve to storage contract
+const storageAddress = await lazyLottoContract.storageContract();
+await tokenContract.approve(storageAddress, amount);
+```
+
 ---
 
 ## Table of Contents
@@ -49,6 +95,9 @@ totalNFTBonusTokens() → uint256
 
 // Admin checks
 isAdmin(address) → bool
+
+// Storage contract reference (CRITICAL for token approvals)
+storageContract() → address
 ```
 
 **Transaction Methods:**
@@ -372,13 +421,17 @@ async function buyTickets(poolId, ticketCount) {
     });
     await tx.wait();
   } else {
-    // Token payment - requires approval first
+    // Token payment - requires approval to STORAGE CONTRACT
+    // Get storage contract address
+    const storageAddress = await contract.storageContract();
+    
     const tokenContract = new ethers.Contract(poolDetails.feeToken, ERC20_ABI, signer);
     
-    // Check allowance
-    const allowance = await tokenContract.allowance(userAddress, contractAddress);
+    // Check allowance to storage contract
+    const allowance = await tokenContract.allowance(userAddress, storageAddress);
     if (allowance < totalCost) {
-      const approveTx = await tokenContract.approve(contractAddress, totalCost);
+      // Approve storage contract (not LazyLotto!)
+      const approveTx = await tokenContract.approve(storageAddress, totalCost);
       await approveTx.wait();
     }
     
@@ -1325,16 +1378,21 @@ async function completePurchaseFlow(poolId, ticketCount, purchaseType) {
     if (poolDetails.feeToken !== ZERO_ADDRESS) {
       updateProgress(currentStep++, 'Approving token spend...');
       
+      // Get storage contract address
+      const storageAddress = await contract.storageContract();
+      
       const tokenContract = new ethers.Contract(
         poolDetails.feeToken,
         ERC20_ABI,
         signer
       );
       
-      const allowance = await tokenContract.allowance(userAddress, contractAddress);
+      // Check allowance to storage contract
+      const allowance = await tokenContract.allowance(userAddress, storageAddress);
       
       if (allowance < totalCost) {
-        const approveTx = await tokenContract.approve(contractAddress, totalCost);
+        // Approve storage contract (not LazyLotto!)
+        const approveTx = await tokenContract.approve(storageAddress, totalCost);
         await approveTx.wait();
       }
     } else {
@@ -1740,6 +1798,133 @@ function PrizeDisplay({ prizeIndex }) {
   if (error) {
     return <ErrorDisplay error={error} />;
   }
+  
+  return <PrizeCard prize={prize} />;
+}
+```
+
+### 7. Split-Contract Architecture Best Practices
+
+**Critical Understanding for Developers:**
+
+The LazyLotto system uses a split-contract architecture where:
+- **LazyLotto** = Public-facing contract (all user/admin interactions)
+- **LazyLottoStorage** = Internal contract (token custody and HTS operations)
+
+**Common Pitfalls to Avoid:**
+
+```javascript
+// ❌ WRONG - Approving tokens to LazyLotto
+const lazyLottoAddress = "0x...";
+await tokenContract.approve(lazyLottoAddress, amount);
+// This will FAIL because LazyLotto doesn't hold tokens
+
+// ✅ CORRECT - Approve to storage contract
+const storageAddress = await lazyLottoContract.storageContract();
+await tokenContract.approve(storageAddress, amount);
+```
+
+**Correct Token Approval Workflow:**
+
+```javascript
+async function setupTokenApprovals(tokenAddress, amount) {
+  // 1. Query storage contract address from LazyLotto
+  const storageAddress = await lazyLottoContract.storageContract();
+  console.log('Storage contract:', storageAddress);
+  
+  // 2. Get token contract instance
+  const tokenContract = new ethers.Contract(
+    tokenAddress,
+    ERC20_ABI,
+    signer
+  );
+  
+  // 3. Check current allowance to STORAGE (not LazyLotto)
+  const currentAllowance = await tokenContract.allowance(
+    userAddress,
+    storageAddress  // ✅ Check allowance to storage
+  );
+  
+  // 4. Approve if needed
+  if (currentAllowance < amount) {
+    const tx = await tokenContract.approve(
+      storageAddress,  // ✅ Approve storage contract
+      amount
+    );
+    await tx.wait();
+    console.log('Token approved to storage contract');
+  }
+  
+  // 5. Now call LazyLotto methods
+  // LazyLotto will internally delegate to storage for token transfers
+  await lazyLottoContract.buyEntry(poolId, ticketCount);
+}
+```
+
+**Why This Matters:**
+
+1. **Token Transfers**: All HTS token operations (transfers, burns, mints) happen in storage
+2. **Allowances**: Users approve storage contract to spend their tokens
+3. **Facade Pattern**: LazyLotto validates business rules, then delegates to storage
+4. **Safety**: Storage only accepts calls from LazyLotto (locked via `setContractUser()`)
+
+**NFT Allowances Work the Same Way:**
+
+```javascript
+// For NFT operations (ticket redemption, prize claiming)
+const storageAddress = await lazyLottoContract.storageContract();
+
+// Approve all NFTs of this collection to storage
+await nftContract.setApprovalForAll(storageAddress, true);
+
+// Now can redeem NFT tickets
+await lazyLottoContract.rollWithNFT(poolId, serialNumbers);
+```
+
+**Debugging Token Approval Issues:**
+
+```javascript
+async function debugTokenApprovals(tokenAddress) {
+  const storageAddress = await lazyLottoContract.storageContract();
+  const lazyLottoAddress = await lazyLottoContract.address;
+  
+  const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+  
+  // Check both allowances
+  const allowanceToLazyLotto = await tokenContract.allowance(
+    userAddress,
+    lazyLottoAddress
+  );
+  
+  const allowanceToStorage = await tokenContract.allowance(
+    userAddress,
+    storageAddress
+  );
+  
+  console.log('Allowance to LazyLotto:', allowanceToLazyLotto);
+  console.log('Allowance to Storage:', allowanceToStorage);
+  
+  if (allowanceToLazyLotto > 0 && allowanceToStorage === 0) {
+    console.warn('⚠️ WRONG: Tokens approved to LazyLotto instead of storage!');
+    console.log('Fix: Approve to storage contract:', storageAddress);
+  }
+}
+```
+
+---
+
+## Appendix: Contract Addresses Reference
+
+**Query at Runtime (Recommended):**
+```javascript
+// Always query storage address dynamically
+const storageAddress = await lazyLottoContract.storageContract();
+```
+
+**Why Not Hardcode Storage Address?**
+- Storage contract is immutable once set
+- But different deployments have different storage addresses
+- Always query from LazyLotto for safety
   
   return <PrizeCard prize={prize} />;
 }

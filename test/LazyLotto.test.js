@@ -17,7 +17,6 @@ const {
 	contractExecuteFunction,
 	contractExecuteQuery,
 	contractCallQuery,
-	linkBytecode,
 } = require('../utils/solidityHelpers');
 const { sleep } = require('../utils/nodeHelpers');
 const {
@@ -52,7 +51,7 @@ let operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 
 // Contract names
 const contractName = 'LazyLotto';
-const libraryName = 'HTSLazyLottoLibrary';
+const storageContractName = 'LazyLottoStorage';
 const lazyContractCreator = 'LAZYTokenCreator';
 const prngContractName = 'PrngSystemContract';
 const lazyGasStationName = 'LazyGasStation';
@@ -78,7 +77,7 @@ const ENTRY_FEE_HBAR = 100_000_000;
 const ENTRY_FEE_LAZY = 100;
 
 // Contract addresses and IDs
-let contractId, contractAddress, libraryId;
+let contractId, contractAddress, storageContractId, storageContractAddress;
 let client;
 
 // Test accounts
@@ -467,25 +466,35 @@ describe('LazyLotto - Deployment & Setup:', function () {
 		}
 	});
 
-	it('Should deploy HTSLazyLottoLibrary', async function () {
-		if (process.env.HTS_LAZY_LOTTO_LIBRARY) {
-			libraryId = ContractId.fromString(process.env.HTS_LAZY_LOTTO_LIBRARY);
+	it('Should deploy LazyLottoStorage contract', async function () {
+		if (process.env.LAZY_LOTTO_STORAGE) {
+			storageContractId = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
+			storageContractAddress = storageContractId.toSolidityAddress();
 		}
 		else {
-			console.log('\n-Deploying library:', libraryName);
+			console.log('\n-Deploying storage contract:', storageContractName);
 
-			const libraryBytecode = JSON.parse(
-				fs.readFileSync(`./artifacts/contracts/${libraryName}.sol/${libraryName}.json`),
+			const storageBytecode = JSON.parse(
+				fs.readFileSync(`./artifacts/contracts/${storageContractName}.sol/${storageContractName}.json`),
 			).bytecode;
 
-			[libraryId] = await contractDeployFunction(client, libraryBytecode, 3_500_000);
-			console.log(`Library created with ID: ${libraryId} / ${libraryId.toSolidityAddress()}`);
+			// Constructor params: (lazyGasStation)
+			const storageConstructorParams = new ContractFunctionParameters()
+				.addAddress(lazyGasStationId.toSolidityAddress());
 
-			expect(libraryId.toString().match(addressRegex).length == 2).to.be.true;
+			[storageContractId, storageContractAddress] = await contractDeployFunction(
+				client,
+				storageBytecode,
+				3_500_000,
+				storageConstructorParams,
+			);
+			console.log(`Storage created with ID: ${storageContractId} / ${storageContractAddress}`);
+
+			expect(storageContractId.toString().match(addressRegex).length == 2).to.be.true;
 		}
 	});
 
-	it('Should deploy LazyLotto contract with library linking', async function () {
+	it('Should deploy LazyLotto contract', async function () {
 		client.setOperator(operatorId, operatorKey);
 
 		const json = JSON.parse(
@@ -494,28 +503,25 @@ describe('LazyLotto - Deployment & Setup:', function () {
 
 		const contractBytecode = json.bytecode;
 
-		// Link library address in bytecode
-		console.log('\n-Linking library address in bytecode...');
-		const readyToDeployBytecode = linkBytecode(contractBytecode, [libraryName], [libraryId]);
-
 		lazyLottoIface = new ethers.Interface(json.abi);
 
 		const gasLimit = 6_000_000;
-		// uses ~5,55000 gas on local node
+		// uses ~5,550,000 gas on local node
 
 		console.log('\n-Deploying contract...', contractName, '\n\tgas@', gasLimit);
 
-		// Constructor params: (lazyToken, lazyGasStation, lazyDelegateRegistry, prng, burnPercentage)
+		// Constructor params: (lazyToken, lazyGasStation, lazyDelegateRegistry, prng, burnPercentage, storageContract)
 		const constructorParams = new ContractFunctionParameters()
 			.addAddress(lazyTokenId.toSolidityAddress())
 			.addAddress(lazyGasStationId.toSolidityAddress())
 			.addAddress(lazyDelegateRegistryId.toSolidityAddress())
 			.addAddress(prngId.toSolidityAddress())
-			.addUint256(LAZY_BURN_PERCENT);
+			.addUint256(LAZY_BURN_PERCENT)
+			.addAddress(storageContractAddress);
 
 		[contractId, contractAddress] = await contractDeployFunction(
 			client,
-			readyToDeployBytecode,
+			contractBytecode,
 			gasLimit,
 			constructorParams,
 		);
@@ -524,6 +530,27 @@ describe('LazyLotto - Deployment & Setup:', function () {
 		console.log('\n-Testing:', contractName);
 
 		expect(contractId.toString().match(addressRegex).length == 2).to.be.true;
+	});
+
+	it('Should set LazyLotto as contract user on storage contract', async function () {
+		client.setOperator(operatorId, operatorKey);
+
+		// Set LazyLotto as contract user on storage (one-time only)
+		const setContractUserResult = await contractExecuteFunction(
+			storageContractId,
+			client,
+			500_000,
+			'setContractUser',
+			[contractAddress],
+		);
+
+		if (setContractUserResult[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('setContractUser FAILED:', setContractUserResult);
+			fail('setContractUser failed');
+		}
+
+		console.log(`Set LazyLotto (${contractAddress}) as contract user on storage contract`);
+		expect(setContractUserResult[0]?.status?.toString()).to.be.equal('SUCCESS');
 	});
 });
 
@@ -909,7 +936,7 @@ describe('LazyLotto - Token Association & Setup:', function () {
 				client,
 				testFungibleTokenId,
 				account.id,
-				contractId,
+				storageContractId,
 				2000,
 			);
 			if (allowanceResult !== 'SUCCESS') {
@@ -921,7 +948,7 @@ describe('LazyLotto - Token Association & Setup:', function () {
 
 		await Promise.all(allowancePromises);
 
-		console.log('\n-Test fungible token allowances set to LazyLotto contract');
+		console.log('\n-Test fungible token allowances set to LazyLottoStorage contract');
 	});
 });
 
@@ -1394,12 +1421,12 @@ describe('LazyLotto - Prize Package Getter:', function () {
 			// Alice owns serial 1
 			const nftSerials = [[1]];
 
-			// need to ensure we have an NFT allowance to the contract for this
+			// need to ensure we have an NFT allowance to the storage contract for this
 			const allowance = await setNFTAllowanceAll(
 				client,
 				nftTokens,
 				aliceId,
-				AccountId.fromString(contractId.toString()),
+				AccountId.fromString(storageContractId.toString()),
 			);
 
 			expect(allowance).to.equal('SUCCESS');
@@ -1617,17 +1644,17 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 			false,
 		);
 
-		// Approve the ticket token for the contract
+		// Approve the ticket token for the storage contract (wipes happen via storage)
 		const ticketTokenId = TokenId.fromSolidityAddress(poolDetails.poolTokenId);
 		const allowanceResult = await setNFTAllowanceAll(
 			client,
 			[ticketTokenId.toSolidityAddress()],
 			carolId,
-			AccountId.fromString(contractId.toString()),
+			AccountId.fromString(storageContractId.toString()),
 		);
 		expect(allowanceResult).to.equal('SUCCESS');
 
-		console.log('\t✓ Ticket token approved for contract');
+		console.log('\t✓ Ticket token approved for storage contract');
 
 		// Estimate gas for rolling with NFT tickets
 		const gasEstimate = await estimateGas(
