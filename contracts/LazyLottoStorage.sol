@@ -101,7 +101,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
     );
 
     // --- CONSTANTS ---
-    int32 private constant DEFAULT_AUTO_RENEW_PERIOD = 7776000; // 90 days
+    uint32 private constant DEFAULT_AUTO_RENEW_PERIOD = 7776000; // 90 days
     uint256 private constant MAX_NFTS_PER_TX = 8; // Maximum NFTs per HTS transaction
 
     // --- STATE ---
@@ -121,12 +121,17 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
 
     // --- CONSTRUCTOR ---
     /// @param _lazyGasStation The address of the LazyGasStation contract for HBAR refills
-    constructor(address _lazyGasStation) {
-        if (_lazyGasStation == address(0)) {
+    /// @param _lazyToken The address of the LAZY token to associate during deployment
+    constructor(address _lazyGasStation, address _lazyToken) {
+        if (_lazyGasStation == address(0) || _lazyToken == address(0)) {
             revert BadParameters();
         }
 
         lazyGasStation = ILazyGasStation(_lazyGasStation);
+
+        // Associate LAZY token to storage contract during deployment
+        // This must happen in storage constructor BEFORE LazyLotto tries to use it
+        _associateToken(_lazyToken);
 
         _isAddressAdmin[msg.sender] = true;
         _adminCount = 1;
@@ -296,12 +301,6 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         // HBAR is now held in this contract's balance
     }
 
-    /// @notice Get HBAR balance of this contract
-    /// @return balance The HBAR balance in tinybars
-    function getHbarBalance() external view returns (uint256 balance) {
-        return address(this).balance;
-    }
-
     // --- FUNGIBLE TOKEN OPERATIONS ---
     /// @notice Pull fungible tokens from a user to this storage contract
     /// @param token The token address
@@ -423,19 +422,6 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         }
     }
 
-    /// @notice Get fungible token balance of this contract
-    /// @param token The token address
-    /// @return balance The token balance
-    function getFungibleBalance(
-        address token
-    ) external view returns (uint256 balance) {
-        token; // silence unused variable warning
-        // Note: This requires the contract to query HTS precompile
-        // Implementation would use HTS getTokenBalance if available
-        // For now, returning 0 as placeholder - frontend should query mirror node
-        return 0;
-    }
-
     // --- TOKEN CREATION ---
     /// @notice Create an NFT token
     /// @param _name Token name
@@ -448,7 +434,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         string memory _symbol,
         string memory _memo,
         NFTFeeObject[] memory _royalties
-    ) external onlyContractUser returns (address tokenAddress) {
+    ) external payable onlyContractUser returns (address tokenAddress) {
         if (
             bytes(_name).length == 0 ||
             bytes(_symbol).length == 0 ||
@@ -476,7 +462,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         _token.memo = _memo;
         _token.treasury = address(this); // Storage contract is the treasury
         _token.tokenKeys = _keys;
-        _token.tokenSupplyType = false;
+        _token.tokenSupplyType = true; // finite supply (default is infinite)
         _token.maxSupply = 0x7FFFFFFFFFFFFFFF; // int64 max
 
         _token.expiry = createAutoRenewExpiry(

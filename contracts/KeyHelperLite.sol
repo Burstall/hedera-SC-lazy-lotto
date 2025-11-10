@@ -71,7 +71,7 @@ abstract contract KeyHelperLite {
 
     function createAutoRenewExpiry(
         address autoRenewAccount,
-        int32 autoRenewPeriod
+        uint32 autoRenewPeriod
     ) internal pure returns (IHederaTokenServiceLite.Expiry memory expiry) {
         expiry.autoRenewAccount = autoRenewAccount;
         expiry.autoRenewPeriod = autoRenewPeriod;

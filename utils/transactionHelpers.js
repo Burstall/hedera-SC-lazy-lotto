@@ -10,10 +10,7 @@
 function parseTransactionRecord(record) {
 	const parsed = {
 		transactionId: record.transactionId?.toString(),
-		status: record.receipt?.status?.toString(),
-		statusCode: record.receipt?.status?._code,
-		consensusTimestamp: record.consensusTimestamp?.toString(),
-		transactionHash: record.transactionHash?.toString('hex'),
+		status: `${record.receipt?.status?.toString()} - ${record.receipt?.status?._code}`,
 		transactionFee: record.transactionFee?.toString(),
 		contractFunction: {
 			contractId: record.contractFunctionResult?.contractId?.toString(),
@@ -215,10 +212,10 @@ function formatTransactionAnalysis(record, gasLimit = null) {
 	const parsed = parseTransactionRecord(record);
 
 	let output = '\n=== TRANSACTION ANALYSIS ===\n';
-	output += `Transaction ID: ${parsed.transactionId}\n`;
-	output += `Status: ${analysis.status.name} (${parsed.statusCode})\n`;
-	output += `Description: ${analysis.status.description}\n`;
-	output += `Contract: ${parsed.contractFunction.contractId}\n`;
+	output += `Transaction ID: ${parsed.transactionId}\t`;
+	output += `Status: ${analysis.status.name} (${parsed.statusCode})\t`;
+	output += `Description: ${analysis.status.description}\t`;
+	output += `Contract: ${parsed.contractFunction.contractId}\t`;
 	output += `Gas Used: ${analysis.gasAnalysis.gasUsed}`;
 	if (gasLimit) {
 		output += ` / ${gasLimit} (${(parseInt(analysis.gasAnalysis.gasUsed) / gasLimit * 100).toFixed(1)}%)`;
@@ -226,17 +223,17 @@ function formatTransactionAnalysis(record, gasLimit = null) {
 	output += '\n';
 
 	output += `Error Message: ${analysis.errorAnalysis.errorMessage || 'None'}\n`;
-	output += `Return Data: ${analysis.errorAnalysis.returnDataHex || 'None'}\n`;
-	output += `Logs: ${analysis.errorAnalysis.hasLogs ? analysis.gasAnalysis.logs : 'None'}\n`;
+	output += `Return Data: ${analysis.errorAnalysis.returnDataHex || 'None'}\t`;
+	output += `Logs: ${analysis.errorAnalysis.hasLogs ? analysis.gasAnalysis.logs : 'None'}\t`;
 
 	if (analysis.possibleCauses.length > 0) {
-		output += '\nPossible Causes:\n';
+		output += 'Possible Causes:\n';
 		analysis.possibleCauses.forEach(cause => {
-			output += `  - ${cause}\n`;
+			output += ` -> ${cause}\t`;
 		});
 	}
 
-	output += '========================\n';
+	output += '========================';
 
 	return output;
 }

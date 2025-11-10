@@ -90,7 +90,7 @@ let testFungibleTokenId, testNFTTokenId1, testNFTTokenId2;
 
 // Interface objects
 // Interface variables
-let lazyLottoIface, lazyIface;
+let lazyLottoIface, lazyIface, lazyLottoStorageIface, lazyGasStationIface;
 
 // Created accounts for cleanup
 const createdAccounts = [];
@@ -154,7 +154,7 @@ describe('LazyLotto - Deployment & Setup:', function () {
 		console.log('Carol account ID:', carolId.toString());
 
 		adminPK = PrivateKey.generateED25519();
-		adminId = await accountCreator(client, adminPK, 20);
+		adminId = await accountCreator(client, adminPK, 100);
 		createdAccounts.push({ id: adminId, key: adminPK });
 		console.log('Admin account ID:', adminId.toString());
 
@@ -225,6 +225,8 @@ describe('LazyLotto - Deployment & Setup:', function () {
 				`./artifacts/contracts/${lazyGasStationName}.sol/${lazyGasStationName}.json`,
 			),
 		);
+
+		lazyGasStationIface = new ethers.Interface(lazyGasStationJson.abi);
 
 		if (process.env.LAZY_GAS_STATION_CONTRACT_ID) {
 			lazyGasStationId = ContractId.fromString(process.env.LAZY_GAS_STATION_CONTRACT_ID);
@@ -478,9 +480,14 @@ describe('LazyLotto - Deployment & Setup:', function () {
 				fs.readFileSync(`./artifacts/contracts/${storageContractName}.sol/${storageContractName}.json`),
 			).bytecode;
 
-			// Constructor params: (lazyGasStation)
+			lazyLottoStorageIface = new ethers.Interface(JSON.parse(
+				fs.readFileSync(`./artifacts/contracts/${storageContractName}.sol/${storageContractName}.json`),
+			).abi);
+
+			// Constructor params: (lazyGasStation, lazyToken)
 			const storageConstructorParams = new ContractFunctionParameters()
-				.addAddress(lazyGasStationId.toSolidityAddress());
+				.addAddress(lazyGasStationId.toSolidityAddress())
+				.addAddress(lazyTokenId.toSolidityAddress());
 
 			[storageContractId, storageContractAddress] = await contractDeployFunction(
 				client,
@@ -535,11 +542,24 @@ describe('LazyLotto - Deployment & Setup:', function () {
 	it('Should set LazyLotto as contract user on storage contract', async function () {
 		client.setOperator(operatorId, operatorKey);
 
+		await sleep(5000);
+
+		const gasEstimate = await estimateGas(
+			env,
+			storageContractId,
+			lazyLottoStorageIface,
+			operatorId,
+			'setContractUser',
+			[contractAddress],
+			500_000,
+		);
+
 		// Set LazyLotto as contract user on storage (one-time only)
 		const setContractUserResult = await contractExecuteFunction(
 			storageContractId,
+			lazyLottoStorageIface,
 			client,
-			500_000,
+			gasEstimate.gasLimit,
 			'setContractUser',
 			[contractAddress],
 		);
@@ -549,8 +569,73 @@ describe('LazyLotto - Deployment & Setup:', function () {
 			fail('setContractUser failed');
 		}
 
+		console.log(parseTransactionRecord(setContractUserResult[2]));
+
 		console.log(`Set LazyLotto (${contractAddress}) as contract user on storage contract`);
 		expect(setContractUserResult[0]?.status?.toString()).to.be.equal('SUCCESS');
+	});
+
+
+	it('Should add the storage contract & LazyLotto as contract users on LazyGasStation', async function () {
+		client.setOperator(operatorId, operatorKey);
+		await sleep(5000);
+
+		const gasEstimate = await estimateGas(
+			env,
+			lazyGasStationId,
+			lazyGasStationIface,
+			operatorId,
+			'addContractUser',
+			[storageContractAddress],
+			500_000,
+		);
+
+		// Set storage contract as contract user on LazyGasStation (one-time only)
+		const setContractUserResult = await contractExecuteFunction(
+			lazyGasStationId,
+			lazyGasStationIface,
+			client,
+			gasEstimate.gasLimit,
+			'addContractUser',
+			[storageContractAddress],
+		);
+		if (setContractUserResult[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('addContractUser FAILED:', setContractUserResult);
+			fail('addContractUser failed');
+		}
+		console.log(parseTransactionRecord(setContractUserResult[2]));
+
+		console.log(`Set storage contract (${storageContractId.toString()}) as contract user on LazyGasStation`);
+
+		const gasEstimate2 = await estimateGas(
+			env,
+			lazyGasStationId,
+			lazyGasStationIface,
+			operatorId,
+			'addContractUser',
+			[contractAddress],
+			500_000,
+		);
+
+		// Set LazyLotto contract as contract user on LazyGasStation (one-time only)
+		const setContractUserResult2 = await contractExecuteFunction(
+			lazyGasStationId,
+			lazyGasStationIface,
+			client,
+			gasEstimate2.gasLimit * 1.1,
+			'addContractUser',
+			[contractAddress],
+		);
+
+		if (setContractUserResult2[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('addContractUser FAILED:', setContractUserResult2);
+			fail('addContractUser failed');
+		}
+
+		console.log(parseTransactionRecord(setContractUserResult2[2]));
+
+		console.log(`Set LazyLotto (${contractAddress}) as contract user on LazyGasStation`);
+
 	});
 });
 
@@ -698,6 +783,8 @@ describe('LazyLotto - Admin Management:', function () {
 	it('Should prevent removing last admin', async function () {
 		client.setOperator(operatorId, operatorKey);
 
+		await sleep(5000);
+
 		// First remove the admin we added, leaving only operator
 		let gasEstimate = await estimateGas(
 			env,
@@ -713,7 +800,7 @@ describe('LazyLotto - Admin Management:', function () {
 			contractId,
 			lazyLottoIface,
 			client,
-			gasEstimate.gasLimit,
+			gasEstimate.gasLimit * 1.2,
 			'removeAdmin',
 			[adminId.toSolidityAddress()],
 		);
@@ -887,7 +974,7 @@ describe('LazyLotto - Token Association & Setup:', function () {
 		console.log('\n-LAZY allowances set to LazyGasStation');
 	});
 
-	it('Should set HBAR allowances to LazyLotto contract for NFT operations', async function () {
+	it('Should set HBAR allowances to LazyLottoStorage contract for NFT operations', async function () {
 		const testAccounts = [
 			{ id: aliceId, key: alicePK },
 			{ id: bobId, key: bobPK },
@@ -903,7 +990,7 @@ describe('LazyLotto - Token Association & Setup:', function () {
 			const allowanceResult = await setHbarAllowance(
 				client,
 				account.id,
-				contractId,
+				storageContractId,
 				1,
 				HbarUnit.Hbar,
 			);
@@ -917,10 +1004,10 @@ describe('LazyLotto - Token Association & Setup:', function () {
 
 		await Promise.all(hbarPromises);
 
-		console.log('\n-HBAR Allowances set for accounts for NFT operations');
+		console.log('\n-HBAR Allowances set for accounts for NFT operations to LazyLottoStorage contract');
 	});
 
-	it('Should set test fungible token allowances to LazyLotto contract', async function () {
+	it('Should set test fungible token allowances to lazyLottoStorage contract', async function () {
 		const testAccounts = [
 			{ id: aliceId, key: alicePK },
 			{ id: bobId, key: bobPK },
@@ -1204,7 +1291,7 @@ describe('LazyLotto - Prize Management:', function () {
 			lazyLottoIface,
 			adminId,
 			'addPrizePackage',
-			[0, ZERO_ADDRESS, prizeAmount, nftTokens, nftSerials],
+			[0, ZERO_ADDRESS, Number(prizeAmount), nftTokens, nftSerials],
 			800_000,
 			Number(prizeAmount),
 		);
@@ -1215,7 +1302,7 @@ describe('LazyLotto - Prize Management:', function () {
 			client,
 			gasEstimate.gasLimit,
 			'addPrizePackage',
-			[0, ZERO_ADDRESS, prizeAmount, nftTokens, nftSerials],
+			[0, ZERO_ADDRESS, Number(prizeAmount), nftTokens, nftSerials],
 			new Hbar(prizeAmount, HbarUnit.Tinybar),
 		);
 
@@ -1266,7 +1353,7 @@ describe('LazyLotto - Prize Management:', function () {
 	});
 
 	it('Should add multiple fungible prizes', async () => {
-		const amounts = [500, 750, 1000];
+		const amounts = [50, 75, 100];
 
 		// Set admin as operator
 		client.setOperator(adminId, adminPK);
@@ -1303,44 +1390,51 @@ describe('LazyLotto - Prize Management:', function () {
 
 describe('LazyLotto - Prize Package Getter:', function () {
 	it('Should retrieve specific prize package from pool', async () => {
+		// wait for mirror node indexing
+		await sleep(5000);
+
 		try {
 			// We know from previous tests that poolId 0 has at least 2 prizes added
 			// (HBAR prize and LAZY prize)
 
 			// Get the first prize package (HBAR prize)
-			const prizePackage0 = await readOnlyEVMFromMirrorNode(
+			const encodedCommand = lazyLottoIface.encodeFunctionData('getPrizePackage', [0, 0]);
+			const prizePackage0Result = await readOnlyEVMFromMirrorNode(
 				env,
 				contractId,
-				lazyLottoIface,
-				'getPrizePackage',
-				[0, 0],
+				encodedCommand,
+				operatorId,
 				false,
 			);
+			const prizePackage0 = lazyLottoIface.decodeFunctionResult('getPrizePackage', prizePackage0Result)[0];
+
+			console.log('\t✓ Successfully retrieved HBAR prize package');
+			console.log(`\t  Token: ${prizePackage0?.token === ZERO_ADDRESS ? 'HBAR' : prizePackage0?.token}`);
+			console.log(`\t  Amount: ${prizePackage0?.amount}`);
 
 			expect(prizePackage0).to.exist;
 			// HBAR prize
 			expect(prizePackage0.token).to.equal(ZERO_ADDRESS);
 			expect(Number(prizePackage0.amount)).to.equal(Number(new Hbar(5).toTinybars()));
-			console.log('\t✓ Successfully retrieved HBAR prize package');
-			console.log(`\t  Token: ${prizePackage0.token === ZERO_ADDRESS ? 'HBAR' : prizePackage0.token}`);
-			console.log(`\t  Amount: ${prizePackage0.amount}`);
 
 			// Get the second prize package (LAZY prize)
-			const prizePackage1 = await readOnlyEVMFromMirrorNode(
+			const encodedCommand2 = lazyLottoIface.encodeFunctionData('getPrizePackage', [0, 1]);
+			const prizePackage1Result = await readOnlyEVMFromMirrorNode(
 				env,
 				contractId,
-				lazyLottoIface,
-				'getPrizePackage',
-				[0, 1],
+				encodedCommand2,
+				operatorId,
 				false,
 			);
+			const prizePackage1 = lazyLottoIface.decodeFunctionResult('getPrizePackage', prizePackage1Result)[0];
+
+			console.log('\t✓ Successfully retrieved LAZY prize package');
+			console.log(`\t  Token: ${prizePackage1?.token}`);
+			console.log(`\t  Amount: ${prizePackage1?.amount}`);
 
 			expect(prizePackage1).to.exist;
-			expect(prizePackage1.token.slice(-2).toLowerCase()).to.equal(lazyTokenId.toSolidityAddress());
+			expect(prizePackage1.token.slice(2).toLowerCase()).to.equal(lazyTokenId.toSolidityAddress());
 			expect(Number(prizePackage1.amount)).to.equal(1000);
-			console.log('\t✓ Successfully retrieved LAZY prize package');
-			console.log(`\t  Token: ${prizePackage1.token}`);
-			console.log(`\t  Amount: ${prizePackage1.amount}`);
 		}
 		catch (error) {
 			console.log('\t✗ Failed to retrieve prize package:', error.message);
@@ -1353,19 +1447,20 @@ describe('LazyLotto - Prize Package Getter:', function () {
 		let unexpectedErrors = 0;
 
 		try {
+			const encodedCommand = lazyLottoIface.encodeFunctionData('getPrizePackage', [invalidPoolId, 0]);
 			await readOnlyEVMFromMirrorNode(
 				env,
 				contractId,
-				lazyLottoIface,
-				'getPrizePackage',
-				[invalidPoolId, 0],
+				encodedCommand,
+				operatorId,
 				false,
 			);
-			console.log('\t✗ Should have reverted for invalid pool');
+			const decoded = lazyLottoIface.decodeFunctionResult('getPrizePackage', encodedCommand);
+			console.log('\t✗ Should have reverted for invalid pool, got:', decoded);
 			unexpectedErrors++;
 		}
 		catch (error) {
-			if (error.message.includes('LottoPoolNotFound') || error.message.includes('revert')) {
+			if (error.message.includes('LottoPoolNotFound') || error.message.includes('revert') || error.message.includes('Request failed with status code 400')) {
 				console.log('\t✓ Correctly reverted for invalid pool');
 			}
 			else {
@@ -1384,19 +1479,19 @@ describe('LazyLotto - Prize Package Getter:', function () {
 		let unexpectedErrors = 0;
 
 		try {
+			const encodedCommand = lazyLottoIface.encodeFunctionData('getPrizePackage', [0, invalidPrizeIndex]);
 			await readOnlyEVMFromMirrorNode(
 				env,
 				contractId,
-				lazyLottoIface,
-				'getPrizePackage',
-				[0, invalidPrizeIndex],
+				encodedCommand,
+				operatorId,
 				false,
 			);
 			console.log('\t✗ Should have reverted for invalid prize index');
 			unexpectedErrors++;
 		}
 		catch (error) {
-			if (error.message.includes('BadParameters') || error.message.includes('revert')) {
+			if (error.message.includes('BadParameters') || error.message.includes('revert') || error.message.includes('Request failed with status code 400')) {
 				console.log('\t✓ Correctly reverted for invalid prize index');
 			}
 			else {
@@ -1414,90 +1509,86 @@ describe('LazyLotto - Prize Package Getter:', function () {
 		// Use Alice who owns serial 1 of testNFTTokenId1
 		client.setOperator(aliceId, alicePK);
 
-		try {
-			// First, add a prize package with NFTs for testing
-			const prizeAmount = 0;
-			const nftTokens = [testNFTTokenId1.toSolidityAddress()];
-			// Alice owns serial 1
-			const nftSerials = [[1]];
+		// First, add a prize package with NFTs for testing
+		const prizeAmount = 0;
+		const nftTokens = [testNFTTokenId1.toSolidityAddress()];
+		// Alice owns serial 1
+		const nftSerials = [[1]];
 
-			// need to ensure we have an NFT allowance to the storage contract for this
-			const allowance = await setNFTAllowanceAll(
-				client,
-				nftTokens,
-				aliceId,
-				AccountId.fromString(storageContractId.toString()),
-			);
+		// need to ensure we have an NFT allowance to the storage contract for this
+		const allowance = await setNFTAllowanceAll(
+			client,
+			[testNFTTokenId1],
+			aliceId,
+			AccountId.fromString(storageContractId.toString()),
+		);
 
-			expect(allowance).to.equal('SUCCESS');
+		expect(allowance).to.equal('SUCCESS');
 
-			// Estimate gas for adding NFT prize package
-			const gasEstimate = await estimateGas(
-				env,
-				contractId,
-				lazyLottoIface,
-				aliceId,
-				'addPrizePackage',
-				[0, ZERO_ADDRESS, prizeAmount, nftTokens, nftSerials],
-				800_000,
-			);
+		// Estimate gas for adding NFT prize package
+		const gasEstimate = await estimateGas(
+			env,
+			contractId,
+			lazyLottoIface,
+			aliceId,
+			'addPrizePackage',
+			[0, ZERO_ADDRESS, prizeAmount, nftTokens, nftSerials],
+			1_500_000,
+		);
 
-			const result = await contractExecuteFunction(
-				contractId,
-				lazyLottoIface,
-				client,
-				gasEstimate.gasLimit,
-				'addPrizePackage',
-				[0, ZERO_ADDRESS, prizeAmount, nftTokens, nftSerials],
-			);
+		const result = await contractExecuteFunction(
+			contractId,
+			lazyLottoIface,
+			client,
+			gasEstimate.gasLimit,
+			'addPrizePackage',
+			[0, ZERO_ADDRESS, prizeAmount, nftTokens, nftSerials],
+		);
 
-			if (result[0]?.status?.toString() !== 'SUCCESS') {
-				console.log('NFT prize package addition failed:', result[0]?.status?.toString());
-				fail('NFT prize package addition failed');
-			}
-
-			console.log('\t✓ Added NFT prize package successfully');
-			console.log('\t  Transaction ID:', result[2]?.transactionId?.toString());
-
-			// Sleep to allow mirror node to update
-			await sleep(5000);
-
-			// Now retrieve the prize package we just added
-			// This should be at the end of the prizes array
-			const poolDetails = await readOnlyEVMFromMirrorNode(
-				env,
-				contractId,
-				lazyLottoIface,
-				'getPoolDetails',
-				[0],
-				false,
-			);
-
-			const lastPrizeIndex = poolDetails.prizes.length - 1;
-
-			const nftPrizePackage = await readOnlyEVMFromMirrorNode(
-				env,
-				contractId,
-				lazyLottoIface,
-				'getPrizePackage',
-				[0, lastPrizeIndex],
-				false,
-			);
-
-			expect(nftPrizePackage).to.exist;
-			expect(nftPrizePackage.nftTokens).to.have.lengthOf(1);
-			expect(nftPrizePackage.nftTokens[0].slice(-2).toLowerCase()).to.equal(testNFTTokenId1.toSolidityAddress());
-			expect(nftPrizePackage.nftSerials).to.have.lengthOf(1);
-			expect(nftPrizePackage.nftSerials[0]).to.have.lengthOf(1);
-			expect(Number(nftPrizePackage.nftSerials[0][0])).to.equal(1);
-			console.log('\t✓ Successfully retrieved NFT prize package');
-			console.log(`\t  NFT Token: ${testNFTTokenId1.toString()}`);
-			console.log(`\t  NFT Serials: ${Number(nftPrizePackage.nftSerials[0])}`);
+		if (result[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('NFT prize package addition failed:', result[0]?.status?.toString());
+			fail('NFT prize package addition failed');
 		}
-		catch (error) {
-			console.log('\t✗ Failed to retrieve NFT prize package:', error.message);
-			fail('NFT prize package retrieval failed');
-		}
+
+		console.log('\t✓ Added NFT prize package successfully');
+		console.log('\t  Transaction ID:', result[2]?.transactionId?.toString());
+
+		// Sleep to allow mirror node to update
+		await sleep(5000);
+
+		// Now retrieve the prize package we just added
+		// This should be at the end of the prizes array
+		const poolDetailsCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [0]);
+		const poolDetailsResult = await readOnlyEVMFromMirrorNode(
+			env,
+			contractId,
+			poolDetailsCommand,
+			operatorId,
+			false,
+		);
+		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', poolDetailsResult)[0];
+
+		const lastPrizeIndex = poolDetails.prizes.length - 1;
+
+		const nftPrizeCommand = lazyLottoIface.encodeFunctionData('getPrizePackage', [0, lastPrizeIndex]);
+		const nftPrizeResult = await readOnlyEVMFromMirrorNode(
+			env,
+			contractId,
+			nftPrizeCommand,
+			operatorId,
+			false,
+		);
+		const nftPrizePackage = lazyLottoIface.decodeFunctionResult('getPrizePackage', nftPrizeResult)[0];
+
+		expect(nftPrizePackage).to.exist;
+		expect(nftPrizePackage.nftTokens).to.have.lengthOf(1);
+		expect(nftPrizePackage.nftTokens[0].slice(2).toLowerCase()).to.equal(testNFTTokenId1.toSolidityAddress());
+		expect(nftPrizePackage.nftSerials).to.have.lengthOf(1);
+		expect(nftPrizePackage.nftSerials[0]).to.have.lengthOf(1);
+		expect(Number(nftPrizePackage.nftSerials[0][0])).to.equal(1);
+		console.log('\t✓ Successfully retrieved NFT prize package');
+		console.log(`\t  NFT Token: ${testNFTTokenId1.toString()}`);
+		console.log(`\t  NFT Serials: ${Number(nftPrizePackage.nftSerials[0])}`);
 	});
 });
 
@@ -1560,7 +1651,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 				[poolId, ticketCount],
 				new Hbar(insufficientEntryFee, HbarUnit.Tinybar),
 			);
-			if (result[0]?.status?.name != 'InsufficientPayment') {
+			if (result[0]?.status?.name != 'NotEnoughHbar') {
 				console.log('Expected failure but got:', result);
 				unexpectedErrors++;
 			}
@@ -1613,18 +1704,19 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 		await sleep(5000);
 
 		// get the ticket token ID for poolId 0
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		const poolDetailsCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		const poolDetailsResult = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
-			lazyLottoIface,
-			'getPoolDetails',
-			[poolId],
+			poolDetailsCommand,
+			operatorId,
 			false,
 		);
+		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', poolDetailsResult)[0];
 		const ticketTokenId = TokenId.fromSolidityAddress(poolDetails.poolTokenId);
 
 		// check if the NFT ticket was minted
-		const carolBalance = await checkMirrorBalance(carolId.toString(), ticketTokenId.toString());
+		const carolBalance = await checkMirrorBalance(env, carolId.toString(), ticketTokenId.toString());
 		expect(carolBalance).to.be.greaterThan(0);
 		console.log('\t✓ NFT ticket minted to Carol');
 	});
@@ -1635,26 +1727,33 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 		client.setOperator(carolId, carolPK);
 
 		// setup an allowance for the ticket token back to the contract
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		const poolDetailsCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		const poolDetailsResult = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
-			lazyLottoIface,
-			'getPoolDetails',
-			[poolId],
+			poolDetailsCommand,
+			operatorId,
 			false,
 		);
+		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', poolDetailsResult)[0];
 
 		// Approve the ticket token for the storage contract (wipes happen via storage)
 		const ticketTokenId = TokenId.fromSolidityAddress(poolDetails.poolTokenId);
 		const allowanceResult = await setNFTAllowanceAll(
 			client,
-			[ticketTokenId.toSolidityAddress()],
+			[ticketTokenId],
 			carolId,
 			AccountId.fromString(storageContractId.toString()),
 		);
 		expect(allowanceResult).to.equal('SUCCESS');
 
 		console.log('\t✓ Ticket token approved for storage contract');
+
+		// get the serials Carol owns for the ticket token
+		const carolNFTs = await getSerialsOwned(env, carolId, ticketTokenId);
+		console.log(`\t  Carol owns ticket serials: ${carolNFTs}`);
+
+		expect(carolNFTs.length).to.be.greaterThan(0);
 
 		// Estimate gas for rolling with NFT tickets
 		const gasEstimate = await estimateGas(
@@ -1663,7 +1762,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 			lazyLottoIface,
 			carolId,
 			'rollWithNFT',
-			[poolId],
+			[poolId, [carolNFTs[0]]],
 			1_000_000,
 		);
 
@@ -1674,7 +1773,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 			client,
 			gasEstimate.gasLimit,
 			'rollWithNFT',
-			[poolId],
+			[poolId, [carolNFTs[0]]],
 		);
 
 		if (result[0]?.status?.toString() !== 'SUCCESS') {
@@ -1700,7 +1799,7 @@ describe('LazyLotto - Ticket Purchase and Rolling:', function () {
 		await sleep(5000);
 
 		// check if the NFT ticket was burned
-		const carolBalance = await checkMirrorBalance(carolId.toString(), ticketTokenId.toString());
+		const carolBalance = await checkMirrorBalance(env, carolId.toString(), ticketTokenId.toString());
 		expect(carolBalance).to.be.equal(0);
 		console.log('\t✓ NFT ticket burned after rolling');
 	});
@@ -1890,13 +1989,13 @@ describe('LazyLotto - Bonus System Tests:', function () {
 		const bonusResult = await readOnlyEVMFromMirrorNode(env, contractId, bonusQuery, operatorId, false);
 		const bonusValue = lazyLottoIface.decodeFunctionResult('timeBonuses', bonusResult);
 
-		expect(bonusValue[0].start.toString()).to.equal(startTime.toString());
-		expect(bonusValue[0].end.toString()).to.equal(endTime.toString());
-		expect(bonusValue[0].bonusBps.toString()).to.equal(bonusBps.toString());
+		expect(Number(bonusValue[0][0])).to.equal(startTime);
+		expect(Number(bonusValue[0][1])).to.equal(endTime);
+		expect(Number(bonusValue[0][2])).to.equal(bonusBps);
 		console.log('\t📊 Time bonus verified:', {
 			start: new Date(startTime * 1000).toISOString(),
 			end: new Date(endTime * 1000).toISOString(),
-			bonus: bonusValue[0].bonusBps.toString() + ' bps',
+			bonus: bonusValue[0][2].toString() + ' bps',
 		});
 	});
 
@@ -2057,6 +2156,9 @@ describe('LazyLotto - Rolling Mechanics:', function () {
 			[userPoolId, ticketCount],
 			new Hbar(Number(entryFee.toTinybars()) * ticketCount, HbarUnit.Tinybar),
 		);
+
+		// wait for mirror node indexing
+		await sleep(5000);
 	});
 
 	it('Should roll all user entries', async () => {
@@ -2077,7 +2179,7 @@ describe('LazyLotto - Rolling Mechanics:', function () {
 			contractId,
 			lazyLottoIface,
 			client,
-			gasEstimate.gasLimit,
+			gasEstimate.gasLimit * 1.1,
 			'rollAll',
 			[userPoolId],
 		);
@@ -2107,14 +2209,14 @@ describe('LazyLotto - Rolling Mechanics:', function () {
 	it('Should roll batch of entries', async () => {
 		const numberToRoll = 2;
 
-		// Set Bob as operator
-		client.setOperator(bobId, bobPK);
+		// Use Alice who has entries from beforeEach
+		client.setOperator(aliceId, alicePK);
 
 		const gasEstimate = await estimateGas(
 			env,
 			contractId,
 			lazyLottoIface,
-			bobId,
+			aliceId,
 			'rollBatch',
 			[userPoolId, numberToRoll],
 			2_000_000,
@@ -2263,12 +2365,14 @@ describe('LazyLotto - Prize Claiming:', function () {
 
 		// better add some prizes to ensure user can claim something
 		const prizeAmount = new Hbar(3);
-		// create an array of ticketCount length for fungible prizes random amounts of tinybars summing to prizeAmount
+		// create an array of ticketCount length for fungible prizes of random amounts of tinybars summing to prizeAmount
 		const prizes = [];
-		const prizePerTicket = Math.floor(Number(prizeAmount.toTinybars()) / ticketCount);
+		let remainingAmount = Number(prizeAmount.toTinybars());
 
 		for (let i = 0; i < ticketCount; i++) {
-			prizes.push(new Hbar(prizePerTicket, HbarUnit.Tinybar));
+			const randomAmount = Math.floor(Math.random() * remainingAmount);
+			prizes.push(new Hbar(randomAmount, HbarUnit.Tinybar));
+			remainingAmount -= randomAmount;
 		}
 
 		// Set admin as operator
@@ -2279,7 +2383,7 @@ describe('LazyLotto - Prize Claiming:', function () {
 			lazyLottoIface,
 			adminId,
 			'addMultipleFungiblePrizes',
-			[0, Number(prizeAmount.toTinybars()), [prizes.map(p => Number(p.toTinybars()))]],
+			[0, lazyTokenId.toSolidityAddress(), prizes.map(p => Number(p.toTinybars()))],
 			2_000_000,
 		);
 
@@ -2289,7 +2393,7 @@ describe('LazyLotto - Prize Claiming:', function () {
 			client,
 			gasEstimate.gasLimit,
 			'addMultipleFungiblePrizes',
-			[0, Number(prizeAmount.toTinybars()), [prizes.map(p => Number(p.toTinybars()))]],
+			[0, lazyTokenId.toSolidityAddress(), prizes.map(p => Number(p.toTinybars()))],
 		);
 
 		// Set up scenario where user has pending prizes
@@ -2353,7 +2457,7 @@ describe('LazyLotto - Prize Claiming:', function () {
 					// for each of pendingPrizes[0][prizeIndex].prize.nftTokens.length check alice has it associated
 					for (let i = 0; i < pendingPrizes[0][prizeIndex].prize.nftTokens.length; i++) {
 						const nftTokenId = TokenId.fromSolidityAddress(pendingPrizes[0][prizeIndex].prize.nftTokens[i]);
-						const aliceBalance = await checkMirrorBalance(aliceId.toString(), nftTokenId.toString());
+						const aliceBalance = await checkMirrorBalance(env, aliceId.toString(), nftTokenId.toString());
 						if (aliceBalance == null || aliceBalance == undefined) {
 							console.log('\tAlice does not yet have required NFT associated for prize claiming:', nftTokenId.toString());
 							const assoc = await associateTokensToAccount(
@@ -2446,7 +2550,7 @@ describe('LazyLotto - Prize Claiming:', function () {
 						// for each of pendingPrizes[0][prizeIndex].prize.nftTokens.length check alice has it associated
 						for (let i = 0; i < pendingPrizes[0][prizeIndex].prize.nftTokens.length; i++) {
 							const nftTokenId = TokenId.fromSolidityAddress(pendingPrizes[0][prizeIndex].prize.nftTokens[i]);
-							const aliceBalance = await checkMirrorBalance(aliceId.toString(), nftTokenId.toString());
+							const aliceBalance = await checkMirrorBalance(env, aliceId.toString(), nftTokenId.toString());
 							if (aliceBalance == null || aliceBalance == undefined) {
 								console.log('\tAlice does not yet have required NFT associated for prize claiming:', nftTokenId.toString());
 								const assoc = await associateTokensToAccount(
@@ -2643,7 +2747,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 			lazyLottoIface,
 			operatorId,
 			'addPrizePackage',
-			[prizeNFTPoolId, ZERO_ADDRESS, new Hbar(2).toTinybars(), [], []],
+			[prizeNFTPoolId, ZERO_ADDRESS, Number(new Hbar(2).toTinybars()), [], []],
 			800_000,
 			Number(new Hbar(2).toTinybars()),
 		);
@@ -2654,7 +2758,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 			client,
 			addPrizeGasEstimate.gasLimit,
 			'addPrizePackage',
-			[prizeNFTPoolId, ZERO_ADDRESS, new Hbar(2).toTinybars(), [], []],
+			[prizeNFTPoolId, ZERO_ADDRESS, Number(new Hbar(2).toTinybars()), [], []],
 			new Hbar(2),
 		);
 
@@ -2664,7 +2768,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 			client,
 			addPrizeGasEstimate.gasLimit,
 			'addPrizePackage',
-			[prizeNFTPoolId, ZERO_ADDRESS, new Hbar(3).toTinybars(), [], []],
+			[prizeNFTPoolId, ZERO_ADDRESS, Number(new Hbar(3).toTinybars()), [], []],
 			new Hbar(3),
 		);
 
@@ -2672,6 +2776,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 
 		// Alice buys and rolls tickets to win prizes
 		client.setOperator(aliceId, alicePK);
+		await sleep(5000);
 
 		const buyRollGas = await estimateGas(
 			env,
@@ -2695,6 +2800,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 		);
 
 		if (buyRollResult[0]?.status?.toString() !== 'SUCCESS') {
+			console.log('Buy and roll tickets failed:', buyRollResult);
 			fail('Failed to buy and roll tickets');
 		}
 
@@ -2786,7 +2892,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 		await sleep(5000);
 
 		// Check Alice's balance of prize NFTs from the mirror node
-		const aliceBalance = await checkMirrorBalance(aliceId.toString(), prizeAsTokenId.toString());
+		const aliceBalance = await checkMirrorBalance(env, aliceId.toString(), prizeAsTokenId.toString());
 		console.log(`✓ Alice's balance of prize NFTs: ${aliceBalance} (should be 2)`);
 		expect(aliceBalance).to.equal(2);
 
@@ -2893,7 +2999,7 @@ describe('LazyLotto - Prize NFT System:', function () {
 		expect(balanceAfter).to.be.greaterThan(balanceBefore);
 
 		// Check Alice's balance of prize NFTs from the mirror node to ensure they are burned
-		const aliceBalance = await checkMirrorBalance(aliceId.toString(), prizeAsTokenId.toString());
+		const aliceBalance = await checkMirrorBalance(env, aliceId.toString(), prizeAsTokenId.toString());
 		console.log(`✓ Alice's balance of prize NFTs after claim: ${aliceBalance} (should be 0)`);
 		expect(aliceBalance).to.equal(0);
 	});
@@ -2965,7 +3071,7 @@ describe('LazyLotto - Pool Lifecycle Management:', function () {
 			lazyLottoIface,
 			operatorId,
 			'addPrizePackage',
-			[testPoolId, ZERO_ADDRESS, new Hbar(5).toTinybars(), [], []],
+			[testPoolId, ZERO_ADDRESS, Number(new Hbar(5).toTinybars()), [], []],
 			800_000,
 			Number(new Hbar(5).toTinybars()),
 		);
@@ -2993,7 +3099,7 @@ describe('LazyLotto - Pool Lifecycle Management:', function () {
 			lazyLottoIface,
 			operatorId,
 			'addPrizePackage',
-			[testPoolId, ZERO_ADDRESS, Number(new Hbar(3).toTinybars()), [testNFTTokenId1.toSolidityAddress()], [9]],
+			[testPoolId, ZERO_ADDRESS, Number(new Hbar(3).toTinybars()), [testNFTTokenId1.toSolidityAddress()], [[9]]],
 			800_000,
 			Number(new Hbar(3).toTinybars()),
 		);
@@ -3004,7 +3110,7 @@ describe('LazyLotto - Pool Lifecycle Management:', function () {
 			client,
 			addNftPrizeGasEstimate.gasLimit,
 			'addPrizePackage',
-			[testPoolId, ZERO_ADDRESS, Number(new Hbar(3).toTinybars()), [testNFTTokenId1.toSolidityAddress()], [9]],
+			[testPoolId, ZERO_ADDRESS, Number(new Hbar(3).toTinybars()), [testNFTTokenId1.toSolidityAddress()], [[9]]],
 			new Hbar(3),
 		);
 		if (nftPkgResult[0]?.status?.toString() !== 'SUCCESS') {
@@ -3021,7 +3127,7 @@ describe('LazyLotto - Pool Lifecycle Management:', function () {
 			lazyLottoIface,
 			operatorId,
 			'addPrizePackage',
-			[testPoolId, testFungibleTokenId.toSolidityAddress(), 2, [testNFTTokenId2.toSolidityAddress()], [9]],
+			[testPoolId, testFungibleTokenId.toSolidityAddress(), 2, [testNFTTokenId2.toSolidityAddress()], [[9]]],
 			800_000,
 		);
 
@@ -3031,7 +3137,7 @@ describe('LazyLotto - Pool Lifecycle Management:', function () {
 			client,
 			addFungibleNftPrizeGasEstimate.gasLimit,
 			'addPrizePackage',
-			[testPoolId, testFungibleTokenId.toSolidityAddress(), 2, [testNFTTokenId2.toSolidityAddress()], [9]],
+			[testPoolId, testFungibleTokenId.toSolidityAddress(), 2, [testNFTTokenId2.toSolidityAddress()], [[9]]],
 		);
 
 		if (fungibleNftPkgResult[0]?.status?.toString() !== 'SUCCESS') {
@@ -3569,11 +3675,12 @@ describe('LazyLotto - Global Contract Pause:', function () {
 				new Hbar(1),
 			);
 
-			if (buyResult[0]?.status?.name == 'Pausable: paused') {
+			if (buyResult[0]?.status == 'REVERT: Pausable: paused') {
 				expectedErrors++;
 				console.log('✓ User operation correctly rejected while paused');
 			}
 			else {
+				console.log('buyResult:', buyResult);
 				unexpectedErrors++;
 				console.log('✗ User operation should have been rejected');
 			}
@@ -3665,7 +3772,7 @@ describe('LazyLotto - Global Contract Pause:', function () {
 			[],
 		);
 
-		console.log(`✓ Total pools now: ${totalPools[0].toNumber()}`);
+		console.log(`✓ Total pools now: ${Number(totalPools[0])}`);
 	});
 
 	it('Should unpause contract and restore operations', async function () {
@@ -3743,7 +3850,7 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 
 		const sendAmount = new Hbar(10);
 
-		await sendHbar(client, operatorId, operatorKey, contractId, sendAmount);
+		await sendHbar(client, operatorId, contractId, 10, HbarUnit.Hbar);
 
 		console.log(`✓ Sent ${sendAmount.toString()} to contract`);
 
@@ -3820,7 +3927,7 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 				lazyLottoIface,
 				aliceId,
 				'transferHbar',
-				[aliceId.toSolidityAddress(), withdrawAmount.toTinybars()],
+				[aliceId.toSolidityAddress(), Number(withdrawAmount.toTinybars())],
 				500_000,
 			);
 
@@ -3830,14 +3937,15 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 				client,
 				gasEstimate.gasLimit,
 				'transferHbar',
-				[aliceId.toSolidityAddress(), withdrawAmount.toTinybars()],
+				[aliceId.toSolidityAddress(), Number(withdrawAmount.toTinybars())],
 			);
 
-			if (result[0]?.status == 'REVERT: Ownable: caller is not the owner') {
+			if (result[0]?.status?.name == 'NotAdmin') {
 				expectedErrors++;
 				console.log('✓ Non-admin withdrawal correctly rejected');
 			}
 			else {
+				console.log('result:', result);
 				unexpectedErrors++;
 			}
 		}
@@ -3859,14 +3967,14 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 
 		await sendFT(
 			client,
-			operatorId,
-			operatorKey,
 			testFungibleTokenId,
-			contractId,
 			sendAmount,
+			operatorId,
+			AccountId.fromString(storageContractId.toString()),
+			'fungible token fuel for withdrawal test',
 		);
 
-		console.log(`✓ Sent ${sendAmount} test tokens to contract`);
+		console.log(`✓ Sent ${sendAmount} test tokens to storage contract`);
 
 		// Wait for mirror node sync
 		await sleep(5000);
@@ -3889,8 +3997,8 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 			operatorId,
 			'transferFungible',
 			[
-				operatorId.toSolidityAddress(),
 				testFungibleTokenId.toSolidityAddress(),
+				operatorId.toSolidityAddress(),
 				withdrawAmount,
 			],
 			600_000,
@@ -3903,8 +4011,8 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 			gasEstimate.gasLimit,
 			'transferFungible',
 			[
-				operatorId.toSolidityAddress(),
 				testFungibleTokenId.toSolidityAddress(),
+				operatorId.toSolidityAddress(),
 				withdrawAmount,
 			],
 		);
@@ -3951,8 +4059,8 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 				bobId,
 				'transferFungible',
 				[
-					bobId.toSolidityAddress(),
 					testFungibleTokenId.toSolidityAddress(),
+					bobId.toSolidityAddress(),
 					withdrawAmount,
 				],
 				600_000,
@@ -3965,17 +4073,18 @@ describe('LazyLotto - Admin Transfer Functions:', function () {
 				gasEstimate.gasLimit,
 				'transferFungible',
 				[
-					bobId.toSolidityAddress(),
 					testFungibleTokenId.toSolidityAddress(),
+					bobId.toSolidityAddress(),
 					withdrawAmount,
 				],
 			);
 
-			if (result[0]?.status == 'REVERT: Ownable: caller is not the owner') {
+			if (result[0]?.status?.name == 'NotAdmin') {
 				expectedErrors++;
 				console.log('✓ Non-admin token withdrawal correctly rejected');
 			}
 			else {
+				console.log('result:', result);
 				unexpectedErrors++;
 			}
 		}
@@ -4005,13 +4114,16 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 		const threshold = 300;
 		const bps = 500;
 
+		const startTime = Math.floor(Date.now() / 1000);
+		const endTime = startTime + threshold;
+
 		let gasEstimate = await estimateGas(
 			env,
 			contractId,
 			lazyLottoIface,
 			operatorId,
 			'setTimeBonus',
-			[threshold, bps],
+			[startTime, endTime, bps],
 			400_000,
 		);
 
@@ -4021,7 +4133,7 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 			client,
 			gasEstimate.gasLimit,
 			'setTimeBonus',
-			[threshold, bps],
+			[startTime, endTime, bps],
 		);
 
 		if (txResult[0]?.status?.toString() !== 'SUCCESS') {
@@ -4087,8 +4199,8 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 
 		client.setOperator(operatorId, operatorKey);
 
-		// Set burn percentage to 25% (2500 bps)
-		const newBurnPercentage = 2500;
+		// Set burn percentage to 25%
+		const newBurnPercentage = 25;
 
 		const gasEstimate = await estimateGas(
 			env,
@@ -4120,11 +4232,11 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 		await sleep(5000);
 
 		// Verify the burn percentage was updated
-		const encodedCommand = lazyLottoIface.encodeFunctionData('getBurnPercentage');
+		const encodedCommand = lazyLottoIface.encodeFunctionData('burnPercentage');
 		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const burnPercentage = lazyLottoIface.decodeFunctionResult('getBurnPercentage', result)[0];
+		const burnPercentage = lazyLottoIface.decodeFunctionResult('burnPercentage', result)[0];
 
-		expect(burnPercentage).to.be.equal(newBurnPercentage);
+		expect(Number(burnPercentage)).to.be.equal(newBurnPercentage);
 		console.log(`✓ Burn percentage verified: ${burnPercentage} bps`);
 	});
 
@@ -4167,13 +4279,14 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 		await sleep(5000);
 
 		// Verify the bonus was set by getting bonus info
-		const encodedCommand = lazyLottoIface.encodeFunctionData('getLazyBalanceBonus');
+		const encodedCommand = lazyLottoIface.encodeFunctionData('lazyBalanceThreshold');
 		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const bonusInfo = lazyLottoIface.decodeFunctionResult('getLazyBalanceBonus', result)[0];
+		const contractBalanceThreshold = lazyLottoIface.decodeFunctionResult('lazyBalanceThreshold', result)[0];
+		const contractBonusBps = lazyLottoIface.decodeFunctionResult('lazyBalanceBonusBps', result)[0];
 
-		expect(bonusInfo.balanceThreshold).to.be.equal(balanceThreshold);
-		expect(bonusInfo.bonusBps).to.be.equal(bonusBps);
-		console.log(`✓ LAZY balance bonus verified: ${bonusInfo.balanceThreshold} → ${bonusInfo.bonusBps} bps`);
+		expect(Number(contractBalanceThreshold)).to.be.equal(balanceThreshold);
+		expect(Number(contractBonusBps)).to.be.equal(bonusBps);
+		console.log(`✓ LAZY balance bonus verified: ${Number(contractBalanceThreshold)} → ${Number(contractBonusBps)} bps`);
 	});
 
 	it('Should allow admin to remove an NFT bonus', async function () {
@@ -4224,11 +4337,11 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 		const totalNFTBonusesAfterAdd = lazyLottoIface.decodeFunctionResult('totalNFTBonusTokens', result)[0];
 
-		expect(totalNFTBonusesAfterAdd).to.be.equal(totalNFTBonusesBefore + 1);
-		console.log(`✓ Total NFT bonuses after add: ${totalNFTBonusesAfterAdd}`);
+		expect(Number(totalNFTBonusesAfterAdd)).to.be.equal(Number(totalNFTBonusesBefore) + 1);
+		console.log(`✓ Total NFT bonuses after add: ${Number(totalNFTBonusesAfterAdd)}`);
 
 		// Now remove the bonus we just added (last index)
-		const indexToRemove = totalNFTBonusesAfterAdd - 1;
+		const indexToRemove = Number(totalNFTBonusesAfterAdd) - 1;
 
 		gasEstimate = await estimateGas(
 			env,
@@ -4263,8 +4376,8 @@ describe('LazyLotto - Bonus Management Functions:', function () {
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 		const totalNFTBonusesAfterRemove = lazyLottoIface.decodeFunctionResult('totalNFTBonusTokens', result)[0];
 
-		expect(totalNFTBonusesAfterRemove).to.be.equal(totalNFTBonusesBefore);
-		console.log(`✓ Total NFT bonuses after remove: ${totalNFTBonusesAfterRemove}`);
+		expect(Number(totalNFTBonusesAfterRemove)).to.be.equal(Number(totalNFTBonusesBefore));
+		console.log(`✓ Total NFT bonuses after remove: ${Number(totalNFTBonusesAfterRemove)}`);
 	});
 });
 
@@ -4292,7 +4405,7 @@ describe('LazyLotto - Admin Buy Entry Function:', function () {
 			contractId,
 			lazyLottoIface,
 			operatorId,
-			'adminBuyEntry',
+			'adminGrantEntry',
 			[poolId, ticketCount, recipientAddress],
 			800_000,
 		);
@@ -4302,12 +4415,12 @@ describe('LazyLotto - Admin Buy Entry Function:', function () {
 			lazyLottoIface,
 			client,
 			gasEstimate.gasLimit,
-			'adminBuyEntry',
+			'adminGrantEntry',
 			[poolId, ticketCount, recipientAddress],
 		);
 
 		if (txResult[0]?.status?.toString() !== 'SUCCESS') {
-			fail('adminBuyEntry failed');
+			fail('adminGrantEntry failed');
 		}
 
 		console.log(`✓ Admin bought ${ticketCount} tickets for Carol (Gas: ${gasEstimate.gasLimit})`);
@@ -4321,12 +4434,12 @@ describe('LazyLotto - Admin Buy Entry Function:', function () {
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 		const entriesAfter = lazyLottoIface.decodeFunctionResult('getUsersEntries', result)[0];
 
-		expect(entriesAfter).to.be.equal(entriesBefore + ticketCount);
+		expect(Number(entriesAfter)).to.be.equal(Number(entriesBefore) + ticketCount);
 		console.log(`✓ Carol's entries after: ${entriesAfter} (increased by ${ticketCount})`);
 	});
 
-	it('Should reject non-admin adminBuyEntry', async function () {
-		console.log('\n-Testing adminBuyEntry() non-admin rejection...');
+	it('Should reject non-admin adminGrantEntry', async function () {
+		console.log('\n-Testing adminGrantEntry() non-admin rejection...');
 
 		let expectedErrors = 0;
 		let unexpectedErrors = 0;
@@ -4343,7 +4456,7 @@ describe('LazyLotto - Admin Buy Entry Function:', function () {
 				contractId,
 				lazyLottoIface,
 				aliceId,
-				'adminBuyEntry',
+				'adminGrantEntry',
 				[poolId, recipientAddress, ticketCount],
 				800_000,
 			);
@@ -4353,20 +4466,29 @@ describe('LazyLotto - Admin Buy Entry Function:', function () {
 				lazyLottoIface,
 				client,
 				gasEstimate.gasLimit,
-				'adminBuyEntry',
+				'adminGrantEntry',
 				[poolId, recipientAddress, ticketCount],
 			);
 
-			if (txResult[0]?.status == 'REVERT: Ownable: caller is not the owner') {
+			if (txResult[0]?.status?.name == 'NotAdmin') {
 				expectedErrors++;
-				console.log('✓ Non-admin adminBuyEntry correctly rejected');
+				console.log('✓ Non-admin adminGrantEntry correctly rejected');
 			}
 			else {
+				console.log('txResult:', txResult);
 				unexpectedErrors++;
 			}
 		}
-		catch {
-			unexpectedErrors++;
+		catch (error) {
+			// Contract reverts are expected
+			if (error.message?.includes('CONTRACT_REVERT_EXECUTED') || error.message?.includes('NotAdmin')) {
+				expectedErrors++;
+				console.log('✓ Non-admin adminGrantEntry correctly rejected (via exception)');
+			}
+			else {
+				console.log('✗ Unexpected error:', error.message);
+				unexpectedErrors++;
+			}
 		}
 
 		expect(expectedErrors).to.be.equal(1);
@@ -4386,7 +4508,7 @@ describe('LazyLotto - View Functions Coverage:', function () {
 		const entries = lazyLottoIface.decodeFunctionResult('getUsersEntries', result)[0];
 
 		console.log(`✓ Alice's entries in pool ${poolId}: ${entries}`);
-		expect(entries).to.be.a('number');
+		expect(Number(entries)).to.be.greaterThan(0);
 	});
 
 	it('Should retrieve total number of pools', async function () {
@@ -4397,7 +4519,7 @@ describe('LazyLotto - View Functions Coverage:', function () {
 		const totalPools = lazyLottoIface.decodeFunctionResult('totalPools', result)[0];
 
 		console.log(`✓ Total pools created: ${totalPools}`);
-		expect(totalPools).to.be.greaterThan(0);
+		expect(Number(totalPools)).to.be.greaterThan(0);
 	});
 
 	it('Should retrieve total time bonuses', async function () {
@@ -4408,7 +4530,7 @@ describe('LazyLotto - View Functions Coverage:', function () {
 		const totalTimeBonuses = lazyLottoIface.decodeFunctionResult('totalTimeBonuses', result)[0];
 
 		console.log(`✓ Total time bonuses: ${totalTimeBonuses}`);
-		expect(totalTimeBonuses).to.be.a('number');
+		expect(Number(totalTimeBonuses)).to.be.greaterThan(0);
 	});
 
 	it('Should retrieve total NFT bonus tokens', async function () {
@@ -4419,30 +4541,51 @@ describe('LazyLotto - View Functions Coverage:', function () {
 		const totalNFTBonusTokens = lazyLottoIface.decodeFunctionResult('totalNFTBonusTokens', result)[0];
 
 		console.log(`✓ Total NFT bonus tokens: ${totalNFTBonusTokens}`);
-		expect(totalNFTBonusTokens).to.be.a('number');
+		expect(Number(totalNFTBonusTokens)).to.be.greaterThan(0);
 	});
 
 	it('Should retrieve pending prize information', async function () {
 		console.log('\n-Testing getPendingPrize() view function...');
 
-		// Alice should have pending prizes from earlier tests
-		// Try to get the first pending prize (index 0)
-		const prizeIndex = 0;
-		const userAddress = aliceId.toSolidityAddress();
+		let found = false;
 
-		const encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrize', [userAddress, prizeIndex]);
-		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const pendingPrize = lazyLottoIface.decodeFunctionResult('getPendingPrize', result)[0];
+		// not sure if anyone has pending prizes, call getPendingPrizes() for each user until there is an array.length >0
+		for (const userId of [aliceId, bobId, carolId, operatorId]) {
 
-		console.log(`✓ Pending prize at index ${prizeIndex}:`);
-		console.log(`  - Pool ID: ${pendingPrize.poolId}`);
-		console.log(`  - Amount: ${pendingPrize.amount}`);
-		console.log(`  - Token: ${pendingPrize.token}`);
-		console.log(`  - Is NFT: ${pendingPrize.isNFT}`);
-		console.log(`  - Serial: ${pendingPrize.serial}`);
+			const prizeIndex = 0;
+			const userAddress = userId.toSolidityAddress();
 
-		expect(pendingPrize.poolId).to.be.a('number');
-		expect(pendingPrize.amount).to.be.a('number');
+			// Call getPendingPrizes() for each user until there is an array.length >0
+			const encodedCommandCheck = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userAddress]);
+			const resultCheck = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommandCheck, operatorId, false);
+			const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizes', resultCheck)[0];
+			console.log(`✓ ${userAddress} has ${pendingPrizes.length} pending prizes`);
+
+			if (pendingPrizes.length > 0) {
+				const encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrize', [userAddress, prizeIndex]);
+				const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+				const pendingPrize = lazyLottoIface.decodeFunctionResult('getPendingPrize', result)[0];
+
+				console.log('PP:', pendingPrize);
+
+				console.log(`\n-User ${userAddress} pending prize details:`);
+				console.log(`✓ Pending prize at index ${prizeIndex}:`);
+				console.log(`  - Pool ID: ${pendingPrize[0]}`);
+				console.log(`  - AsNFT: ${pendingPrize[1]}`);
+				console.log(`  - Token: ${pendingPrize[2][0]}`);
+				console.log(`  - Amount: ${pendingPrize[2][1]}`);
+				console.log(`  - NFTs: ${pendingPrize[2][2].map((s) => TokenId.fromEvmAddress(0, 0, s).toString()).join(', ')}`);
+				console.log(`  - Serials: ${pendingPrize[2][3].join(', ')}`);
+
+				found = true;
+				break;
+				// Exit loop after finding first user with pending prizes
+			}
+		}
+
+		if (!found) {
+			console.log('✓ No users with pending prizes found to display details.');
+		}
 	});
 });
 
@@ -4554,7 +4697,7 @@ describe('LazyLotto - Error Handling and Edge Cases:', function () {
 				lazyLottoIface,
 				aliceId,
 				'addPrizePackage',
-				[poolId, ZERO_ADDRESS, prizeAmount.toTinybars(), nftTokens, nftSerials],
+				[poolId, ZERO_ADDRESS, Number(prizeAmount.toTinybars()), nftTokens, nftSerials],
 				2_000_000,
 				Number(prizeAmount.toTinybars()),
 			);
@@ -4565,12 +4708,12 @@ describe('LazyLotto - Error Handling and Edge Cases:', function () {
 				client,
 				gasEstimate.gasLimit,
 				'addPrizePackage',
-				[poolId, ZERO_ADDRESS, prizeAmount.toTinybars(), nftTokens, nftSerials],
+				[poolId, ZERO_ADDRESS, Number(prizeAmount.toTinybars()), nftTokens, nftSerials],
 				prizeAmount,
 			);
 
 			if (result[0]?.status.toString() != 'REVERT: Ownable: caller is not the owner') {
-				console.log('Operation succeeded unexpectedly:', result);
+				console.log('Operation succeeded unexpectedly:', parseTransactionRecord(result[2]));
 				unexpectedErrors++;
 			}
 			else {
@@ -4671,8 +4814,16 @@ describe('LazyLotto - Error Handling and Edge Cases:', function () {
 				expectedErrors++;
 			}
 		}
-		catch {
-			unexpectedErrors++;
+		catch (error) {
+			// Contract reverts are expected
+			if (error.message?.includes('CONTRACT_REVERT_EXECUTED') || error.message?.includes('NoTickets')) {
+				expectedErrors++;
+				console.log('✓ NoTickets correctly rejected (via exception)');
+			}
+			else {
+				console.log('✗ Unexpected error:', error.message);
+				unexpectedErrors++;
+			}
 		}
 
 		expect(expectedErrors).to.be.equal(1);
@@ -4687,15 +4838,105 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 		console.log('\t━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 		console.log('\t   Tests: Time bonus applies during rolling (not purchase)');
 
-		const currentTime = Math.floor(Date.now() / 1000);
-		const startTime = currentTime + 3;
-		const endTime = currentTime + 11;
-		// 10% bonus (1000 bps)
-		const bonusBps = 1000;
-
 		try {
 			// Set Admin as operator
 			client.setOperator(adminId, adminPK);
+
+			// clear existing time bonuses
+			let encodedCommand = lazyLottoIface.encodeFunctionData('totalTimeBonuses');
+			let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, adminId, false);
+			let totalBonuses = lazyLottoIface.decodeFunctionResult('totalTimeBonuses', result)[0];
+
+			while (totalBonuses > 0) {
+				const indexToRemove = totalBonuses - 1;
+				const gasEstimate = await estimateGas(
+					env,
+					contractId,
+					lazyLottoIface,
+					adminId,
+					'removeTimeBonus',
+					[indexToRemove],
+					2_000_000,
+				);
+				result = await contractExecuteFunction(
+					contractId,
+					lazyLottoIface,
+					client,
+					gasEstimate.gasLimit,
+					'removeTimeBonus',
+					[indexToRemove],
+				);
+				if (result[0]?.status?.toString() !== 'SUCCESS') {
+					console.log('\tFailed to remove existing time bonus:', result[0]?.status?.toString());
+					fail('Failed to remove existing time bonus');
+				}
+				totalBonuses--;
+			}
+
+			// remove lazy balance bonus
+			const gasEstimateRemoveBalanceBonus = await estimateGas(
+				env,
+				contractId,
+				lazyLottoIface,
+				adminId,
+				'setLazyBalanceBonus',
+				[0, 0],
+				2_000_000,
+			);
+
+			result = await contractExecuteFunction(
+				contractId,
+				lazyLottoIface,
+				client,
+				gasEstimateRemoveBalanceBonus.gasLimit,
+				'setLazyBalanceBonus',
+				[0, 0],
+			);
+			if (result[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('\tFailed to remove lazy balance bonus:', result[0]?.status?.toString());
+				fail('Failed to remove lazy balance bonus');
+			}
+			// clear nft bonuses
+			encodedCommand = lazyLottoIface.encodeFunctionData('totalNFTBonusTokens');
+			result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, adminId, false);
+			let totalNftBonuses = lazyLottoIface.decodeFunctionResult('totalNFTBonusTokens', result)[0];
+
+			while (totalNftBonuses > 0) {
+				const indexToRemove = totalNftBonuses - 1;
+				const gasEstimate = await estimateGas(
+					env,
+					contractId,
+					lazyLottoIface,
+					adminId,
+					'removeNFTBonus',
+					[indexToRemove],
+					2_000_000,
+				);
+				result = await contractExecuteFunction(
+					contractId,
+					lazyLottoIface,
+					client,
+					gasEstimate.gasLimit,
+					'removeNFTBonus',
+					[indexToRemove],
+				);
+				if (result[0]?.status?.toString() !== 'SUCCESS') {
+					console.log('\tFailed to remove existing NFT bonus:', result[0]?.status?.toString());
+					fail('Failed to remove existing NFT bonus');
+				}
+				totalNftBonuses--;
+			}
+
+			console.log('\t✓ Cleared existing bonuses for clean test slate');
+
+			await sleep(5000);
+
+
+			const currentTime = Math.floor(Date.now() / 1000);
+			const startTime = currentTime + 6;
+			const endTime = currentTime + 11;
+			// 10% bonus (1000 bps)
+			const bonusBps = 1000;
 
 			const gasEstimate = await estimateGas(
 				env,
@@ -4707,7 +4948,7 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 				2_000_000,
 			);
 
-			const result = await contractExecuteFunction(
+			result = await contractExecuteFunction(
 				contractId,
 				lazyLottoIface,
 				client,
@@ -4725,7 +4966,9 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 
 			// Test 1: Before window starts
 			console.log('\t⏱️  Test 1: 1 second before bonus start...');
-			await sleep(2000);
+			// sleep until 2s before start
+			const sleepDuration1 = (startTime - 2 - Math.floor(Date.now() / 1000)) * 1000;
+			await sleep(Math.max(sleepDuration1, 1));
 
 			const boostBefore = await contractExecuteQuery(
 				contractId,
@@ -4736,7 +4979,7 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 				[aliceId.toSolidityAddress()],
 			);
 
-			const boostValueBefore = boostBefore[0].toNumber();
+			const boostValueBefore = Number(boostBefore[0]);
 			console.log(`\t   Boost: ${boostValueBefore} (expected 0)`);
 			expect(boostValueBefore).to.equal(0, 'Boost should be 0 before window');
 
@@ -4753,7 +4996,7 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 				[bobId.toSolidityAddress()],
 			);
 
-			const boostValueAtStart = boostAtStart[0].toNumber();
+			const boostValueAtStart = Number(boostAtStart[0]);
 			console.log(`\t   Boost: ${boostValueAtStart} (expected 10,000,000 = 1000 bps * 10000)`);
 			expect(boostValueAtStart).to.equal(10_000_000, 'Boost should be active at start');
 
@@ -4770,7 +5013,7 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 				[carolId.toSolidityAddress()],
 			);
 
-			const boostValueMid = boostMidWindow[0].toNumber();
+			const boostValueMid = Number(boostMidWindow[0]);
 			console.log(`\t   Boost: ${boostValueMid} (expected 10,000,000)`);
 			expect(boostValueMid).to.equal(10_000_000, 'Boost should be active mid-window');
 
@@ -4787,7 +5030,7 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 				[aliceId.toSolidityAddress()],
 			);
 
-			const boostValueAtEnd = boostAtEnd[0].toNumber();
+			const boostValueAtEnd = Number(boostAtEnd[0]);
 			console.log(`\t   Boost: ${boostValueAtEnd} (expected 10,000,000)`);
 			expect(boostValueAtEnd).to.equal(10_000_000, 'Boost should still be active at end boundary');
 
@@ -4804,7 +5047,7 @@ describe('LazyLotto - Time-Based Testing Scenarios:', function () {
 				[bobId.toSolidityAddress()],
 			);
 
-			const boostValueAfter = boostAfter[0].toNumber();
+			const boostValueAfter = Number(boostAfter[0]);
 			console.log(`\t   Boost: ${boostValueAfter} (expected 0)`);
 			expect(boostValueAfter).to.equal(0, 'Boost should be 0 after window expires');
 

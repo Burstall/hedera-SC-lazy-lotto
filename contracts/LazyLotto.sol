@@ -254,9 +254,6 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         lazyDelegateRegistry = ILazyDelegateRegistry(_lazyDelegateRegistry);
         storageContract = ILazyLottoStorage(_storageContract);
 
-        // Associate lazyToken to storage contract (storage holds all tokens)
-        storageContract.associateTokenToStorage(lazyToken);
-
         prng = IPrngSystemContract(_prng);
 
         burnPercentage = _burnPercentage;
@@ -443,7 +440,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
 
         // Create token via storage contract (storage is treasury and auto-renew payer)
-        address tokenAddress = storageContract.createToken(
+        // Forward msg.value to cover token creation costs
+        address tokenAddress = storageContract.createToken{value: msg.value}(
             _name,
             _symbol,
             _memo,
@@ -483,6 +481,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         address[] memory nftTokens,
         uint256[][] memory nftSerials
     ) external payable {
+        _requireAdmin();
         _requireValidPool(poolId);
         if (nftTokens.length != nftSerials.length) {
             revert BadParameters();

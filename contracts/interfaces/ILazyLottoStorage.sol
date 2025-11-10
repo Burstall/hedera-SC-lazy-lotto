@@ -78,7 +78,6 @@ interface ILazyLottoStorage {
     ) external;
     function transferHbar(address payable to, uint256 amount) external;
     function depositHbar() external payable;
-    function getHbarBalance() external view returns (uint256 balance);
 
     // --- FUNGIBLE TOKEN OPERATIONS ---
     function pullFungibleFrom(
@@ -100,9 +99,6 @@ interface ILazyLottoStorage {
         IHederaTokenServiceLite.TransferList memory transferList,
         IHederaTokenServiceLite.TokenTransferList[] memory tokenTransfers
     ) external;
-    function getFungibleBalance(
-        address token
-    ) external view returns (uint256 balance);
 
     // --- TOKEN CREATION ---
     function createToken(
@@ -110,7 +106,7 @@ interface ILazyLottoStorage {
         string memory _symbol,
         string memory _memo,
         NFTFeeObject[] memory _royalties
-    ) external returns (address tokenAddress);
+    ) external payable returns (address tokenAddress);
 
     // --- NFT OPERATIONS ---
     function mintAndTransferNFT(
