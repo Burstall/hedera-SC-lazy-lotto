@@ -1,8 +1,12 @@
 # LazyLotto - Business Logic & Use Cases Documentation
 
+**Last Updated**: November 12, 2025
+**Contract Version**: LazyLotto v2 (Split Pattern with LazyLottoStorage)
+**Contract Sizes**: LazyLotto 23.612 KB | LazyLottoStorage 11.137 KB
+
 ## Overview
 
-LazyLotto is a decentralized lottery system built on the Hedera network that allows users to purchase lottery tickets using various tokens (HBAR, $LAZY, or other HTS tokens) and win prizes through a verifiable random number generation system. The contract implements sophisticated prize management, boost mechanisms, and NFT-based ticket systems.
+LazyLotto is a decentralized lottery system built on the Hedera network that allows users to purchase lottery tickets using various tokens (HBAR, $LAZY, or other HTS tokens) and win prizes through Hedera's verifiable random number generation (VRF) system. The contract implements sophisticated prize management, boost mechanisms, NFT-based ticket systems, and role-based access control for partnership enablement.
 
 ## Core Concepts
 
@@ -76,14 +80,33 @@ Users can receive win rate bonuses through:
    - Pool metadata (name, symbol, artwork CIDs)
    - Win rate and entry fee
    - Fee token specification
-2. Contract creates new HTS NFT collection for tickets
-3. Admin adds prizes using `addPrizePackage()` or `addMultipleFungiblePrizes()`
+   - **Forwards msg.value** to cover HTS token creation costs
+2. Contract creates new HTS NFT collection for tickets via `storageContract.createToken{value: msg.value}()`
+3. Admin OR Prize Manager adds prizes using:
+   - `addPrizePackage()` - Single package (HBAR/FT/NFT)
+   - `addMultipleFungiblePrizes()` - Batch fungible prizes
 4. Pool becomes available for user participation
 
 **Pool Management**:
 - `pausePool()` / `unpausePool()`: Control ticket sales
 - `closePool()`: Permanently disable pool (requires no outstanding entries)
-- `removePrizes()`: Recover prizes from closed pools
+- `removePrizes()`: Recover prizes from closed pools (admin-only)
+
+**Prize Manager Role** (NEW):
+Enables partnerships without granting full admin privileges:
+- `addPrizeManager(address)` - Admin grants prize addition rights
+- `removePrizeManager(address)` - Admin revokes rights
+- `isPrizeManager(address)` - Check role status
+- Prize managers can ONLY add prizes, not manage pools or settings
+- Prevents reputation risk from dubious/scam token prizes
+- Revocable at any time by admin
+
+**NFT Bonus Deduplication** (NEW):
+When setting NFT bonuses, system prevents duplicate entries:
+- `setNFTBonus(token, bps)` checks if token already exists in `nftBonusTokens` array
+- If found, updates bonus amount without adding duplicate
+- Prevents double-counting in `calculateBoost()` iterations
+- Protects users from accidental misconfiguration
 
 **Token Withdrawal Operations** (Admin Safety):
 
@@ -93,22 +116,29 @@ Admins can withdraw excess tokens from storage, but the system enforces safety c
    - Checks: `storageBalance - amount >= ftTokensForPrizes[address(0)]`
    - Use case: Withdraw royalty payments, excess HBAR accidentally sent to storage
    - Safety: Cannot withdraw if it would leave insufficient HBAR for prizes
+   - Verification: Use `checkMirrorHbarBalance(env, storageContractId)` from mirror node
 
 2. **Withdraw Fungible Tokens from Storage**: `transferFungible(token, recipient, amount)`
    - Checks: `storageBalance - amount >= ftTokensForPrizes[token]`
    - Use case: Withdraw excess tokens, recover accidentally sent tokens
    - Safety: Cannot withdraw if it would leave insufficient tokens for prizes
+   - Verification: Use `checkMirrorBalance(env, storageContractId, tokenId)` from mirror node
 
 3. **Withdraw HBAR from LazyLotto**: `transferHbar(recipient, amount)`
    - No safety check (LazyLotto doesn't hold prize funds)
    - Use case: Withdraw HBAR accidentally sent directly to LazyLotto contract
    - Note: Regular operations send HBAR to storage, not LazyLotto
+   - Verification: Use `checkMirrorHbarBalance(env, contractId)` from mirror node
 
 **Key Points**:
 - All withdrawals from storage must go through LazyLotto facade methods
 - `ftTokensForPrizes[token]` mapping tracks total token obligations for all prizes
 - Storage methods (`withdrawHbar`, `withdrawFungible`) are `onlyContractUser` - cannot be called directly
 - This ensures users always have certainty their prizes can be paid out
+- **Mirror node methods provide independent balance verification**:
+  - `checkMirrorBalance(env, accountId, tokenId)` - Fungible token balance
+  - `checkMirrorHbarBalance(env, accountId)` - HBAR balance
+  - `getSerialsOwned(env, accountId, tokenId)` - NFT serials owned
 
 ### 4. Prize Trading System
 
@@ -127,6 +157,7 @@ Admins can withdraw excess tokens from storage, but the system enforces safety c
 3. To inspect prize details, user calls `getPrizePackage(poolId, prizeIndex)` 
 4. Returns detailed breakdown: token address, amount, NFT collections, and serial numbers
 5. Frontend can display: "Prize #1: 100 HBAR + 5 $LAZY + 3 NFTs from Collection X"
+6. **Balance verification**: Use `checkMirrorBalance(env, userAddress, tokenId)` to verify balances independently
 
 **Use Case**: Before claiming or converting to NFT, users can inspect exactly what prizes they've won, enabling informed decision-making about whether to claim immediately or trade the prize NFT.
 
@@ -236,9 +267,9 @@ The contract includes automatic resource management through the `refill` modifie
 - Permanently paired 1:1 with its LazyLotto instance
 
 **Deployment Flow**:
-1. Deploy LazyLottoStorage
-2. Deploy LazyLotto with storage address
-3. Call `storage.setContractUser(lazyLotto.address)` - locks permanently
+1. Deploy LazyLottoStorage with (lazyGasStation, lazyToken) - LAZY token auto-associated in constructor
+2. Deploy LazyLotto with storage address and other dependencies
+3. Call `storage.setContractUser(lazyLotto.address)` - locks permanently (one-time only)
 4. Users approve tokens to storage address (query via `lazyLotto.storageContract()`)
 
 **Token Flow Architecture**:

@@ -1,26 +1,36 @@
 # LazyLotto - UX Implementation Guide for Frontend Developers
 
-**Version:** 1.0  
-**Last Updated:** October 26, 2025  
+**Version:** 2.0  
+**Last Updated:** November 12, 2025  
+**Contract Versions:** LazyLotto 23.612 KB | LazyLottoStorage 11.137 KB
 **Target Audience:** Frontend Developers, UX Designers, Integration Engineers
 
 ---
 
 ## Overview
 
-This guide provides comprehensive instructions for building user-facing applications that interact with the LazyLotto smart contract. It covers all user flows, required contract method calls, data presentation patterns, error handling, and best practices for creating an intuitive lottery experience.
+This guide provides comprehensive instructions for building user-facing applications that interact with the LazyLotto smart contract. It covers all user flows, required contract method calls, data presentation patterns, error handling, gas estimation strategies, and best practices for creating an intuitive lottery experience.
+
+### Key Updates in v2.0
+
+- ✅ **Prize Manager Role**: Separate authorization for prize addition (partnerships)
+- ✅ **NFT Bonus Deduplication**: Prevents duplicate bonus calculations
+- ✅ **Gas Estimation Patterns**: Smart multipliers for roll operations (1.5x for PRNG uncertainty)
+- ✅ **Mirror Node Integration**: Balance verification patterns for accuracy
+- ✅ **Safety Checks**: Admin withdrawal protection for prize obligations
 
 ### Architecture Note
 
 LazyLotto uses a **split-contract architecture** for size optimization:
 
-- **LazyLotto** (22.939 KB): Your primary interface - handles all business logic, user interactions, and admin operations
-- **LazyLottoStorage** (11.218 KB): Internal contract that holds tokens and executes HTS operations
+- **LazyLotto** (23.612 KB): Your primary interface - handles all business logic, user interactions, and admin operations
+- **LazyLottoStorage** (11.137 KB): Internal contract that holds tokens and executes HTS operations
 
 **Important for Frontend Developers**:
 1. **Only interact with LazyLotto** - all user and admin functions are exposed here
 2. **Token approvals must go to the storage contract** - get the address via `contract.storageContract()`
 3. **Never call LazyLottoStorage directly** - it's access-controlled and only accepts calls from LazyLotto
+4. **Use mirror node for balance verification** - provides independent confirmation of token balances
 
 ```javascript
 // STEP 1: Get storage address for token approvals
@@ -95,10 +105,106 @@ totalNFTBonusTokens() → uint256
 
 // Admin checks
 isAdmin(address) → bool
+isPrizeManager(address) → bool  // NEW in v2.0
 
 // Storage contract reference (CRITICAL for token approvals)
 storageContract() → address
 ```
+
+**State-Changing Methods:**
+```solidity
+// Ticket purchase
+buyEntry(poolId, ticketCount) payable
+buyAndRedeemEntry(poolId, ticketCount) payable → int64[]
+buyAndRollEntry(poolId, ticketCount) payable → (uint256, uint256)
+
+// Rolling tickets
+rollAll(poolId) → (uint256, uint256)
+rollBatch(poolId, numberToRoll) → (uint256, uint256)
+rollWithNFT(poolId, serialNumbers) → (uint256, uint256)
+
+// Prize claiming
+claimPrize(prizeIndex)
+claimAllPrizes()
+redeemPrizeToNFT(indices) → int64[]
+claimPrizeFromNFT(tokenId, serialNumbers)
+```
+
+### Critical Gas Estimation Pattern
+
+**Roll operations have variable gas costs due to PRNG** - use 1.5x multiplier:
+
+```javascript
+// ❌ WRONG - May fail if wins occur (needs extra PRNG + prize operations)
+const gasEstimate = await estimateGas(contractId, 'rollAll', [poolId]);
+await contract.rollAll(poolId, { gasLimit: gasEstimate });
+
+// ✅ CORRECT - 1.5x multiplier accounts for worst-case wins
+const gasEstimate = await estimateGas(contractId, 'rollAll', [poolId]);
+await contract.rollAll(poolId, { gasLimit: Math.ceil(gasEstimate * 1.5) });
+```
+
+**Why 1.5x for Rolls?**
+- Base estimate assumes no wins (single PRNG array)
+- Actual execution may need:
+  - Initial PRNG array for win determination
+  - Secondary PRNG array for prize selection
+  - Prize package operations (array manipulation)
+- 1.5x provides safe buffer without excessive overhead
+
+**Applies to these functions:**
+- `rollAll()` - 1.5x multiplier
+- `rollBatch()` - 1.5x multiplier  
+- `rollWithNFT()` - 1.5x multiplier
+- `buyAndRollEntry()` - 1.5x multiplier
+
+**Standard operations** (use estimate directly):
+- `buyEntry()` - no multiplier needed
+- `claimPrize()` - no multiplier needed
+- `buyAndRedeemEntry()` - no multiplier needed
+
+### Mirror Node Balance Verification
+
+**Always verify balances via mirror node for accuracy:**
+
+```javascript
+import { checkMirrorBalance, checkMirrorHbarBalance, getSerialsOwned } from './hederaMirrorHelpers';
+
+// Check fungible token balance
+const lazyBalance = await checkMirrorBalance(
+    env,              // 'testnet' | 'mainnet'
+    accountId,        // AccountId or string '0.0.12345'
+    tokenId           // TokenId or string '0.0.67890'
+);
+
+// Check HBAR balance
+const hbarBalance = await checkMirrorHbarBalance(
+    env,              // 'testnet' | 'mainnet'  
+    accountId         // AccountId or string '0.0.12345'
+);
+
+// Get NFT serials owned
+const serials = await getSerialsOwned(
+    env,              // 'testnet' | 'mainnet'
+    accountId,        // AccountId or string '0.0.12345'
+    nftTokenId        // TokenId or string '0.0.99999'
+);
+
+console.log('User NFT serials:', serials); // [1, 3, 5, 12]
+```
+
+**When to use mirror node verification:**
+- After token transfers (tickets, prizes)
+- Before/after prize claims
+- Verifying pool prize balances
+- Checking user ticket NFT ownership
+- Admin balance checks before withdrawals
+
+**Why mirror node?**
+- Independent of contract state
+- Real-time network state
+- No gas costs for queries
+- Reliable for UX confirmation
 
 **Transaction Methods:**
 ```solidity
@@ -1363,12 +1469,12 @@ async function completePurchaseFlow(poolId, ticketCount, purchaseType) {
     const totalCost = poolDetails.entryFee * BigInt(ticketCount);
     
     if (poolDetails.feeToken === ZERO_ADDRESS) {
-      const hbarBalance = await getHbarBalance(userAddress);
+      const hbarBalance = // get from the mirror node
       if (hbarBalance < totalCost) {
         throw new Error(`Insufficient HBAR. Need ${formatHbar(totalCost)}`);
       }
     } else {
-      const tokenBalance = await getTokenBalance(userAddress, poolDetails.feeToken);
+      const tokenBalance = // from the mirror node
       if (tokenBalance < totalCost) {
         throw new Error(`Insufficient tokens. Need ${formatTokenAmount(totalCost)}`);
       }

@@ -127,6 +127,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
 
     error BadParameters();
     error NotAdmin();
+    error NotAuthorized();
     error FungibleTokenTransferFailed();
     error LastAdminError();
     error PoolIsClosed();
@@ -152,6 +153,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// --- EVENTS ---
     event AdminAdded(address indexed admin);
     event AdminRemoved(address indexed admin);
+    event PrizeManagerAdded(address indexed prizeManager);
+    event PrizeManagerRemoved(address indexed prizeManager);
     event PoolCreated(uint256 indexed poolId);
     event PoolPaused(uint256 indexed poolId);
     event PoolClosed(uint256 indexed poolId);
@@ -195,6 +198,8 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     // --- STATE ---
     mapping(address => bool) private _isAddressAdmin;
     uint256 private _adminCount;
+    mapping(address => bool) private _isPrizeManager;
+    uint256 private _prizeManagerCount;
 
     IPrngSystemContract public prng;
     uint256 public burnPercentage;
@@ -272,6 +277,13 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
     }
 
+    /// @dev Internal function to check if caller is admin or prize manager
+    function _requireAdminOrPrizeManager() internal view {
+        if (!_isAddressAdmin[msg.sender] && !_isPrizeManager[msg.sender]) {
+            revert NotAuthorized();
+        }
+    }
+
     /// @dev Internal function to validate pool exists and is not closed (replaces validPool modifier)
     function _requireValidPool(uint256 id) internal view {
         if (id >= pools.length) {
@@ -312,6 +324,32 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         }
     }
 
+    /// @notice Adds a new prize manager address
+    /// @param a The address of the new prize manager
+    function addPrizeManager(address a) external {
+        _requireAdmin();
+        if (a == address(0)) revert BadParameters();
+        if (!_isPrizeManager[a]) {
+            _isPrizeManager[a] = true;
+            _prizeManagerCount++;
+            emit PrizeManagerAdded(a);
+        }
+    }
+
+    /// @notice Removes a prize manager address
+    /// @param a The address of the prize manager to remove
+    function removePrizeManager(address a) external {
+        _requireAdmin();
+        if (a == address(0)) revert BadParameters();
+        if (_isPrizeManager[a]) {
+            _isPrizeManager[a] = false;
+            _prizeManagerCount--;
+            emit PrizeManagerRemoved(a);
+        } else {
+            revert NotAuthorized();
+        }
+    }
+
     /// @notice Sets the burn percentage for the entry fee
     /// @param _burnPercentage The new burn percentage (0-100)
     function setBurnPercentage(uint256 _burnPercentage) external {
@@ -330,7 +368,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint16 _bonusBps
     ) external {
         _requireAdmin();
-        if (_threshold == 0 || _bonusBps > 10000) {
+        if (_bonusBps > 10000) {
             revert BadParameters();
         }
         lazyBalanceThreshold = _threshold;
@@ -346,7 +384,21 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         if (_token == address(0) || _bonusBps > 10000) {
             revert BadParameters();
         }
-        nftBonusTokens.push(_token);
+
+        // Check if token already exists in array to prevent duplicates
+        bool found = false;
+        for (uint256 i = 0; i < nftBonusTokens.length; i++) {
+            if (nftBonusTokens[i] == _token) {
+                found = true;
+                break;
+            }
+        }
+
+        // Only add to array if not already present
+        if (!found) {
+            nftBonusTokens.push(_token);
+        }
+
         nftBonusBps[_token] = _bonusBps;
         emit NFTBonusSet(_token, _bonusBps);
     }
@@ -469,7 +521,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         emit PoolCreated(poolId);
     }
 
-    /// Admin can add prizes to a pool
+    /// Admin or Prize Manager can add prizes to a pool
     /// @param poolId The ID of the pool to add prizes to
     /// @param token The address of the token to add as a prize
     /// @param amount The amount of the token to add as a prize
@@ -481,9 +533,15 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         address[] memory nftTokens,
         uint256[][] memory nftSerials
     ) external payable {
-        _requireAdmin();
+        _requireAdminOrPrizeManager();
         _requireValidPool(poolId);
         if (nftTokens.length != nftSerials.length) {
+            revert BadParameters();
+        }
+
+        // fungible amount can be zero if only NFTs are being added
+        // nobody likes zero amount fungible prizes!
+        if (amount == 0 && nftTokens.length == 0) {
             revert BadParameters();
         }
 
@@ -513,7 +571,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         );
     }
 
-    /// Admin can add multiple fungible prizes to a pool in one call
+    /// Admin or Prize Manager can add multiple fungible prizes to a pool in one call
     /// @param poolId The ID of the pool to add prizes to
     /// @param tokenId The address of the token to add as a prize
     /// @param amounts The amounts of the token to add as prizes
@@ -522,6 +580,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         address tokenId,
         uint256[] memory amounts
     ) external payable {
+        _requireAdminOrPrizeManager();
         _requireValidPool(poolId);
         if (amounts.length == 0) {
             revert BadParameters();
@@ -533,6 +592,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         // get the total amount of tokens to transfer
         uint256 totalAmount = 0;
         for (uint256 i = 0; i < amounts.length; ) {
+            if (amounts[i] == 0) {
+                // no zero amount prizes allowed!
+                revert BadParameters();
+            }
             totalAmount += amounts[i];
             unchecked {
                 ++i;
@@ -1038,7 +1101,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @param tokenId The NFT tokenId to get the pending prize for
     /// @param serialNumber The serial number of the NFT to get the pending prize for
     /// @return PendingPrize The pending prize for the specified NFT
-    function getPendingPrizes(
+    function getPendingPrizesByNFT(
         address tokenId,
         uint256 serialNumber
     ) external view returns (PendingPrize memory) {
@@ -1066,6 +1129,12 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @param a The address to check
     function isAdmin(address a) external view returns (bool) {
         return _isAddressAdmin[a];
+    }
+
+    /// @notice Check if an address is a prize manager
+    /// @param a The address to check
+    function isPrizeManager(address a) external view returns (bool) {
+        return _isPrizeManager[a];
     }
 
     /// @notice Get the total number of time-based bonuses
@@ -1492,22 +1561,29 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             .amount;
 
         // time to pay out the prize from storage contract
-        if (claimedPrize.prize.token == address(0)) {
-            // transfer the HBAR from storage to the user
-            storageContract.withdrawHbar(
-                payable(msg.sender),
-                claimedPrize.prize.amount
-            );
-        } else if (claimedPrize.prize.token == lazyToken) {
-            // transfer the $LAZY to the user
-            lazyGasStation.payoutLazy(msg.sender, claimedPrize.prize.amount, 0);
-        } else {
-            // transfer the token from storage to the user
-            storageContract.transferFungible(
-                claimedPrize.prize.token,
-                msg.sender,
-                claimedPrize.prize.amount
-            );
+        // if the amount is 0 we skip the fungible transfer
+        if (claimedPrize.prize.amount > 0) {
+            if (claimedPrize.prize.token == address(0)) {
+                // transfer the HBAR from storage to the user
+                storageContract.withdrawHbar(
+                    payable(msg.sender),
+                    claimedPrize.prize.amount
+                );
+            } else if (claimedPrize.prize.token == lazyToken) {
+                // transfer the $LAZY to the user
+                lazyGasStation.payoutLazy(
+                    msg.sender,
+                    claimedPrize.prize.amount,
+                    0
+                );
+            } else {
+                // transfer the token from storage to the user
+                storageContract.transferFungible(
+                    claimedPrize.prize.token,
+                    msg.sender,
+                    claimedPrize.prize.amount
+                );
+            }
         }
 
         storageContract.bulkTransferNFTs(
