@@ -1,18 +1,19 @@
 [
     {
-        "inputs": [],
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_lazyGasStation",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_lazyToken",
+                "type": "address"
+            }
+        ],
         "stateMutability": "nonpayable",
         "type": "constructor"
-    },
-    {
-        "inputs": [],
-        "name": "AdminAlreadySet",
-        "type": "error"
-    },
-    {
-        "inputs": [],
-        "name": "AdminLocked",
-        "type": "error"
     },
     {
         "inputs": [
@@ -28,6 +29,11 @@
     {
         "inputs": [],
         "name": "BadParameters",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ContractUserAlreadySet",
         "type": "error"
     },
     {
@@ -56,6 +62,11 @@
         "type": "error"
     },
     {
+        "inputs": [],
+        "name": "NotContractUser",
+        "type": "error"
+    },
+    {
         "inputs": [
             {
                 "internalType": "string",
@@ -81,12 +92,6 @@
     },
     {
         "anonymous": false,
-        "inputs": [],
-        "name": "AdminLockedPermanently",
-        "type": "event"
-    },
-    {
-        "anonymous": false,
         "inputs": [
             {
                 "indexed": true,
@@ -96,6 +101,19 @@
             }
         ],
         "name": "AdminRemoved",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "contractUser",
+                "type": "address"
+            }
+        ],
+        "name": "ContractUserSet",
         "type": "event"
     },
     {
@@ -200,12 +218,6 @@
                 "internalType": "address",
                 "name": "tokenAddress",
                 "type": "address"
-            },
-            {
-                "indexed": true,
-                "internalType": "address",
-                "name": "account",
-                "type": "address"
             }
         ],
         "name": "TokenAssociated",
@@ -251,16 +263,39 @@
         "inputs": [
             {
                 "internalType": "address",
-                "name": "account",
-                "type": "address"
-            },
-            {
-                "internalType": "address",
                 "name": "token",
                 "type": "address"
             }
         ],
-        "name": "associateTokenToAccount",
+        "name": "associateTokenToStorage",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bool",
+                "name": "isStaking",
+                "type": "bool"
+            },
+            {
+                "internalType": "address[]",
+                "name": "nftTokens",
+                "type": "address[]"
+            },
+            {
+                "internalType": "uint256[][]",
+                "name": "nftSerials",
+                "type": "uint256[][]"
+            },
+            {
+                "internalType": "address",
+                "name": "eoaAddress",
+                "type": "address"
+            }
+        ],
+        "name": "bulkTransferNFTs",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -308,11 +343,6 @@
                 "internalType": "struct LazyLottoStorage.NFTFeeObject[]",
                 "name": "_royalties",
                 "type": "tuple[]"
-            },
-            {
-                "internalType": "address",
-                "name": "treasury",
-                "type": "address"
             }
         ],
         "name": "createToken",
@@ -323,6 +353,36 @@
                 "type": "address"
             }
         ],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "depositHbar",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "from",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amountToPull",
+                "type": "uint256"
+            }
+        ],
+        "name": "ensureFungibleBalance",
+        "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
     },
@@ -425,32 +485,13 @@
         "type": "function"
     },
     {
-        "inputs": [
+        "inputs": [],
+        "name": "getContractUser",
+        "outputs": [
             {
                 "internalType": "address",
-                "name": "token",
+                "name": "",
                 "type": "address"
-            }
-        ],
-        "name": "getFungibleBalance",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "balance",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "getHbarBalance",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "balance",
-                "type": "uint256"
             }
         ],
         "stateMutability": "view",
@@ -476,15 +517,23 @@
         "type": "function"
     },
     {
+        "inputs": [],
+        "name": "lazyGasStation",
+        "outputs": [
+            {
+                "internalType": "contract ILazyGasStation",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
         "inputs": [
             {
                 "internalType": "address",
                 "name": "token",
-                "type": "address"
-            },
-            {
-                "internalType": "address",
-                "name": "sender",
                 "type": "address"
             },
             {
@@ -541,11 +590,47 @@
         "inputs": [
             {
                 "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "from",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "pullFungibleFrom",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
                 "name": "a",
                 "type": "address"
             }
         ],
         "name": "removeAdmin",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "contractUser",
+                "type": "address"
+            }
+        ],
+        "name": "setContractUser",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -638,6 +723,29 @@
             }
         ],
         "name": "wipeNFT",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "recipient",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "withdrawFungible",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"

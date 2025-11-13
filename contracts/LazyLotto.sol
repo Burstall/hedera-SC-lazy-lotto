@@ -816,6 +816,18 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         _buyEntry(poolId, ticketCount, true, recipient);
     }
 
+    /// User redeems existing in-memory entries to NFT tickets
+    /// @param poolId The ID of the pool to redeem entries from
+    /// @param ticketCount The number of entries to redeem to NFTs
+    /// @return serials The minted NFT serial numbers
+    function redeemEntriesToNFT(
+        uint256 poolId,
+        uint256 ticketCount
+    ) external whenNotPaused nonReentrant returns (int64[] memory serials) {
+        _requireValidPool(poolId);
+        return _redeemEntriesToNFT(poolId, ticketCount);
+    }
+
     /// User rolls all tickets in the pool (in memory not any NFT entries)
     /// @param poolId The ID of the pool to roll tickets in
     function rollAll(
@@ -1359,6 +1371,10 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         uint256 _poolId,
         uint256 _numTickets
     ) internal returns (int64[] memory allSerials) {
+        if (_numTickets == 0) {
+            revert BadParameters();
+        }
+
         if (userEntries[_poolId][msg.sender] < _numTickets) {
             revert NotEnoughTickets(
                 _poolId,

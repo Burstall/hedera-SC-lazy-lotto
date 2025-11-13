@@ -18,6 +18,7 @@ This guide provides comprehensive instructions for building user-facing applicat
 - ✅ **Gas Estimation Patterns**: Smart multipliers for roll operations (1.5x for PRNG uncertainty)
 - ✅ **Mirror Node Integration**: Balance verification patterns for accuracy
 - ✅ **Safety Checks**: Admin withdrawal protection for prize obligations
+- ✅ **Entry Redemption**: New `redeemEntriesToNFT()` allows converting memory entries to tradeable NFT tickets
 
 ### Architecture Note
 
@@ -212,6 +213,9 @@ console.log('User NFT serials:', serials); // [1, 3, 5, 12]
 buyEntry(poolId, ticketCount) payable
 buyAndRollEntry(poolId, ticketCount) payable
 buyAndRedeemEntry(poolId, ticketCount) payable
+
+// Entry redemption
+redeemEntriesToNFT(poolId, ticketCount)
 
 // Rolling
 rollAll(poolId)
@@ -702,7 +706,225 @@ async function getUserTickets(userAddress) {
 
 ---
 
-### 6. Roll Tickets and See Results
+### 6. Convert Memory Entries to NFT Tickets
+
+**Objective:** Allow users to convert existing memory entries to tradeable NFT tickets
+
+**Use Cases:**
+- User accumulated entries and now wants to trade some on secondary markets
+- User wants to gift tickets to friends
+- User prefers NFT format for portfolio management
+- Strategic timing: convert to NFT when market demand is high
+
+**Implementation Steps:**
+
+```javascript
+async function redeemEntriesToNFT(poolId, ticketCount) {
+  // Step 1: Verify user has enough memory entries
+  const memoryEntries = await contract.getUsersEntries(poolId, userAddress);
+  if (memoryEntries < ticketCount) {
+    throw new Error(`Not enough entries. You have ${memoryEntries} but tried to redeem ${ticketCount}`);
+  }
+  
+  // Step 2: Get pool details for display
+  const poolDetails = await contract.getPoolDetails(poolId);
+  
+  // Step 3: Estimate gas (NFT minting operations are more expensive)
+  const gasEstimate = await contract.estimateGas.redeemEntriesToNFT(poolId, ticketCount);
+  const gasLimit = Math.floor(gasEstimate.toNumber() * 1.2); // 20% buffer
+  
+  // Step 4: Execute redemption
+  const tx = await contract.redeemEntriesToNFT(poolId, ticketCount, {
+    gasLimit,
+  });
+  
+  const receipt = await tx.wait();
+  
+  // Step 5: Extract minted NFT serial numbers from events
+  const ticketEvents = receipt.events.filter(e => e.event === 'TicketEvent');
+  const serialNumbers = ticketEvents.map(event => event.args.serialNumber);
+  
+  return {
+    poolTokenId: poolDetails.poolTokenId,
+    serialNumbers,
+    ticketCID: poolDetails.ticketCID,
+  };
+}
+```
+
+**Display Recommendations:**
+
+```jsx
+<RedemptionFlow>
+  <TicketInventory>
+    <InventoryItem>
+      💾 Memory Entries: {memoryEntries}
+      <Hint>Gas efficient, not tradeable</Hint>
+    </InventoryItem>
+    <InventoryItem>
+      🎫 NFT Tickets: {nftTickets}
+      <Hint>Tradeable on secondary markets</Hint>
+    </InventoryItem>
+  </TicketInventory>
+  
+  <ConversionSection>
+    <SectionTitle>Convert to NFT Tickets</SectionTitle>
+    <Description>
+      Convert your memory entries to tradeable NFT tickets. 
+      This operation uses more gas but gives you ownership flexibility.
+    </Description>
+    
+    <QuantitySelector>
+      <Label>How many to convert?</Label>
+      <Input
+        type="number"
+        min={1}
+        max={memoryEntries}
+        value={convertCount}
+        onChange={(e) => setConvertCount(Math.min(e.target.value, memoryEntries))}
+      />
+      <QuickSelect>
+        <Button onClick={() => setConvertCount(memoryEntries)}>All</Button>
+        <Button onClick={() => setConvertCount(Math.floor(memoryEntries / 2))}>Half</Button>
+      </QuickSelect>
+    </QuantitySelector>
+    
+    <GasEstimate>
+      Estimated gas: ~{formatGas(estimatedGas)}
+    </GasEstimate>
+    
+    <ConvertButton 
+      onClick={() => redeemEntriesToNFT(poolId, convertCount)}
+      disabled={convertCount === 0 || convertCount > memoryEntries}
+    >
+      Convert {convertCount} to NFT Tickets
+    </ConvertButton>
+  </ConversionSection>
+</RedemptionFlow>
+```
+
+**Success Feedback:**
+
+```jsx
+<ConversionSuccess>
+  <SuccessIcon>🎨</SuccessIcon>
+  <SuccessMessage>
+    Successfully converted {serialNumbers.length} entries to NFT tickets!
+  </SuccessMessage>
+  
+  <MintedNFTs>
+    <NFTGrid>
+      {serialNumbers.map(serial => (
+        <NFTCard key={serial}>
+          <NFTImage src={`ipfs://${ticketCID}`} />
+          <NFTSerial>#{serial}</NFTSerial>
+          <NFTActions>
+            <ViewButton href={`https://hashscan.io/token/${poolTokenId}/${serial}`}>
+              View on HashScan
+            </ViewButton>
+          </NFTActions>
+        </NFTCard>
+      ))}
+    </NFTGrid>
+  </MintedNFTs>
+  
+  <NextSteps>
+    <h4>What you can do now:</h4>
+    <StepsList>
+      <Step>🎲 Roll your NFT tickets with rollWithNFT()</Step>
+      <Step>💱 Trade them on secondary marketplaces</Step>
+      <Step>🎁 Transfer them to friends</Step>
+      <Step>📦 Hold them for later use</Step>
+    </StepsList>
+  </NextSteps>
+</ConversionSuccess>
+```
+
+**User Guidance Messages:**
+
+```javascript
+// Before conversion
+const guidance = {
+  title: "Should you convert to NFT?",
+  considerations: [
+    {
+      pro: "✅ Can trade on secondary markets",
+      con: "❌ Higher gas cost for conversion and rolling",
+    },
+    {
+      pro: "✅ Can gift or transfer to others",
+      con: "❌ Must approve NFT contract before rolling",
+    },
+    {
+      pro: "✅ Shows in your NFT wallet",
+      con: "❌ Can't convert back to memory format",
+    },
+  ],
+  recommendation: "Convert when you want trading flexibility. Keep as memory for gas efficiency.",
+};
+```
+
+**Error Handling:**
+
+```javascript
+try {
+  await redeemEntriesToNFT(poolId, ticketCount);
+} catch (error) {
+  // Handle specific errors
+  if (error.message.includes('NotEnoughTickets')) {
+    showError('You don\'t have enough memory entries to convert.');
+  } else if (error.message.includes('BadParameters')) {
+    showError('Invalid conversion quantity. Must be greater than zero.');
+  } else if (error.message.includes('PoolIsClosed')) {
+    showError('This pool is closed and no longer accepting operations.');
+  } else if (error.message.includes('ContractPaused')) {
+    showError('The lottery is temporarily paused. Please try again later.');
+  } else {
+    showError(`Conversion failed: ${error.message}`);
+  }
+}
+```
+
+**Gas Optimization Tips for Users:**
+
+```jsx
+<GasOptimizationTips>
+  <Tip>
+    💡 <strong>Batch conversions:</strong> Converting multiple entries at once 
+    is more gas-efficient than multiple small conversions.
+  </Tip>
+  <Tip>
+    💡 <strong>Plan ahead:</strong> If you plan to trade tickets, buy directly 
+    as NFTs with buyAndRedeemEntry() to avoid double conversion costs.
+  </Tip>
+  <Tip>
+    💡 <strong>Keep some in memory:</strong> If rolling yourself, memory entries 
+    use ~30% less gas than NFT tickets.
+  </Tip>
+</GasOptimizationTips>
+```
+
+**Integration with Existing Purchase Flow:**
+
+Update the purchase flow (Section 4) to mention this option:
+
+```jsx
+<PurchaseFlow>
+  {/* Existing purchase options */}
+  
+  <InfoBox>
+    <InfoIcon>ℹ️</InfoIcon>
+    <InfoText>
+      Not sure which format? Buy as memory entries (cheapest) and convert 
+      to NFTs later if needed using <Code>redeemEntriesToNFT()</Code>.
+    </InfoText>
+  </InfoBox>
+</PurchaseFlow>
+```
+
+---
+
+### 7. Roll Tickets and See Results
 
 **Objective:** Execute lottery rolls and display outcomes
 
@@ -821,7 +1043,7 @@ function AnimatedRoll({ onComplete }) {
 
 ---
 
-### 7. View and Inspect Won Prizes
+### 8. View and Inspect Won Prizes
 
 **Objective:** Show users their pending prizes with full details
 

@@ -41,17 +41,6 @@
         "type": "error"
     },
     {
-        "inputs": [
-            {
-                "internalType": "address",
-                "name": "tokenAddress",
-                "type": "address"
-            }
-        ],
-        "name": "AssociationFailed",
-        "type": "error"
-    },
-    {
         "inputs": [],
         "name": "BadParameters",
         "type": "error"
@@ -135,17 +124,6 @@
         "type": "error"
     },
     {
-        "inputs": [
-            {
-                "internalType": "enum LazyLotto.TransferDirection",
-                "name": "_direction",
-                "type": "uint8"
-            }
-        ],
-        "name": "NFTTransferFailed",
-        "type": "error"
-    },
-    {
         "inputs": [],
         "name": "NoPendingPrizes",
         "type": "error"
@@ -174,6 +152,11 @@
     {
         "inputs": [],
         "name": "NotAdmin",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NotAuthorized",
         "type": "error"
     },
     {
@@ -428,6 +411,59 @@
         "inputs": [
             {
                 "indexed": true,
+                "internalType": "uint256",
+                "name": "poolId",
+                "type": "uint256"
+            },
+            {
+                "indexed": true,
+                "internalType": "uint256",
+                "name": "prizeIndex",
+                "type": "uint256"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "admin",
+                "type": "address"
+            },
+            {
+                "components": [
+                    {
+                        "internalType": "address",
+                        "name": "token",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "address[]",
+                        "name": "nftTokens",
+                        "type": "address[]"
+                    },
+                    {
+                        "internalType": "uint256[][]",
+                        "name": "nftSerials",
+                        "type": "uint256[][]"
+                    }
+                ],
+                "indexed": false,
+                "internalType": "struct LazyLotto.PrizePackage",
+                "name": "prize",
+                "type": "tuple"
+            }
+        ],
+        "name": "PrizeAdded",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
                 "internalType": "address",
                 "name": "user",
                 "type": "address"
@@ -462,6 +498,85 @@
             }
         ],
         "name": "PrizeClaimed",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "prizeManager",
+                "type": "address"
+            }
+        ],
+        "name": "PrizeManagerAdded",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "prizeManager",
+                "type": "address"
+            }
+        ],
+        "name": "PrizeManagerRemoved",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "uint256",
+                "name": "poolId",
+                "type": "uint256"
+            },
+            {
+                "indexed": true,
+                "internalType": "uint256",
+                "name": "prizeIndex",
+                "type": "uint256"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "admin",
+                "type": "address"
+            },
+            {
+                "components": [
+                    {
+                        "internalType": "address",
+                        "name": "token",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "address[]",
+                        "name": "nftTokens",
+                        "type": "address[]"
+                    },
+                    {
+                        "internalType": "uint256[][]",
+                        "name": "nftSerials",
+                        "type": "uint256[][]"
+                    }
+                ],
+                "indexed": false,
+                "internalType": "struct LazyLotto.PrizePackage",
+                "name": "prize",
+                "type": "tuple"
+            }
+        ],
+        "name": "PrizeRemoved",
         "type": "event"
     },
     {
@@ -639,6 +754,19 @@
     {
         "inputs": [
             {
+                "internalType": "address",
+                "name": "a",
+                "type": "address"
+            }
+        ],
+        "name": "addPrizeManager",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
                 "internalType": "uint256",
                 "name": "poolId",
                 "type": "uint256"
@@ -680,14 +808,38 @@
                 "internalType": "uint256",
                 "name": "ticketCount",
                 "type": "uint256"
+            }
+        ],
+        "name": "adminBuyAndRedeemEntry",
+        "outputs": [
+            {
+                "internalType": "int64[]",
+                "name": "serials",
+                "type": "int64[]"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "poolId",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "ticketCount",
+                "type": "uint256"
             },
             {
                 "internalType": "address",
-                "name": "onBehalfOf",
+                "name": "recipient",
                 "type": "address"
             }
         ],
-        "name": "adminBuyEntry",
+        "name": "adminGrantEntry",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -719,7 +871,13 @@
             }
         ],
         "name": "buyAndRedeemEntry",
-        "outputs": [],
+        "outputs": [
+            {
+                "internalType": "int64[]",
+                "name": "serials",
+                "type": "int64[]"
+            }
+        ],
         "stateMutability": "payable",
         "type": "function"
     },
@@ -880,7 +1038,7 @@
                         "type": "address"
                     }
                 ],
-                "internalType": "struct LazyLotto.NFTFeeObject[]",
+                "internalType": "struct ILazyLottoStorage.NFTFeeObject[]",
                 "name": "_royalties",
                 "type": "tuple[]"
             },
@@ -1055,7 +1213,7 @@
                 "type": "uint256"
             }
         ],
-        "name": "getPendingPrizes",
+        "name": "getPendingPrizesByNFT",
         "outputs": [
             {
                 "components": [
@@ -1307,6 +1465,25 @@
         "type": "function"
     },
     {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "a",
+                "type": "address"
+            }
+        ],
+        "name": "isPrizeManager",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
         "inputs": [],
         "name": "lazyBalanceBonusBps",
         "outputs": [
@@ -1458,6 +1635,30 @@
     {
         "inputs": [
             {
+                "internalType": "uint256",
+                "name": "poolId",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "ticketCount",
+                "type": "uint256"
+            }
+        ],
+        "name": "redeemEntriesToNFT",
+        "outputs": [
+            {
+                "internalType": "int64[]",
+                "name": "serials",
+                "type": "int64[]"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
                 "internalType": "uint256[]",
                 "name": "indices",
                 "type": "uint256[]"
@@ -1496,6 +1697,19 @@
             }
         ],
         "name": "removeNFTBonus",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "a",
+                "type": "address"
+            }
+        ],
+        "name": "removePrizeManager",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -1816,6 +2030,24 @@
             }
         ],
         "name": "transferHbar",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address payable",
+                "name": "receiverAddress",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "transferHbarFromStorage",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
