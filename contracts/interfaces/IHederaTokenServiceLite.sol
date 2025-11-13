@@ -3,10 +3,16 @@ pragma solidity >=0.8.12 <0.9.0;
 pragma experimental ABIEncoderV2;
 
 interface IHederaTokenServiceLite {
+    /// Expiry properties of a Hedera token - second, autoRenewAccount, autoRenewPeriod
     struct Expiry {
-        int64 second;
+        // The epoch second at which the token should expire; if an auto-renew account and period are
+        // specified, this is coerced to the current epoch second plus the autoRenewPeriod
+        uint32 second;
+        // ID of an account which will be automatically charged to renew the token's expiration, at
+        // autoRenewPeriod interval, expressed as a solidity address
         address autoRenewAccount;
-        int64 autoRenewPeriod;
+        // The interval at which the auto-renew account will be charged to extend the token's expiry
+        uint32 autoRenewPeriod;
     }
 
     // KeyValue is simplified as TokenStaker builds it internally for the specific keys needed.

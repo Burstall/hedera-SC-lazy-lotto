@@ -1,14 +1,71 @@
 # LazyLotto - UX Implementation Guide for Frontend Developers
 
-**Version:** 1.0  
-**Last Updated:** October 26, 2025  
+**Version:** 2.0  
+**Last Updated:** November 12, 2025  
+**Contract Versions:** LazyLotto 23.612 KB | LazyLottoStorage 11.137 KB
 **Target Audience:** Frontend Developers, UX Designers, Integration Engineers
 
 ---
 
 ## Overview
 
-This guide provides comprehensive instructions for building user-facing applications that interact with the LazyLotto smart contract. It covers all user flows, required contract method calls, data presentation patterns, error handling, and best practices for creating an intuitive lottery experience.
+This guide provides comprehensive instructions for building user-facing applications that interact with the LazyLotto smart contract. It covers all user flows, required contract method calls, data presentation patterns, error handling, gas estimation strategies, and best practices for creating an intuitive lottery experience.
+
+### Key Updates in v2.0
+
+- ✅ **Prize Manager Role**: Separate authorization for prize addition (partnerships)
+- ✅ **NFT Bonus Deduplication**: Prevents duplicate bonus calculations
+- ✅ **Gas Estimation Patterns**: Smart multipliers for roll operations (1.5x for PRNG uncertainty)
+- ✅ **Mirror Node Integration**: Balance verification patterns for accuracy
+- ✅ **Safety Checks**: Admin withdrawal protection for prize obligations
+- ✅ **Entry Redemption**: New `redeemEntriesToNFT()` allows converting memory entries to tradeable NFT tickets
+
+### Architecture Note
+
+LazyLotto uses a **split-contract architecture** for size optimization:
+
+- **LazyLotto** (23.612 KB): Your primary interface - handles all business logic, user interactions, and admin operations
+- **LazyLottoStorage** (11.137 KB): Internal contract that holds tokens and executes HTS operations
+
+**Important for Frontend Developers**:
+1. **Only interact with LazyLotto** - all user and admin functions are exposed here
+2. **Token approvals must go to the storage contract** - get the address via `contract.storageContract()`
+3. **Never call LazyLottoStorage directly** - it's access-controlled and only accepts calls from LazyLotto
+4. **Use mirror node for balance verification** - provides independent confirmation of token balances
+
+```javascript
+// STEP 1: Get storage address for token approvals
+const storageAddress = await lazyLottoContract.storageContract();
+console.log('Storage contract:', storageAddress);
+// Example output: "0x0000000000000000000000000000000000123456"
+
+// STEP 2: Approve tokens to storage (required before buying tickets with tokens)
+// For fungible tokens (like custom prize tokens):
+await tokenContract.approve(storageAddress, amount);
+
+// For NFT operations (like redeeming ticket NFTs):
+await nftContract.setApprovalForAll(storageAddress, true);
+
+// STEP 3: Call LazyLotto methods (not storage)
+// The LazyLotto contract will internally delegate to storage for token operations
+await lazyLottoContract.buyEntry(poolId, ticketCount);
+```
+
+**Why This Architecture?**
+- **Size Limit**: Hedera has a 24 KB contract size limit
+- **Separation of Concerns**: Business logic (LazyLotto) separate from token operations (Storage)
+- **User Experience**: Users only need to know about LazyLotto - storage is invisible
+- **Safety**: Storage contract is permanently locked to LazyLotto (set once via `setContractUser()`)
+
+**Critical Token Approval Pattern**:
+```javascript
+// ❌ WRONG - Approving to LazyLotto won't work for token transfers
+await tokenContract.approve(lazyLottoAddress, amount);
+
+// ✅ CORRECT - Approve to storage contract
+const storageAddress = await lazyLottoContract.storageContract();
+await tokenContract.approve(storageAddress, amount);
+```
 
 ---
 
@@ -49,7 +106,106 @@ totalNFTBonusTokens() → uint256
 
 // Admin checks
 isAdmin(address) → bool
+isPrizeManager(address) → bool  // NEW in v2.0
+
+// Storage contract reference (CRITICAL for token approvals)
+storageContract() → address
 ```
+
+**State-Changing Methods:**
+```solidity
+// Ticket purchase
+buyEntry(poolId, ticketCount) payable
+buyAndRedeemEntry(poolId, ticketCount) payable → int64[]
+buyAndRollEntry(poolId, ticketCount) payable → (uint256, uint256)
+
+// Rolling tickets
+rollAll(poolId) → (uint256, uint256)
+rollBatch(poolId, numberToRoll) → (uint256, uint256)
+rollWithNFT(poolId, serialNumbers) → (uint256, uint256)
+
+// Prize claiming
+claimPrize(prizeIndex)
+claimAllPrizes()
+redeemPrizeToNFT(indices) → int64[]
+claimPrizeFromNFT(tokenId, serialNumbers)
+```
+
+### Critical Gas Estimation Pattern
+
+**Roll operations have variable gas costs due to PRNG** - use 1.5x multiplier:
+
+```javascript
+// ❌ WRONG - May fail if wins occur (needs extra PRNG + prize operations)
+const gasEstimate = await estimateGas(contractId, 'rollAll', [poolId]);
+await contract.rollAll(poolId, { gasLimit: gasEstimate });
+
+// ✅ CORRECT - 1.5x multiplier accounts for worst-case wins
+const gasEstimate = await estimateGas(contractId, 'rollAll', [poolId]);
+await contract.rollAll(poolId, { gasLimit: Math.ceil(gasEstimate * 1.5) });
+```
+
+**Why 1.5x for Rolls?**
+- Base estimate assumes no wins (single PRNG array)
+- Actual execution may need:
+  - Initial PRNG array for win determination
+  - Secondary PRNG array for prize selection
+  - Prize package operations (array manipulation)
+- 1.5x provides safe buffer without excessive overhead
+
+**Applies to these functions:**
+- `rollAll()` - 1.5x multiplier
+- `rollBatch()` - 1.5x multiplier  
+- `rollWithNFT()` - 1.5x multiplier
+- `buyAndRollEntry()` - 1.5x multiplier
+
+**Standard operations** (use estimate directly):
+- `buyEntry()` - no multiplier needed
+- `claimPrize()` - no multiplier needed
+- `buyAndRedeemEntry()` - no multiplier needed
+
+### Mirror Node Balance Verification
+
+**Always verify balances via mirror node for accuracy:**
+
+```javascript
+import { checkMirrorBalance, checkMirrorHbarBalance, getSerialsOwned } from './hederaMirrorHelpers';
+
+// Check fungible token balance
+const lazyBalance = await checkMirrorBalance(
+    env,              // 'testnet' | 'mainnet'
+    accountId,        // AccountId or string '0.0.12345'
+    tokenId           // TokenId or string '0.0.67890'
+);
+
+// Check HBAR balance
+const hbarBalance = await checkMirrorHbarBalance(
+    env,              // 'testnet' | 'mainnet'  
+    accountId         // AccountId or string '0.0.12345'
+);
+
+// Get NFT serials owned
+const serials = await getSerialsOwned(
+    env,              // 'testnet' | 'mainnet'
+    accountId,        // AccountId or string '0.0.12345'
+    nftTokenId        // TokenId or string '0.0.99999'
+);
+
+console.log('User NFT serials:', serials); // [1, 3, 5, 12]
+```
+
+**When to use mirror node verification:**
+- After token transfers (tickets, prizes)
+- Before/after prize claims
+- Verifying pool prize balances
+- Checking user ticket NFT ownership
+- Admin balance checks before withdrawals
+
+**Why mirror node?**
+- Independent of contract state
+- Real-time network state
+- No gas costs for queries
+- Reliable for UX confirmation
 
 **Transaction Methods:**
 ```solidity
@@ -57,6 +213,9 @@ isAdmin(address) → bool
 buyEntry(poolId, ticketCount) payable
 buyAndRollEntry(poolId, ticketCount) payable
 buyAndRedeemEntry(poolId, ticketCount) payable
+
+// Entry redemption
+redeemEntriesToNFT(poolId, ticketCount)
 
 // Rolling
 rollAll(poolId)
@@ -372,13 +531,17 @@ async function buyTickets(poolId, ticketCount) {
     });
     await tx.wait();
   } else {
-    // Token payment - requires approval first
+    // Token payment - requires approval to STORAGE CONTRACT
+    // Get storage contract address
+    const storageAddress = await contract.storageContract();
+    
     const tokenContract = new ethers.Contract(poolDetails.feeToken, ERC20_ABI, signer);
     
-    // Check allowance
-    const allowance = await tokenContract.allowance(userAddress, contractAddress);
+    // Check allowance to storage contract
+    const allowance = await tokenContract.allowance(userAddress, storageAddress);
     if (allowance < totalCost) {
-      const approveTx = await tokenContract.approve(contractAddress, totalCost);
+      // Approve storage contract (not LazyLotto!)
+      const approveTx = await tokenContract.approve(storageAddress, totalCost);
       await approveTx.wait();
     }
     
@@ -543,7 +706,225 @@ async function getUserTickets(userAddress) {
 
 ---
 
-### 6. Roll Tickets and See Results
+### 6. Convert Memory Entries to NFT Tickets
+
+**Objective:** Allow users to convert existing memory entries to tradeable NFT tickets
+
+**Use Cases:**
+- User accumulated entries and now wants to trade some on secondary markets
+- User wants to gift tickets to friends
+- User prefers NFT format for portfolio management
+- Strategic timing: convert to NFT when market demand is high
+
+**Implementation Steps:**
+
+```javascript
+async function redeemEntriesToNFT(poolId, ticketCount) {
+  // Step 1: Verify user has enough memory entries
+  const memoryEntries = await contract.getUsersEntries(poolId, userAddress);
+  if (memoryEntries < ticketCount) {
+    throw new Error(`Not enough entries. You have ${memoryEntries} but tried to redeem ${ticketCount}`);
+  }
+  
+  // Step 2: Get pool details for display
+  const poolDetails = await contract.getPoolDetails(poolId);
+  
+  // Step 3: Estimate gas (NFT minting operations are more expensive)
+  const gasEstimate = await contract.estimateGas.redeemEntriesToNFT(poolId, ticketCount);
+  const gasLimit = Math.floor(gasEstimate.toNumber() * 1.2); // 20% buffer
+  
+  // Step 4: Execute redemption
+  const tx = await contract.redeemEntriesToNFT(poolId, ticketCount, {
+    gasLimit,
+  });
+  
+  const receipt = await tx.wait();
+  
+  // Step 5: Extract minted NFT serial numbers from events
+  const ticketEvents = receipt.events.filter(e => e.event === 'TicketEvent');
+  const serialNumbers = ticketEvents.map(event => event.args.serialNumber);
+  
+  return {
+    poolTokenId: poolDetails.poolTokenId,
+    serialNumbers,
+    ticketCID: poolDetails.ticketCID,
+  };
+}
+```
+
+**Display Recommendations:**
+
+```jsx
+<RedemptionFlow>
+  <TicketInventory>
+    <InventoryItem>
+      💾 Memory Entries: {memoryEntries}
+      <Hint>Gas efficient, not tradeable</Hint>
+    </InventoryItem>
+    <InventoryItem>
+      🎫 NFT Tickets: {nftTickets}
+      <Hint>Tradeable on secondary markets</Hint>
+    </InventoryItem>
+  </TicketInventory>
+  
+  <ConversionSection>
+    <SectionTitle>Convert to NFT Tickets</SectionTitle>
+    <Description>
+      Convert your memory entries to tradeable NFT tickets. 
+      This operation uses more gas but gives you ownership flexibility.
+    </Description>
+    
+    <QuantitySelector>
+      <Label>How many to convert?</Label>
+      <Input
+        type="number"
+        min={1}
+        max={memoryEntries}
+        value={convertCount}
+        onChange={(e) => setConvertCount(Math.min(e.target.value, memoryEntries))}
+      />
+      <QuickSelect>
+        <Button onClick={() => setConvertCount(memoryEntries)}>All</Button>
+        <Button onClick={() => setConvertCount(Math.floor(memoryEntries / 2))}>Half</Button>
+      </QuickSelect>
+    </QuantitySelector>
+    
+    <GasEstimate>
+      Estimated gas: ~{formatGas(estimatedGas)}
+    </GasEstimate>
+    
+    <ConvertButton 
+      onClick={() => redeemEntriesToNFT(poolId, convertCount)}
+      disabled={convertCount === 0 || convertCount > memoryEntries}
+    >
+      Convert {convertCount} to NFT Tickets
+    </ConvertButton>
+  </ConversionSection>
+</RedemptionFlow>
+```
+
+**Success Feedback:**
+
+```jsx
+<ConversionSuccess>
+  <SuccessIcon>🎨</SuccessIcon>
+  <SuccessMessage>
+    Successfully converted {serialNumbers.length} entries to NFT tickets!
+  </SuccessMessage>
+  
+  <MintedNFTs>
+    <NFTGrid>
+      {serialNumbers.map(serial => (
+        <NFTCard key={serial}>
+          <NFTImage src={`ipfs://${ticketCID}`} />
+          <NFTSerial>#{serial}</NFTSerial>
+          <NFTActions>
+            <ViewButton href={`https://hashscan.io/token/${poolTokenId}/${serial}`}>
+              View on HashScan
+            </ViewButton>
+          </NFTActions>
+        </NFTCard>
+      ))}
+    </NFTGrid>
+  </MintedNFTs>
+  
+  <NextSteps>
+    <h4>What you can do now:</h4>
+    <StepsList>
+      <Step>🎲 Roll your NFT tickets with rollWithNFT()</Step>
+      <Step>💱 Trade them on secondary marketplaces</Step>
+      <Step>🎁 Transfer them to friends</Step>
+      <Step>📦 Hold them for later use</Step>
+    </StepsList>
+  </NextSteps>
+</ConversionSuccess>
+```
+
+**User Guidance Messages:**
+
+```javascript
+// Before conversion
+const guidance = {
+  title: "Should you convert to NFT?",
+  considerations: [
+    {
+      pro: "✅ Can trade on secondary markets",
+      con: "❌ Higher gas cost for conversion and rolling",
+    },
+    {
+      pro: "✅ Can gift or transfer to others",
+      con: "❌ Must approve NFT contract before rolling",
+    },
+    {
+      pro: "✅ Shows in your NFT wallet",
+      con: "❌ Can't convert back to memory format",
+    },
+  ],
+  recommendation: "Convert when you want trading flexibility. Keep as memory for gas efficiency.",
+};
+```
+
+**Error Handling:**
+
+```javascript
+try {
+  await redeemEntriesToNFT(poolId, ticketCount);
+} catch (error) {
+  // Handle specific errors
+  if (error.message.includes('NotEnoughTickets')) {
+    showError('You don\'t have enough memory entries to convert.');
+  } else if (error.message.includes('BadParameters')) {
+    showError('Invalid conversion quantity. Must be greater than zero.');
+  } else if (error.message.includes('PoolIsClosed')) {
+    showError('This pool is closed and no longer accepting operations.');
+  } else if (error.message.includes('ContractPaused')) {
+    showError('The lottery is temporarily paused. Please try again later.');
+  } else {
+    showError(`Conversion failed: ${error.message}`);
+  }
+}
+```
+
+**Gas Optimization Tips for Users:**
+
+```jsx
+<GasOptimizationTips>
+  <Tip>
+    💡 <strong>Batch conversions:</strong> Converting multiple entries at once 
+    is more gas-efficient than multiple small conversions.
+  </Tip>
+  <Tip>
+    💡 <strong>Plan ahead:</strong> If you plan to trade tickets, buy directly 
+    as NFTs with buyAndRedeemEntry() to avoid double conversion costs.
+  </Tip>
+  <Tip>
+    💡 <strong>Keep some in memory:</strong> If rolling yourself, memory entries 
+    use ~30% less gas than NFT tickets.
+  </Tip>
+</GasOptimizationTips>
+```
+
+**Integration with Existing Purchase Flow:**
+
+Update the purchase flow (Section 4) to mention this option:
+
+```jsx
+<PurchaseFlow>
+  {/* Existing purchase options */}
+  
+  <InfoBox>
+    <InfoIcon>ℹ️</InfoIcon>
+    <InfoText>
+      Not sure which format? Buy as memory entries (cheapest) and convert 
+      to NFTs later if needed using <Code>redeemEntriesToNFT()</Code>.
+    </InfoText>
+  </InfoBox>
+</PurchaseFlow>
+```
+
+---
+
+### 7. Roll Tickets and See Results
 
 **Objective:** Execute lottery rolls and display outcomes
 
@@ -662,7 +1043,7 @@ function AnimatedRoll({ onComplete }) {
 
 ---
 
-### 7. View and Inspect Won Prizes
+### 8. View and Inspect Won Prizes
 
 **Objective:** Show users their pending prizes with full details
 
@@ -1310,12 +1691,12 @@ async function completePurchaseFlow(poolId, ticketCount, purchaseType) {
     const totalCost = poolDetails.entryFee * BigInt(ticketCount);
     
     if (poolDetails.feeToken === ZERO_ADDRESS) {
-      const hbarBalance = await getHbarBalance(userAddress);
+      const hbarBalance = // get from the mirror node
       if (hbarBalance < totalCost) {
         throw new Error(`Insufficient HBAR. Need ${formatHbar(totalCost)}`);
       }
     } else {
-      const tokenBalance = await getTokenBalance(userAddress, poolDetails.feeToken);
+      const tokenBalance = // from the mirror node
       if (tokenBalance < totalCost) {
         throw new Error(`Insufficient tokens. Need ${formatTokenAmount(totalCost)}`);
       }
@@ -1325,16 +1706,21 @@ async function completePurchaseFlow(poolId, ticketCount, purchaseType) {
     if (poolDetails.feeToken !== ZERO_ADDRESS) {
       updateProgress(currentStep++, 'Approving token spend...');
       
+      // Get storage contract address
+      const storageAddress = await contract.storageContract();
+      
       const tokenContract = new ethers.Contract(
         poolDetails.feeToken,
         ERC20_ABI,
         signer
       );
       
-      const allowance = await tokenContract.allowance(userAddress, contractAddress);
+      // Check allowance to storage contract
+      const allowance = await tokenContract.allowance(userAddress, storageAddress);
       
       if (allowance < totalCost) {
-        const approveTx = await tokenContract.approve(contractAddress, totalCost);
+        // Approve storage contract (not LazyLotto!)
+        const approveTx = await tokenContract.approve(storageAddress, totalCost);
         await approveTx.wait();
       }
     } else {
@@ -1740,6 +2126,133 @@ function PrizeDisplay({ prizeIndex }) {
   if (error) {
     return <ErrorDisplay error={error} />;
   }
+  
+  return <PrizeCard prize={prize} />;
+}
+```
+
+### 7. Split-Contract Architecture Best Practices
+
+**Critical Understanding for Developers:**
+
+The LazyLotto system uses a split-contract architecture where:
+- **LazyLotto** = Public-facing contract (all user/admin interactions)
+- **LazyLottoStorage** = Internal contract (token custody and HTS operations)
+
+**Common Pitfalls to Avoid:**
+
+```javascript
+// ❌ WRONG - Approving tokens to LazyLotto
+const lazyLottoAddress = "0x...";
+await tokenContract.approve(lazyLottoAddress, amount);
+// This will FAIL because LazyLotto doesn't hold tokens
+
+// ✅ CORRECT - Approve to storage contract
+const storageAddress = await lazyLottoContract.storageContract();
+await tokenContract.approve(storageAddress, amount);
+```
+
+**Correct Token Approval Workflow:**
+
+```javascript
+async function setupTokenApprovals(tokenAddress, amount) {
+  // 1. Query storage contract address from LazyLotto
+  const storageAddress = await lazyLottoContract.storageContract();
+  console.log('Storage contract:', storageAddress);
+  
+  // 2. Get token contract instance
+  const tokenContract = new ethers.Contract(
+    tokenAddress,
+    ERC20_ABI,
+    signer
+  );
+  
+  // 3. Check current allowance to STORAGE (not LazyLotto)
+  const currentAllowance = await tokenContract.allowance(
+    userAddress,
+    storageAddress  // ✅ Check allowance to storage
+  );
+  
+  // 4. Approve if needed
+  if (currentAllowance < amount) {
+    const tx = await tokenContract.approve(
+      storageAddress,  // ✅ Approve storage contract
+      amount
+    );
+    await tx.wait();
+    console.log('Token approved to storage contract');
+  }
+  
+  // 5. Now call LazyLotto methods
+  // LazyLotto will internally delegate to storage for token transfers
+  await lazyLottoContract.buyEntry(poolId, ticketCount);
+}
+```
+
+**Why This Matters:**
+
+1. **Token Transfers**: All HTS token operations (transfers, burns, mints) happen in storage
+2. **Allowances**: Users approve storage contract to spend their tokens
+3. **Facade Pattern**: LazyLotto validates business rules, then delegates to storage
+4. **Safety**: Storage only accepts calls from LazyLotto (locked via `setContractUser()`)
+
+**NFT Allowances Work the Same Way:**
+
+```javascript
+// For NFT operations (ticket redemption, prize claiming)
+const storageAddress = await lazyLottoContract.storageContract();
+
+// Approve all NFTs of this collection to storage
+await nftContract.setApprovalForAll(storageAddress, true);
+
+// Now can redeem NFT tickets
+await lazyLottoContract.rollWithNFT(poolId, serialNumbers);
+```
+
+**Debugging Token Approval Issues:**
+
+```javascript
+async function debugTokenApprovals(tokenAddress) {
+  const storageAddress = await lazyLottoContract.storageContract();
+  const lazyLottoAddress = await lazyLottoContract.address;
+  
+  const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+  
+  // Check both allowances
+  const allowanceToLazyLotto = await tokenContract.allowance(
+    userAddress,
+    lazyLottoAddress
+  );
+  
+  const allowanceToStorage = await tokenContract.allowance(
+    userAddress,
+    storageAddress
+  );
+  
+  console.log('Allowance to LazyLotto:', allowanceToLazyLotto);
+  console.log('Allowance to Storage:', allowanceToStorage);
+  
+  if (allowanceToLazyLotto > 0 && allowanceToStorage === 0) {
+    console.warn('⚠️ WRONG: Tokens approved to LazyLotto instead of storage!');
+    console.log('Fix: Approve to storage contract:', storageAddress);
+  }
+}
+```
+
+---
+
+## Appendix: Contract Addresses Reference
+
+**Query at Runtime (Recommended):**
+```javascript
+// Always query storage address dynamically
+const storageAddress = await lazyLottoContract.storageContract();
+```
+
+**Why Not Hardcode Storage Address?**
+- Storage contract is immutable once set
+- But different deployments have different storage addresses
+- Always query from LazyLotto for safety
   
   return <PrizeCard prize={prize} />;
 }
