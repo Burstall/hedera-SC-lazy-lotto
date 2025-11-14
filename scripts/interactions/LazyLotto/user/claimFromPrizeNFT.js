@@ -1,0 +1,219 @@
+/**
+ * LazyLotto Claim Prize from NFT Script
+ *
+ * Claim prizes that have been converted to NFT format.
+ * The NFT will be wiped and prizes will be transferred.
+ *
+ * Usage: node scripts/interactions/LazyLotto/user/claimFromPrizeNFT.js [serial1,serial2,...]
+ */
+
+const {
+	Client,
+	AccountId,
+	PrivateKey,
+	ContractId,
+} = require('@hashgraph/sdk');
+const { ethers } = require('ethers');
+const fs = require('fs');
+const readline = require('readline');
+require('dotenv').config();
+
+// Environment setup
+const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
+const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+const env = process.env.ENVIRONMENT ?? 'testnet';
+const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+
+// Helper: Prompt user
+function prompt(question) {
+	const rl = readline.createInterface({
+		input: process.stdin,
+		output: process.stdout,
+	});
+
+	return new Promise(resolve => {
+		rl.question(question, answer => {
+			rl.close();
+			resolve(answer);
+		});
+	});
+}
+
+// Helper: Convert EVM address to Hedera ID
+async function convertToHederaId(evmAddress) {
+	if (evmAddress === '0x0000000000000000000000000000000000000000') {
+		return 'HBAR';
+	}
+
+	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const hederaId = await homebrewPopulateAccountNum(env, evmAddress);
+	return hederaId ? hederaId.toString() : evmAddress;
+}
+
+async function claimFromPrizeNFT() {
+	let client;
+
+	try {
+		// Get serials parameter
+		let serialsStr = process.argv[2];
+
+		// Initialize client
+		if (env.toUpperCase() === 'MAINNET') {
+			client = Client.forMainnet();
+		}
+		else if (env.toUpperCase() === 'TESTNET') {
+			client = Client.forTestnet();
+		}
+		else if (env.toUpperCase() === 'PREVIEWNET') {
+			client = Client.forPreviewnet();
+		}
+		else {
+			throw new Error(`Unknown environment: ${env}`);
+		}
+
+		client.setOperator(operatorId, operatorKey);
+
+		console.log('\n╔════════════════════════════════════════════════════════════╗');
+		console.log('║           LazyLotto Claim from Prize NFTs                 ║');
+		console.log('╚════════════════════════════════════════════════════════════╝\n');
+		console.log(`📍 Environment: ${env.toUpperCase()}`);
+		console.log(`📄 Contract: ${contractId.toString()}`);
+		console.log(`👤 User: ${operatorId.toString()}\n`);
+
+		// Load contract ABI
+		const contractJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
+		);
+		const lazyLottoIface = new ethers.Interface(contractJson.abi);
+
+		// Import helpers
+		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../utils/gasHelpers');
+		const { getSerialsOwned } = require('../../../utils/hederaMirrorHelpers');
+
+		// Get prize NFT token from contract
+		console.log('🔍 Fetching prize NFT collection...');
+
+		const encodedQuery = lazyLottoIface.encodeFunctionData('prizeTicketCollection');
+		const prizeNFTAddress = await readOnlyEVMFromMirrorNode(
+			env,
+			contractId,
+			encodedQuery,
+			lazyLottoIface,
+			'prizeTicketCollection',
+			false,
+		);
+
+		const prizeNFTId = await convertToHederaId(prizeNFTAddress);
+		console.log(`Prize NFT Collection: ${prizeNFTId}\n`);
+
+		// Get user's prize NFTs
+		const ownedSerials = await getSerialsOwned(env, operatorId.toString(), prizeNFTId);
+
+		if (!ownedSerials || ownedSerials.length === 0) {
+			console.log('⚠️  No prize NFTs found in your account');
+			process.exit(0);
+		}
+
+		console.log(`Found ${ownedSerials.length} prize NFT(s): ${ownedSerials.join(', ')}\n`);
+
+		// Get serials if not provided
+		if (!serialsStr) {
+			serialsStr = await prompt('Enter NFT serials to claim (comma-separated): ');
+		}
+
+		// Parse serials
+		const serials = serialsStr.split(',').map(s => {
+			const serial = parseInt(s.trim());
+			if (isNaN(serial) || serial <= 0) {
+				throw new Error(`Invalid serial: ${s.trim()}`);
+			}
+
+			if (!ownedSerials.includes(serial)) {
+				throw new Error(`You don't own serial #${serial}`);
+			}
+
+			return serial;
+		});
+
+		if (serials.length === 0) {
+			console.error('❌ No valid serials provided');
+			process.exit(1);
+		}
+
+		console.log(`\nClaiming ${serials.length} prize NFT(s)...\n`);
+
+		// Get pending prizes to show what will be claimed
+		console.log('🔍 Fetching prize details...');
+
+		const userAddress = operatorId.toSolidityAddress();
+		const encodedPrizeQuery = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userAddress]);
+		const pendingPrizes = await readOnlyEVMFromMirrorNode(
+			env,
+			contractId,
+			encodedPrizeQuery,
+			lazyLottoIface,
+			'getPendingPrizes',
+			false,
+		);
+
+		// Filter for NFT format prizes
+		const nftPrizes = pendingPrizes.filter(p => p.formatType === 1);
+
+		console.log(`\nYou have ${nftPrizes.length} NFT-format prize(s)\n`);
+
+		// Estimate gas
+		const encodedCommand = lazyLottoIface.encodeFunctionData('claimPrizeFromNFT', [serials]);
+		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+		console.log(`⛽ Estimated gas: ~${gasEstimate} gas\n`);
+
+		// Confirm
+		console.log('⚠️  Prize NFTs will be wiped (destroyed) after claiming.');
+		const confirm = await prompt(`Claim prizes from ${serials.length} NFT(s)? (yes/no): `);
+		if (confirm.toLowerCase() !== 'yes' && confirm.toLowerCase() !== 'y') {
+			console.log('\n❌ Operation cancelled');
+			process.exit(0);
+		}
+
+		// Execute
+		console.log('\n🔄 Claiming prizes from NFTs...');
+
+		const gasLimit = Math.floor(gasEstimate * 1.2);
+
+		const [success, txReceipt] = await contractExecuteFunction(
+			contractId,
+			lazyLottoIface,
+			client,
+			gasLimit,
+			'claimPrizeFromNFT',
+			[serials],
+		);
+
+		if (!success) {
+			console.error('\n❌ Transaction failed');
+			process.exit(1);
+		}
+
+		console.log('\n✅ Prizes claimed successfully!');
+		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+
+		console.log('🎁 Prizes have been transferred to your account.');
+		console.log('🔥 Prize NFTs have been wiped (destroyed).\n');
+
+	}
+	catch (error) {
+		console.error('\n❌ Error claiming from prize NFTs:', error.message);
+		if (error.status) {
+			console.error('Status:', error.status.toString());
+		}
+		process.exit(1);
+	}
+	finally {
+		if (client) {
+			client.close();
+		}
+	}
+}
+
+// Run the script
+claimFromPrizeNFT();

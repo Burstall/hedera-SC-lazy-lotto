@@ -7,7 +7,6 @@ import {IHederaTokenServiceLite} from "./interfaces/IHederaTokenServiceLite.sol"
 
 abstract contract HederaTokenServiceLite is HederaResponseCodes {
     address internal constant HTS_PRECOMPILE_ADDRESS = address(0x167);
-    int32 constant defaultAutoRenewPeriod = 7776000;
 
     /// Performs transfers among combinations of tokens and hbars
     /// @param transferList the list of hbar transfers to do

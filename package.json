@@ -23,7 +23,7 @@
     "@typechain/ethers-v6": "^0.5.0",
     "@typechain/hardhat": "^9.0.0",
     "@types/chai": "^4.3.4",
-    "eslint": "8.7.0",
+    "eslint": "^9.5",
     "hardhat": "^2.22.7",
     "hardhat-gas-reporter": "^1.0.9",
     "prettier": "^2.5.1",

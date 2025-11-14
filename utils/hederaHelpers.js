@@ -52,7 +52,6 @@ async function accountCreator(
  * @param {number} decimal
  * @returns {[string, TokenId]} status and token ID object
  */
-// eslint-disable-next-line no-unused-vars
 async function mintFT(
 	client,
 	acct,
@@ -80,6 +79,12 @@ async function mintFT(
 
 /**
  * Helper function to send FTs
+ * @param {Client} client
+ * @param {TokenId} FTTokenId
+ * @param {Number} amount
+ * @param {AccountId} sender
+ * @param {AccountId} receiver
+ * @param {String} memo
  */
 async function sendFT(client, FTTokenId, amount, sender, receiver, memo) {
 	const transferTx = new TransferTransaction()
@@ -368,44 +373,6 @@ async function clearFTAllowances(client, _allowanceList) {
 }
 
 /**
- * Generic helper to clear hbar allowances
- * @param {*} client
- * @param {*} _allowanceList an object of type {owner, spender}
- */
-async function clearHbarAllowances(client, _allowanceList) {
-	// use an inner/outer loop to maxSupply but in batches of 20
-	let batch = 0;
-	for (let outer = 0; outer < _allowanceList.length; outer += 20) {
-		const approvalTx =
-			new AccountAllowanceApproveTransaction().approveHbarAllowance(
-				_allowanceList[outer].owner,
-				_allowanceList[outer].spender,
-				new Hbar(0, HbarUnit.Tinybar),
-			);
-		for (let i = 1; i < 20 && outer + i < _allowanceList.length; i++) {
-			approvalTx.approveHbarAllowance(
-				_allowanceList[outer + i].owner,
-				_allowanceList[outer + i].spender,
-				new Hbar(0, HbarUnit.Tinybar),
-			);
-		}
-		approvalTx.setTransactionMemo(`Hbar allowance reset (batch ${batch++})`);
-		approvalTx.freezeWith(client);
-		const exResp = await approvalTx.execute(client);
-		const receipt = await exResp.getReceipt(client).catch((e) => {
-			console.log(e);
-			console.log('Allowance set **FAILED*');
-		});
-		if (receipt?.status.toString() != 'SUCCESS') {
-			console.log('Allowance set **FAILED*', receipt);
-			return 'FAILED';
-		}
-	}
-
-	return 'SUCCESS';
-}
-
-/**
  * Set allowance for the list of serials to addresses
  * @param {Client} client
  * @param {TokenId} _tokenId
@@ -482,42 +449,39 @@ async function setFTAllowance(client, _tokenId, _ownerId, _spenderId, amount) {
 		_ownerId.toString(),
 		'for',
 		_spenderId.toString(),
-		receipt?.status.toString(),
+		receipt?.status?.toString(),
 	);
-	return receipt.status.toString();
+	return receipt?.status?.toString();
 }
 
 /**
- * setup an HBAR allowance
+ * Helper to set an hbar allowance
  * @param {Client} client
- * @param {AccountId} _ownerId account owning the hbar
- * @param {AccountId} _spenderId the spender to authorize
- * @param {Number} amount amount to approve
- * @param {HbarUnit} hbarUnit defaults to Tinybar
+ * @param {AccountId} _ownerId
+ * @param {AccountId} _spenderId
+ * @param {Number} _amount
+ * @param {HbarUnit} hbarUnit
  * @returns {String} status of the transaction
  */
-async function setHbarAllowance(client, _ownerId, _spenderId, amount, hbarUnit = HbarUnit.Tinybar) {
-	const approvalTx =
-		new AccountAllowanceApproveTransaction().approveHbarAllowance(
-			_ownerId,
-			_spenderId,
-			new Hbar(amount, hbarUnit),
-		);
-	approvalTx.freezeWith(client);
+async function setHbarAllowance(client, _ownerId, _spenderId, _amount, hbarUnit = HbarUnit.Tinybar) {
+	const approvalTx = new AccountAllowanceApproveTransaction()
+		.approveHbarAllowance(_ownerId, _spenderId, new Hbar(_amount, hbarUnit))
+		.freezeWith(client);
+
 	const exResp = await approvalTx.execute(client);
 	const receipt = await exResp.getReceipt(client).catch((e) => {
 		console.log(e);
-		console.log('HBAR Allowance set **FAILED**');
+		console.log('Hbar Allowance set **FAILED**');
 	});
 
 	console.log(
-		'HBAR Allowance:',
-		amount,
+		'Hbar Allowance:',
+		_amount,
 		'owner',
 		_ownerId.toString(),
 		'for',
 		_spenderId.toString(),
-		receipt?.status.toString(),
+		receipt.status.toString(),
 	);
 	return receipt.status.toString();
 }
@@ -719,16 +683,22 @@ async function sendFTWithAllowance(
  * @param {Hbar} amount
  */
 async function sweepHbar(client, sourceId, sourcePK, targetId, amount) {
-	const sweepTx = new TransferTransaction()
-		.addHbarTransfer(targetId, amount)
-		.addHbarTransfer(sourceId, amount.negated())
-		.freezeWith(client);
+	try {
+		const sweepTx = new TransferTransaction()
+			.addHbarTransfer(targetId, amount)
+			.addHbarTransfer(sourceId, amount.negated())
+			.freezeWith(client);
 
-	const signedTx = await sweepTx.sign(sourcePK);
-	const txResp = await signedTx.execute(client);
+		const signedTx = await sweepTx.sign(sourcePK);
+		const txResp = await signedTx.execute(client);
 
-	const transferRx = await txResp.getReceipt(client);
-	return transferRx.status.toString();
+		const transferRx = await txResp.getReceipt(client);
+		return transferRx.status.toString();
+	}
+	catch (error) {
+		console.error('Error sweeping HBAR from:', sourceId.toString(), 'to:', targetId.toString(), 'amount:', amount.toString(), error);
+		return 'ERROR';
+	}
 }
 
 module.exports = {
@@ -749,6 +719,5 @@ module.exports = {
 	sendNFTDefeatRoyalty,
 	clearNFTAllowances,
 	clearFTAllowances,
-	clearHbarAllowances,
 	sweepHbar,
 };

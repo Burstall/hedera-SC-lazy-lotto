@@ -1,55 +1,504 @@
-# hedera-SC-lazy-lotto
+# Hedera Smart Contract Lazy Lotto
 
-## LazyLotto Smart Contract
+A comprehensive decentralized lottery and rewards system built on the Hedera network, featuring two distinct lottery mechanisms: a flexible multi-pool lottery system (LazyLotto) and a trade-based reward system (LazyTradeLotto).
 
-### Overview
+## 🎯 Project Overview
 
-**LazyLotto** is an on-chain lottery contract for Hedera, supporting:
-- Multiple pools with configurable prizes (fungible and NFT).
-- Randomness via Hedera VRF.
-- Batch operations for efficiency.
-- Prize management, including NFT redemption.
-- Admin controls for pool and prize management.
+This project implements sophisticated lottery and reward systems that leverage Hedera's native capabilities including HTS (Hedera Token Service), PRNG (Pseudo-Random Number Generation), and smart contract functionality. The system is designed to provide fair, verifiable, and engaging lottery experiences while maintaining security and scalability.
 
-### Key Methods
+## 🏗️ Architecture
 
-#### Admin-Only Functions
-- `addAdmin`, `removeAdmin`: Manage admin set.
-- `createPool`: Create a new lottery pool.
-- `addPrizePackage`, `addMultipleFungiblePrizes`: Add prizes to pools.
-- `pausePool`, `unpausePool`, `closePool`: Control pool state.
-- `removePrizes`: Remove prizes from closed pools.
-- `setBurnPercentage`, `setLazyBalanceBonus`, `setNFTBonus`, `setTimeBonus`, `removeTimeBonus`, `removeNFTBonus`: Configure bonuses and fees.
-- `transferHbar`, `transferFungible`: Withdraw tokens/HBAR.
+### Core Contracts
 
-#### User Functions
-- `buyEntry`, `buyAndRollEntry`, `buyAndRedeemEntry`: Purchase tickets and optionally roll/redeem.
-- `adminBuyEntry`: Admin can buy on behalf of a user.
-- `rollAll`, `rollBatch`, `rollWithNFT`: Roll tickets for prizes.
-- `redeemPrizeToNFT`, `claimPrizeFromNFT`, `claimPrize`, `claimAllPrizes`: Claim prizes in various ways.
+#### 1. **LazyLotto** - Multi-Pool Lottery System
+A comprehensive lottery platform supporting multiple independent lottery pools with various prize types, ticket systems, and bonus mechanisms.
 
-#### Getters (Views)
-- `totalPools`, `getPoolDetails`, `getPoolPrizes`, `getUsersEntries`, `getUserEntries`, `getPendingPrizes`, `getPendingPrize`, `isAdmin`, `totalTimeBonuses`, `totalNFTBonusTokens`, `calculateBoost`: Query contract state.
+**Key Features:**
+- Multiple independent lottery pools with customizable parameters
+- Support for HBAR, HTS tokens, and NFT prizes
+- Dual ticket system: memory-based (gas efficient) and NFT-based (tradeable)
+- Sophisticated boost system for enhanced win rates
+- Prize management system with convertible prize NFTs
+- Admin-controlled pool lifecycle management
+- **Documentation**: See [LazyLotto Business Logic](./LazyLotto-BUSINESS_LOGIC.md) and [UX Guide](./LazyLotto-UX_IMPLEMENTATION_GUIDE.md)
+- **Scripts**: 22 interaction scripts in `scripts/interactions/LazyLotto/`
+- **Tests**: Comprehensive test suite in `test/LazyLotto.test.js`
 
-### Usage & Interactions
+#### 2. **LazyTradeLotto** - Trade-Based Reward System
+A reward mechanism that incentivizes NFT trading activity with lottery-style prizes and a progressive jackpot system.
 
-- **Admins**: Deploy contract, create pools, add prizes (including packages with both fungible and multiple NFTs), manage bonuses, pause/unpause/close pools, and withdraw tokens.
-- **Users**: Buy tickets, roll for prizes, claim prizes (directly or as NFTs), and interact with NFT prize vouchers.
-- **Prize Claiming**: Prizes can be claimed directly or redeemed as NFT vouchers, with batch operations supported for efficiency.
-- **Bonuses**: Time-based, NFT-holding, and $LAZY balance-based bonuses can increase win rates.
-- **Pool State**: Pools can be paused (no new entries) or closed (no further actions except prize removal). Prizes can only be removed from closed pools.
+**Key Features:**
+- Trade-triggered lottery rolls for both buyers and sellers
+- Progressive jackpot system with automatic growth
+- LSH NFT holder benefits (zero burn rate)
+- Cryptographic security with signature validation
+- Anti-replay protection with trade fingerprinting
+- Comprehensive analytics and event tracking
+- **Documentation**: See [LazyTradeLotto Business Logic](./LazyTradeLotto-BUSINESS_LOGIC.md)
+- **Scripts**: 12 interaction scripts in `scripts/interactions/LazyTradeLotto/`
+- **Tests**: Complete test suite in `test/LazyTradeLotto.test.js`
 
-### Token Allowance & Association Requirements
+#### 3. **HTSLazyLottoLibrary** - HTS Operations Library
+A specialized library handling complex Hedera Token Service operations required by the lottery systems.
 
-- **NFT Allowance**: When adding NFTs as prizes, the sender must grant NFT allowance to the contract.
-- **HBAR Allowance**: When claiming NFT prizes out, the user must grant a small HBAR allowance (10 tinybar) to the contract.
-- **Fungible Token Association**: Users must associate any fungible token (FT) they may receive as a prize with their account before claiming.
+**Key Features:**
+- NFT collection creation and management
+- Batch NFT minting, transfers, and burning
+- Token association and validation
+- Royalty fee configuration
+- Optimized batch operations with gas management
 
-### Important Notes
+### Supporting Infrastructure
 
-- **Error Checking**: Extensive use of custom errors (e.g., `BadParameters()`, `NotAdmin()`, etc.) for safety and clarity.
-- **ReentrancyGuard**: Protects against reentrancy attacks.
-- **Pausable**: Admins can pause/unpause the contract and individual pools.
-- **Event Emissions**: All major actions emit events for off-chain tracking and transparency.
+#### External Dependencies
+- **LazyGasStation**: Manages automatic HBAR/$LAZY refills and token operations (1 query script)
+- **LazyDelegateRegistry**: Handles NFT delegation for bonus calculations (2 scripts, test suite)
+- **LazySecureTrade**: Peer-to-peer NFT trading platform that triggers LazyTradeLotto (3 admin scripts)
+- **PrngSystemContract**: Provides verifiable random number generation
+- **LSH NFT Collections**: Gen1, Gen2, and Gen1 Mutant collections for holder benefits
+
+#### Project Structure
+```
+hedera-SC-lazy-lotto/
+├── contracts/              # Solidity smart contracts
+├── test/                   # Test suites (4 comprehensive test files)
+├── scripts/
+│   ├── deployments/       # Contract deployment scripts
+│   ├── interactions/      # 41 CLI scripts organized by contract
+│   ├── debug/             # Debugging and development tools
+│   └── testing/           # Testing helper scripts
+├── abi/                   # Generated contract ABIs
+├── utils/                 # Shared JavaScript utilities
+├── docs/                  # Generated HTML documentation
+└── [Documentation]        # 10+ markdown documentation files
+```
+
+## 🎮 Use Cases
+
+### LazyLotto Use Cases
+
+1. **Traditional Lottery Player**
+   - Purchase tickets with various tokens
+   - Roll for prizes immediately or accumulate tickets
+   - Claim prizes directly or convert to tradeable NFTs
+
+2. **NFT Ticket Trader**
+   - Buy tickets as NFTs for secondary market trading
+   - Purchase tickets from other users
+   - Roll accumulated NFT tickets when ready
+
+3. **Prize Collector**
+   - Win various prize types (HBAR, tokens, NFTs)
+   - Convert prizes to NFTs for trading
+   - Build a portfolio of won prizes
+
+4. **Strategic Player**
+   - Monitor time-based bonuses for optimal entry timing
+   - Maintain NFT holdings for bonus rates
+   - Accumulate $LAZY for balance bonuses
+
+### LazyTradeLotto Use Cases
+
+1. **Active NFT Trader**
+   - Complete trades on Lazy Secure Trade platform
+   - Claim lottery rewards for both buying and selling
+   - Benefit from progressive jackpot growth
+
+2. **LSH NFT Holder**
+   - Receive zero burn rate on all lottery winnings
+   - Delegate NFTs to provide benefits to others
+   - Enjoy enhanced value from trading activity
+
+3. **Casual Trader**
+   - Participate in occasional trades
+   - Contribute to jackpot growth while eligible for wins
+   - Potential for significant jackpot wins
+
+## 🔒 Security Features
+
+### Access Control
+- **Multi-admin system** for LazyLotto with last-admin protection
+- **Owner-only functions** for LazyTradeLotto configuration
+- **Role-based permissions** for all administrative operations
+
+### Financial Security
+- **ReentrancyGuard** on all state-changing functions
+- **Pausable functionality** for emergency stops
+- **Input validation** for all user-provided parameters
+- **Balance tracking** for accurate prize accounting
+
+### Cryptographic Security
+- **Signature validation** for LazyTradeLotto parameters
+- **Anti-replay protection** with transaction history
+- **Secure random number generation** via Hedera PRNG
+- **Trade fingerprinting** to prevent duplicate claims
+
+## 🛠️ Technical Implementation
+
+### Smart Contract Details
+
+#### Gas Optimization
+- **Batch operations** for efficient NFT handling
+- **Automatic refilling** via LazyGasStation integration
+- **Optimized storage patterns** to minimize gas costs
+- **Library separation** to manage contract size limits
+
+#### Token Standards
+- **HTS integration** for native Hedera token operations
+- **ERC20/ERC721 compatibility** for standard interfaces
+- **Custom NFT collections** for tickets and prizes
+- **Royalty support** for NFT collections
+
+#### Random Number Generation
+- **Hedera PRNG integration** for verifiable randomness
+- **Multiple random requests** for different game mechanics
+- **Nonce-based randomization** for unique outcomes
+- **Deterministic testing support** via mock contracts
+
+### Development Stack
+- **Solidity 0.8.12+** for smart contract development
+- **Hardhat** for development, testing, and deployment
+- **OpenZeppelin** for security patterns and standards
+- **Hedera SDK** for Hedera-specific operations
+
+## 📊 System Statistics & Monitoring
+
+### LazyLotto Analytics
+Available via query scripts in `scripts/interactions/LazyLotto/queries/`:
+
+- **Master Info** (`masterInfo.js`): Global contract state, all pools summary, configuration
+- **Pool Info** (`poolInfo.js`): Pool-specific statistics (total entries, prizes awarded, boost rates)
+- **User State** (`userState.js`): User-specific data (entries, pending prizes, win history)
+- Prize distribution tracking across all pools
+- Boost system effectiveness metrics
+
+### LazyTradeLotto Analytics
+Available via query scripts in `scripts/interactions/LazyTradeLotto/queries/`:
+
+- **Lottery Info** (`getLottoInfo.js`): Complete contract state, jackpot size, configuration, win statistics
+- **User Burn Rate** (`getUserBurn.js`): Check burn percentage for specific users (LSH NFT holder benefits)
+- **Trade History** (`checkTradeHistory.js`): Verify if trade already rolled (anti-replay protection)
+- **Event Logs** (`getLottoLogs.js`): Query lottery events from Hedera mirror node
+- Trade volume and lottery participation rates
+- Regular win vs. jackpot win statistics
+- Progressive jackpot growth patterns
+
+**See**: [Interaction Scripts Guide](./scripts/interactions/README.md) for complete script reference
+
+## 🚀 Getting Started
+
+### Prerequisites
+- **Node.js 16+** and npm/yarn
+- **Hedera account** (testnet or mainnet)
+- **Environment variables** configured (see `.env.example`)
+
+### Quick Start
+
+1. **Clone and Install**
+   ```bash
+   git clone https://github.com/Burstall/hedera-SC-lazy-lotto.git
+   cd hedera-SC-lazy-lotto
+   npm install
+   ```
+
+2. **Configure Environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your Hedera credentials:
+   # - ACCOUNT_ID (your Hedera account ID)
+   # - PRIVATE_KEY (your private key)
+   # - ENVIRONMENT (testnet/mainnet)
+   # - Contract addresses and token IDs
+   ```
+
+3. **Compile Contracts**
+   ```bash
+   npx hardhat compile
+   ```
+
+4. **Run Tests**
+   ```bash
+   npm test
+   ```
+
+5. **Deploy Contracts** (optional - contracts may already be deployed)
+   ```bash
+   npx hardhat run scripts/deployments/deployLazyLotto.js --network testnet
+   ```
+
+6. **Use Interaction Scripts**
+   ```bash
+   # Query contract information
+   node scripts/interactions/LazyLotto/queries/masterInfo.js 0.0.YOUR_CONTRACT_ID
+   
+   # See scripts/interactions/README.md for complete guide
+   ```
+
+### Environment Variables
+
+Required variables in `.env` file:
+
+```env
+# Network Configuration
+ENVIRONMENT=testnet              # testnet, mainnet, preview, or local
+ACCOUNT_ID=0.0.xxxxx            # Your Hedera account ID
+PRIVATE_KEY=302e...             # Your ED25519 private key (hex format)
+
+# Contract Addresses (after deployment)
+LAZY_LOTTO_CONTRACT_ID=0.0.xxxxx
+LAZY_TRADE_LOTTO_CONTRACT_ID=0.0.xxxxx
+LAZY_DELEGATE_REGISTRY_ID=0.0.xxxxx
+LAZY_GAS_STATION_ID=0.0.xxxxx
+
+# Token Configuration
+LAZY_TOKEN_ID=0.0.xxxxx         # $LAZY token ID
+LAZY_DECIMALS=8                  # $LAZY token decimals
+
+# Optional: For testing signature-gated functions
+SYSTEM_WALLET_KEY=...            # TestNet only - systemWallet private key
+```
+
+See `.env.example` for complete list of configuration options.
+
+### Testing
+```bash
+# Run all tests with coverage
+npm test
+
+# Run specific test suites (npm scripts available)
+npm run test-lotto              # LazyLotto test suite only
+npm run test-trade-lotto        # LazyTradeLotto test suite only
+npm run test-delegate           # LazyDelegateRegistry test suite only
+npm run test-lazy               # LAZYTokenCreator test suite only
+
+# Or run directly with Hardhat
+npx hardhat test test/LazyLotto.test.js
+npx hardhat test test/LazyTradeLotto.test.js
+npx hardhat test test/LazyDelegateRegistry.test.js
+
+# Run tests with gas reporting
+REPORT_GAS=true npx hardhat test
+
+# Generate coverage report
+npx hardhat coverage
+```
+
+### Deployment
+```bash
+# Deploy contracts to testnet
+npx hardhat run scripts/deployments/deployLazyLotto.js --network testnet
+npx hardhat run scripts/deployments/deployLazyTradeLotto.js --network testnet
+
+# Deploy to mainnet (requires mainnet credentials in .env)
+npx hardhat run scripts/deployments/deployLazyLotto.js --network mainnet
+npx hardhat run scripts/deployments/deployLazyTradeLotto.js --network mainnet
+
+# Extract ABIs after deployment
+node scripts/deployments/extractABI.js
+```
+
+### Using Interaction Scripts
+```bash
+# Query contract information (no gas cost)
+node scripts/interactions/LazyLotto/queries/masterInfo.js 0.0.123456
+node scripts/interactions/LazyTradeLotto/queries/getLottoInfo.js 0.0.789012
+
+# Admin operations (requires owner private key in .env)
+node scripts/interactions/LazyLotto/admin/createPool.js 0.0.123456 <params>
+node scripts/interactions/LazyTradeLotto/admin/boostJackpot.js 0.0.789012 1000
+
+# User operations (requires private key in .env)
+node scripts/interactions/LazyLotto/user/buyEntry.js 0.0.123456 1 10
+node scripts/interactions/LazyLotto/user/rollTickets.js 0.0.123456 1 5
+
+# See interaction scripts README for complete usage guide
+```
+
+## 📚 Documentation
+
+### Business & Design Documentation
+- **[LazyLotto Business Logic](./LazyLotto-BUSINESS_LOGIC.md)** - Comprehensive overview of LazyLotto functionality, use cases, and game mechanics
+- **[LazyTradeLotto Business Logic](./LazyTradeLotto-BUSINESS_LOGIC.md)** - Detailed explanation of the trade-based reward system and signature-gated design
+- **[LazyLotto UX Implementation Guide](./LazyLotto-UX_IMPLEMENTATION_GUIDE.md)** - Complete user experience flows, CLI script usage, and integration patterns
+- **[LazyLotto Production Readiness Summary](./LazyLotto-PRODUCTION_READINESS_SUMMARY.md)** - Production deployment checklist and system validation
+
+### Testing & Quality Assurance
+- **[LazyLotto Testing Plan](./LazyLotto-TESTING_PLAN.md)** - Systematic testing strategy, test case descriptions, and coverage requirements
+- **[LazyLotto Code Coverage Analysis](./LazyLotto-CODE_COVERAGE_ANALYSIS.md)** - Detailed line-by-line coverage analysis and testing gaps
+- **Test Suites** (`test/` folder):
+  - `LazyLotto.test.js` - Comprehensive test suite for multi-pool lottery system
+  - `LazyTradeLotto.test.js` - Test suite for trade-based rewards with signature validation
+  - `LazyDelegateRegistry.test.js` - NFT delegation and registry testing
+  - `LAZYTokenCreator.test.js` - Token creation and management tests
+
+### Script Documentation
+- **[Interaction Scripts Guide](./scripts/interactions/README.md)** - Complete guide to all 41 CLI scripts organized by contract
+  - **[LazyLotto Scripts](./scripts/interactions/LazyLotto/README.md)** - 22 scripts (admin, queries, user actions)
+  - **[LazyLotto Scripts Status](./scripts/interactions/LazyLotto/SCRIPTS_COMPLETE.md)** - Detailed script inventory and completion tracking
+  - **[LazyTradeLotto Scripts](./scripts/interactions/LazyTradeLotto/README.md)** - 12 scripts (admin, queries, testing)
+  - **[Migration Report](./scripts/interactions/MIGRATION_COMPLETE.md)** - Script reorganization completion summary
+- **[Deployment Scripts Guide](./scripts/deployments/README.md)** - Contract deployment and upgrade procedures
+
+### Contract API Documentation
+- **Inline NatSpec comments** for all public/external functions
+- **Event definitions** with parameter explanations in source files
+- **Custom errors** with detailed descriptions
+- **Interface documentation** in `contracts/interfaces/`
+- **Generated docs** available in `docs/` folder (HTML documentation)
+
+## 🔧 Configuration
+
+### LazyLotto Configuration
+Managed via admin scripts in `scripts/interactions/LazyLotto/admin/`:
+
+- **Pool Creation** (`createPool.js`): Win rates, entry fees, prize types, boost multipliers
+- **Prize Management** (`addPrizePackage.js`, `removePrizes.js`): Add/remove prize packages
+- **Bonus System** (`setBonuses.js`): Time bonuses, NFT bonuses, balance bonuses
+- **Pool Lifecycle** (`pausePool.js`, `unpausePool.js`, `closePool.js`): State management
+- **Admin Management** (`manageRoles.js`): Multi-admin setup with OWNER, MANAGER, OPERATIONAL roles
+- **Token Withdrawal** (`withdrawTokens.js`): Emergency token recovery
+
+**See**: [LazyLotto Scripts README](./scripts/interactions/LazyLotto/README.md) for detailed usage
+
+### LazyTradeLotto Configuration
+Managed via admin scripts in `scripts/interactions/LazyTradeLotto/admin/`:
+
+- **Jackpot Management** (`boostJackpot.js`): Add funds to jackpot pool
+- **Jackpot Settings** (`updateLottoJackpotIncrement.js`, `updateMaxJackpotThreshold.js`): Growth configuration
+- **Burn Configuration** (`updateLottoBurnPercentage.js`): Set burn rate for non-NFT holders
+- **System Security** (`updateLottoSystemWallet.js`): Change signature validation address
+- **Contract Control** (`pauseLottoContract.js`, `unpauseLottoContract.js`): Emergency pause
+- **Emergency Withdrawal** (`transferHbarFromLotto.js`): HBAR recovery
+
+**See**: [LazyTradeLotto Scripts README](./scripts/interactions/LazyTradeLotto/README.md) for signature-gated design details
+
+## 🌐 Network Compatibility
+
+### Hedera Network Support
+- **Testnet**: Full functionality for development and testing
+- **Mainnet**: Production deployment ready
+- **Local Node**: Development environment support
+
+### Token Standards
+- **HTS Tokens**: Native Hedera token support
+- **HBAR**: Native currency integration
+- **NFT Collections**: Custom and existing collections
+
+## 🤝 Contributing
+
+### Development Workflow
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes following project conventions
+4. Write/update tests for any new functionality
+5. Ensure all tests pass (`npm test`)
+6. Update documentation as needed
+7. Commit your changes (`git commit -m 'Add amazing feature'`)
+8. Push to the branch (`git push origin feature/amazing-feature`)
+9. Open a Pull Request
+
+### Development Guidelines
+- **Code Style**: Follow existing patterns, use ESLint/Prettier configurations
+- **Testing**: Add comprehensive tests for new features (aim for >80% coverage)
+- **Documentation**: Update relevant markdown files and NatSpec comments
+- **Gas Optimization**: Profile gas usage for new contract functions
+- **Security**: Follow security best practices, use OpenZeppelin patterns
+
+### Project Structure Conventions
+- **Contracts**: Place in `contracts/` with clear naming
+- **Tests**: Mirror contract structure in `test/` folder
+- **Scripts**: Organize by contract in `scripts/interactions/<ContractName>/`
+- **Utilities**: Shared helpers go in `utils/` folder
+- **Documentation**: Business logic docs at root, technical docs near code
+
+### Running Quality Checks
+```bash
+# Lint Solidity contracts
+npx solhint 'contracts/**/*.sol'
+
+# Lint JavaScript files
+npx eslint scripts/ test/ utils/
+
+# Check test coverage
+npx hardhat coverage
+
+# Generate gas report
+REPORT_GAS=true npx hardhat test
+```
+
+## 📖 Quick Reference
+
+### Essential Documentation
+| Document | Purpose | Audience |
+|----------|---------|----------|
+| [README.md](./README.md) | Project overview and getting started | Everyone |
+| [LazyLotto Business Logic](./LazyLotto-BUSINESS_LOGIC.md) | Game mechanics and use cases | Product/Business |
+| [LazyLotto UX Guide](./LazyLotto-UX_IMPLEMENTATION_GUIDE.md) | Complete user flows and scripts | Developers/Integrators |
+| [LazyTradeLotto Business Logic](./LazyTradeLotto-BUSINESS_LOGIC.md) | Trade lottery system design | Product/Business |
+| [Testing Plan](./LazyLotto-TESTING_PLAN.md) | Test strategy and requirements | QA/Developers |
+| [Production Readiness](./LazyLotto-PRODUCTION_READINESS_SUMMARY.md) | Deployment checklist | DevOps/Admin |
+
+### Script Quick Links
+| Category | Scripts | Documentation |
+|----------|---------|---------------|
+| **LazyLotto** | 22 scripts (admin/queries/user) | [LazyLotto Scripts](./scripts/interactions/LazyLotto/README.md) |
+| **LazyTradeLotto** | 12 scripts (admin/queries) | [LazyTradeLotto Scripts](./scripts/interactions/LazyTradeLotto/README.md) |
+| **Other Contracts** | 7 scripts (SecureTrade, Delegate, Gas) | [All Scripts Guide](./scripts/interactions/README.md) |
+| **Deployment** | Contract deployment tools | [Deployment Guide](./scripts/deployments/README.md) |
+
+### Test Coverage
+| Contract | Test File | Lines Covered |
+|----------|-----------|---------------|
+| LazyLotto | `test/LazyLotto.test.js` | High coverage |
+| LazyTradeLotto | `test/LazyTradeLotto.test.js` | Comprehensive |
+| LazyDelegateRegistry | `test/LazyDelegateRegistry.test.js` | Complete |
+| LAZYTokenCreator | `test/LAZYTokenCreator.test.js` | Full |
+
+**See**: [Code Coverage Analysis](./LazyLotto-CODE_COVERAGE_ANALYSIS.md) for detailed coverage report
+
+### Key Commands Cheat Sheet
+```bash
+# Development
+npm install                    # Install dependencies
+npx hardhat compile           # Compile contracts
+npm test                      # Run all tests
+npx hardhat coverage          # Generate coverage report
+
+# Deployment
+npx hardhat run scripts/deployments/deployLazyLotto.js --network testnet
+node scripts/deployments/extractABI.js
+
+# Queries (no gas)
+node scripts/interactions/LazyLotto/queries/masterInfo.js 0.0.CONTRACT_ID
+node scripts/interactions/LazyTradeLotto/queries/getLottoInfo.js 0.0.CONTRACT_ID
+
+# Admin Operations (requires owner key)
+node scripts/interactions/LazyLotto/admin/createPool.js 0.0.CONTRACT_ID <params>
+node scripts/interactions/LazyTradeLotto/admin/boostJackpot.js 0.0.CONTRACT_ID <amount>
+
+# User Operations (requires private key)
+node scripts/interactions/LazyLotto/user/buyEntry.js 0.0.CONTRACT_ID <poolId> <count>
+node scripts/interactions/LazyLotto/user/rollTickets.js 0.0.CONTRACT_ID <poolId> <count>
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **Hedera Network** for providing robust infrastructure and tools
+- **OpenZeppelin** for security patterns and implementations
+- **Lazy Superheroes Community** for use case validation and feedback
+
+## 📞 Support
+
+For questions, issues, or contributions:
+- Open an issue on GitHub
+- Contact the development team
+- Join the community discussions
 
 ---
+
+**Built with ❤️ for the Hedera ecosystem**
