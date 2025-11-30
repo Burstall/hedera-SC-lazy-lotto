@@ -43,18 +43,21 @@ async function manageRoles() {
 	let client;
 
 	try {
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -72,8 +75,8 @@ async function manageRoles() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
+		const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Menu
 		console.log('Select action:');
@@ -135,9 +138,8 @@ async function manageRoles() {
 		console.log(`\nTarget address: ${targetAddress}`);
 
 		// Estimate gas
-		const encodedCommand = lazyLottoIface.encodeFunctionData(functionName, [targetAddress]);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
-		console.log(`⛽ Estimated gas: ~${gasEstimate} gas\n`);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, functionName, [targetAddress], 100000);
+		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
 		const roleType = functionName.includes('Admin') ? 'Admin' : 'Prize Manager';
@@ -152,7 +154,7 @@ async function manageRoles() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -161,13 +163,13 @@ async function manageRoles() {
 			[targetAddress],
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log(`\n✅ ${roleType} role ${operation === 'add' ? 'added' : 'removed'} successfully!`);
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 	}
 	catch (error) {

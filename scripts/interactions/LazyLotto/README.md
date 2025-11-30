@@ -43,15 +43,31 @@ Scripts for regular user operations:
 
 Scripts for contract administrators:
 
+**Pool Management:**
 - **`createPool.js`** - Create a new lottery pool
 - **`addPrizePackage.js`** - Add prizes to a pool
 - **`pausePool.js`** - Pause ticket sales for a pool
 - **`unpausePool.js`** - Resume ticket sales
 - **`closePool.js`** - Permanently close a pool
 - **`removePrizes.js`** - Remove prizes from closed pool
+
+**Role & Access Management:**
 - **`manageRoles.js`** - Add/remove admins and prize managers
-- **`setBonuses.js`** - Configure bonus system
+
+**Configuration:**
+- **`setBonuses.js`** - Configure bonus system (NFT, time, LAZY balance)
+- **`setBurnPercentage.js`** - Set LAZY burn percentage for entry fees
+- **`setPrng.js`** - Update PRNG contract address
+
+**Emergency Controls:**
+- **`pauseContract.js`** - Emergency pause/unpause entire contract
+
+**Token Management:**
 - **`withdrawTokens.js`** - Withdraw excess tokens (with safety checks)
+
+**Promotional Tools:**
+- **`grantEntry.js`** - Grant free entries to users
+- **`buyAndRedeemEntry.js`** - Create free NFT tickets for admin
 
 ## Usage Examples
 

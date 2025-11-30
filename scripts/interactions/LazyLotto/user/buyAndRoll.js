@@ -48,7 +48,7 @@ async function convertToHederaId(evmAddress) {
 		return 'HBAR';
 	}
 
-	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	const hederaId = await homebrewPopulateAccountNum(env, evmAddress);
 	return hederaId ? hederaId.toString() : evmAddress;
 }
@@ -83,18 +83,21 @@ async function buyAndRoll() {
 			process.exit(1);
 		}
 
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -114,9 +117,9 @@ async function buyAndRoll() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
-		const { queryTokenBalance, associateToken } = require('../../../utils/hederaMirrorHelpers');
+		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
+		const { queryTokenBalance, associateToken } = require('../../../../utils/hederaMirrorHelpers');
 
 		// Get pool details
 		console.log('🔍 Fetching pool details...');
@@ -219,7 +222,7 @@ async function buyAndRoll() {
 		}
 		else {
 			// HBAR payment - check balance via mirror node
-			const { homebrewGetBalance } = require('../../../utils/hederaMirrorHelpers');
+			const { homebrewGetBalance } = require('../../../../utils/hederaMirrorHelpers');
 			const hbarBalance = await homebrewGetBalance(env, operatorId.toString());
 
 			if (hbarBalance < paymentAmount) {
@@ -233,8 +236,8 @@ async function buyAndRoll() {
 		// Estimate gas with 2x multiplier for roll portion
 		console.log('⛽ Estimating gas (2x multiplier for PRNG rolls)...');
 
-		const encodedCommand = lazyLottoIface.encodeFunctionData('buyAndRollEntry', [poolId, numEntries, paymentAmount]);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'buyAndRollEntry', [poolId, numEntries, paymentAmount], 800000);
+		const gasEstimate = gasInfo.gasLimit;
 
 		// Apply 2x multiplier for roll operations
 		const gasWithMultiplier = Math.floor(gasEstimate * 2);
@@ -253,7 +256,7 @@ async function buyAndRoll() {
 
 		const gasLimit = Math.floor(gasWithMultiplier * 1.2);
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -263,13 +266,13 @@ async function buyAndRoll() {
 			paymentTokenHederaId === 'HBAR' ? paymentAmount : undefined,
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log('\n✅ Buy and roll completed!');
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 		// Parse logs to find wins
 		console.log('🎲 Roll Results:');

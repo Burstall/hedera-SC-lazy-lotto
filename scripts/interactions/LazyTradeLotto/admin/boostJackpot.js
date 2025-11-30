@@ -47,22 +47,25 @@ async function main() {
 
 	console.log('\n-Using ENVIRONMENT:', env);
 
+	// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+	const envUpper = env.toUpperCase();
+
 	// Initialize client
-	if (env.toUpperCase() === 'TEST') {
+	if (envUpper === 'TEST' || envUpper === 'TESTNET') {
 		client = Client.forTestnet();
 	}
-	else if (env.toUpperCase() === 'MAIN') {
+	else if (envUpper === 'MAIN' || envUpper === 'MAINNET') {
 		client = Client.forMainnet();
 	}
-	else if (env.toUpperCase() === 'PREVIEW') {
+	else if (envUpper === 'PREVIEW' || envUpper === 'PREVIEWNET') {
 		client = Client.forPreviewnet();
 	}
-	else if (env.toUpperCase() === 'LOCAL') {
+	else if (envUpper === 'LOCAL') {
 		const node = { '127.0.0.1:50211': new AccountId(3) };
 		client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
 	}
 	else {
-		console.log('ERROR: Must specify either MAIN, TEST, PREVIEW, or LOCAL as ENVIRONMENT');
+		console.log('ERROR: Must specify either MAIN/MAINNET, TEST/TESTNET, PREVIEW/PREVIEWNET, or LOCAL as ENVIRONMENT');
 		return;
 	}
 

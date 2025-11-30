@@ -1,10 +1,11 @@
 /**
- * LazyLotto Close Pool Script
+ * LazyLotto Admin Grant Entry Script
  *
- * Permanently closes a pool. Pool must have no outstanding entries or pending prizes.
+ * Grant free entries to users (as in-memory entries, not NFTs).
+ * Useful for promotions, airdrops, or compensation.
  * Requires ADMIN role.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/closePool.js [poolId]
+ * Usage: node scripts/interactions/LazyLotto/admin/grantEntry.js
  */
 
 const {
@@ -39,22 +40,10 @@ function prompt(question) {
 	});
 }
 
-async function closePool() {
+async function grantEntry() {
 	let client;
 
 	try {
-		let poolIdStr = process.argv[2];
-
-		if (!poolIdStr) {
-			poolIdStr = await prompt('Enter pool ID to close: ');
-		}
-
-		const poolId = parseInt(poolIdStr);
-		if (isNaN(poolId) || poolId < 0) {
-			console.error('❌ Invalid pool ID');
-			process.exit(1);
-		}
-
 		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
 		const envUpper = env.toUpperCase();
 
@@ -75,11 +64,10 @@ async function closePool() {
 		client.setOperator(operatorId, operatorKey);
 
 		console.log('\n╔════════════════════════════════════════════════════════════╗');
-		console.log('║             LazyLotto Close Pool (Admin)                  ║');
+		console.log('║          LazyLotto Admin Grant Entry (Admin)              ║');
 		console.log('╚════════════════════════════════════════════════════════════╝\n');
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
-		console.log(`📄 Contract: ${contractId.toString()}`);
-		console.log(`🎰 Pool: #${poolId}\n`);
+		console.log(`📄 Contract: ${contractId.toString()}\n`);
 
 		// Load contract ABI
 		const contractJson = JSON.parse(
@@ -91,90 +79,117 @@ async function closePool() {
 		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
-		// Check pool status first
-		console.log('🔍 Checking pool status...');
+		// Get total pools
+		const encodedQuery = lazyLottoIface.encodeFunctionData('totalPools', []);
+		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedQuery, operatorId, false);
+		const decoded = lazyLottoIface.decodeFunctionResult('totalPools', result);
+		const totalPools = Number(decoded[0]);
 
-		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
-			env,
-			contractId,
-			encodedQuery,
-			lazyLottoIface,
-			'getPoolDetails',
-			false,
-		);
-
-		if (!poolDetails || !poolDetails.used) {
-			console.error('\n❌ Pool does not exist or is not in use');
+		if (totalPools === 0) {
+			console.error('❌ No pools exist in the contract');
 			process.exit(1);
 		}
 
-		if (poolDetails.closed) {
-			console.log('\n⚠️  Pool is already closed');
-			process.exit(0);
+		console.log(`📊 Total pools: ${totalPools}\n`);
+
+		// Get pool ID
+		const poolIdStr = await prompt(`Enter pool ID (0-${totalPools - 1}): `);
+
+		let poolId;
+		try {
+			poolId = parseInt(poolIdStr);
+			if (isNaN(poolId) || poolId < 0 || poolId >= totalPools) {
+				console.error(`❌ Pool ID must be between 0 and ${totalPools - 1}`);
+				process.exit(1);
+			}
+		}
+		catch {
+			console.error('❌ Invalid pool ID format');
+			process.exit(1);
 		}
 
-		console.log(`Pool: "${poolDetails.name}"`);
-		console.log(`Total Entries: ${poolDetails.totalEntries.toString()}`);
-		console.log(`Outstanding Tokens: ${poolDetails.tokensForPoolPrizes.toString()}\n`);
+		// Get recipient address
+		const recipientInput = await prompt('Enter recipient (0.0.xxxxx or 0x...): ');
 
-		// Warn if there are outstanding entries/prizes
-		if (poolDetails.totalEntries > 0n) {
-			console.log('⚠️  WARNING: Pool has outstanding entries!');
-			console.log('   Users should roll and claim prizes before closing.\n');
+		let recipientAddress;
+		if (recipientInput.startsWith('0x')) {
+			// EVM address
+			recipientAddress = recipientInput;
+		}
+		else {
+			// Hedera ID - convert to EVM
+			try {
+				const accountId = AccountId.fromString(recipientInput);
+				recipientAddress = accountId.toSolidityAddress();
+			}
+			catch {
+				console.error('❌ Invalid account ID format');
+				process.exit(1);
+			}
 		}
 
-		if (poolDetails.tokensForPoolPrizes > 0n) {
-			console.log('⚠️  WARNING: Pool has outstanding prize tokens!');
-			console.log('   All prizes should be claimed before closing.\n');
+		// Get ticket count
+		const ticketCountStr = await prompt('Enter number of tickets to grant: ');
+
+		let ticketCount;
+		try {
+			ticketCount = parseInt(ticketCountStr);
+			if (isNaN(ticketCount) || ticketCount <= 0) {
+				console.error('❌ Ticket count must be positive');
+				process.exit(1);
+			}
 		}
+		catch {
+			console.error('❌ Invalid ticket count format');
+			process.exit(1);
+		}
+
+		console.log(`\n🎁 Granting ${ticketCount} free entries`);
+		console.log(`   Pool: ${poolId}`);
+		console.log(`   Recipient: ${recipientInput}`);
 
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'closePool', [poolId], 150000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'adminGrantEntry', [
+			poolId,
+			ticketCount,
+			recipientAddress,
+		], 200000);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
-		console.log('⚠️  This action is PERMANENT and cannot be undone!');
-		const confirm = await prompt(`Close pool #${poolId} PERMANENTLY? (yes/no): `);
+		const confirm = await prompt(`Grant ${ticketCount} entries to ${recipientInput}? (yes/no): `);
 		if (confirm.toLowerCase() !== 'yes' && confirm.toLowerCase() !== 'y') {
 			console.log('\n❌ Operation cancelled');
 			process.exit(0);
 		}
 
 		// Execute
-		console.log('\n🔄 Closing pool...');
+		console.log('\n🔄 Granting entries...');
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
 			gasLimit,
-			'closePool',
-			[poolId],
+			'adminGrantEntry',
+			[poolId, ticketCount, recipientAddress],
 		);
 
 		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
-			console.error('   Possible reasons:');
-			console.error('   - Pool has outstanding entries');
-			console.error('   - Pool has unclaimed prizes');
-			console.error('   - Not authorized (requires ADMIN)');
 			process.exit(1);
 		}
 
-		console.log('\n✅ Pool closed successfully!');
+		console.log('\n✅ Entries granted successfully!');
+		console.log(`🎁 ${ticketCount} entries granted to ${recipientInput}`);
+		console.log(`   Pool: ${poolId}`);
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
-
-		console.log('🔒 Pool is now permanently closed.');
-		console.log('   - No further ticket purchases');
-		console.log('   - No further prize additions');
-		console.log('   - Can remove remaining prizes with removePrizes.js\n');
 
 	}
 	catch (error) {
-		console.error('\n❌ Error closing pool:', error.message);
+		console.error('\n❌ Error granting entries:', error.message);
 		if (error.status) {
 			console.error('Status:', error.status.toString());
 		}
@@ -188,4 +203,4 @@ async function closePool() {
 }
 
 // Run the script
-closePool();
+grantEntry();

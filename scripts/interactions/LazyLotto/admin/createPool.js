@@ -50,7 +50,7 @@ function convertToEvmAddress(hederaId) {
 async function convertToHederaId(evmAddress) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
-	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	return await homebrewPopulateAccountNum(env, evmAddress);
 }
 
@@ -63,18 +63,21 @@ async function createPool() {
 	let client;
 
 	try {
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -92,8 +95,8 @@ async function createPool() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { readOnlyEVMFromMirrorNode, contractExecuteFunction } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
+		const { readOnlyEVMFromMirrorNode, contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Check admin role
 		console.log('🔍 Verifying admin role...');
@@ -184,8 +187,8 @@ async function createPool() {
 			functionArgs = [winRateThousandthsOfBps, entryFee, feeToken, poolTokenId];
 		}
 
-		encodedCommand = lazyLottoIface.encodeFunctionData(functionName, functionArgs);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, functionName, functionArgs, 800000, payableAmount);
+		const gasEstimate = gasInfo.gasLimit;
 		console.log(`   Gas: ~${gasEstimate}\n`);
 
 		if (payableAmount !== '0') {
@@ -204,7 +207,7 @@ async function createPool() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -214,13 +217,13 @@ async function createPool() {
 			payableAmount,
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log('\n✅ Pool created successfully!');
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 		// Get new pool ID
 		encodedCommand = lazyLottoIface.encodeFunctionData('totalPools');

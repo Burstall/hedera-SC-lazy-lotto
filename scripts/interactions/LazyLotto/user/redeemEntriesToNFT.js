@@ -45,7 +45,7 @@ async function convertToHederaId(evmAddress) {
 		return 'HBAR';
 	}
 
-	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	const hederaId = await homebrewPopulateAccountNum(env, evmAddress);
 	return hederaId ? hederaId.toString() : evmAddress;
 }
@@ -67,18 +67,21 @@ async function redeemEntriesToNFT() {
 			process.exit(1);
 		}
 
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -97,8 +100,8 @@ async function redeemEntriesToNFT() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
+		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		console.log('🔍 Checking your entries...');
 
@@ -161,8 +164,8 @@ async function redeemEntriesToNFT() {
 		console.log(`\n📦 Converting ${quantity} memory entries to NFT tickets...\n`);
 
 		// Estimate gas
-		encodedCommand = lazyLottoIface.encodeFunctionData('redeemEntriesToNFT', [poolId, quantity]);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'redeemEntriesToNFT', [poolId, quantity], 300000);
+		const gasEstimate = gasInfo.gasLimit;
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
 		console.log(`⛽ Estimated gas: ${gasEstimate} (with 20% buffer: ${gasLimit})\n`);
@@ -177,7 +180,7 @@ async function redeemEntriesToNFT() {
 		// Execute the redemption
 		console.log('\n🔄 Redeeming entries to NFT tickets...');
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -186,13 +189,13 @@ async function redeemEntriesToNFT() {
 			[poolId, quantity],
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log('\n✅ Entries redeemed to NFT tickets successfully!');
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 		console.log('🎨 Your memory entries have been converted to tradeable NFT tickets.');
 		console.log('   You can now:');

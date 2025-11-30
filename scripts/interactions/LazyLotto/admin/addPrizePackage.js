@@ -53,7 +53,7 @@ function convertToEvmAddress(hederaId) {
 async function convertToHederaId(evmAddress) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
-	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	return await homebrewPopulateAccountNum(env, evmAddress);
 }
 
@@ -79,18 +79,21 @@ async function addPrizePackage() {
 			process.exit(1);
 		}
 
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -109,7 +112,7 @@ async function addPrizePackage() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
+		const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 
 		// Check admin or prize manager role
 		console.log('🔍 Verifying permissions...');
@@ -175,9 +178,9 @@ async function addPrizePackage() {
 }
 
 async function addSinglePrizePackage(client, lazyLottoIface, poolId) {
-	const { contractExecuteFunction } = require('../../../utils/solidityHelpers');
-	const { estimateGas } = require('../../../utils/gasHelpers');
-	const { getSerialsOwned } = require('../../../utils/hederaMirrorHelpers');
+	const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+	const { estimateGas } = require('../../../../utils/gasHelpers');
+	const { getSerialsOwned } = require('../../../../utils/hederaMirrorHelpers');
 
 	console.log('\n═══════════════════════════════════════════════════════════');
 	console.log('  SINGLE PRIZE PACKAGE');
@@ -268,14 +271,14 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId) {
 
 	// Estimate gas
 	console.log('⛽ Estimating gas...');
-	const encodedCommand = lazyLottoIface.encodeFunctionData('addPrizePackage', [
+	const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'addPrizePackage', [
 		poolId,
 		ftToken,
 		ftAmount,
 		nftTokens,
 		nftSerials,
-	]);
-	const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+	], 800000, ftToken === '0x0000000000000000000000000000000000000000' ? ftAmount : '0');
+	const gasEstimate = gasInfo.gasLimit;
 	console.log(`   Gas: ~${gasEstimate}\n`);
 
 	// Calculate HBAR needed
@@ -296,7 +299,7 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId) {
 
 	const gasLimit = Math.floor(gasEstimate * 1.2);
 
-	const [success, txReceipt] = await contractExecuteFunction(
+	const [receipt, results, record] = await contractExecuteFunction(
 		contractId,
 		lazyLottoIface,
 		client,
@@ -306,18 +309,18 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId) {
 		payableAmount,
 	);
 
-	if (!success) {
+	if (receipt.status.toString() !== 'SUCCESS') {
 		console.error('\n❌ Transaction failed');
 		process.exit(1);
 	}
 
 	console.log('\n✅ Prize package added successfully!');
-	console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+	console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 }
 
 async function addMultipleFungiblePrizes(client, lazyLottoIface, poolId) {
-	const { contractExecuteFunction } = require('../../../utils/solidityHelpers');
-	const { estimateGas } = require('../../../utils/gasHelpers');
+	const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+	const { estimateGas } = require('../../../../utils/gasHelpers');
 
 	console.log('\n═══════════════════════════════════════════════════════════');
 	console.log('  MULTIPLE FUNGIBLE PRIZES');
@@ -365,12 +368,12 @@ async function addMultipleFungiblePrizes(client, lazyLottoIface, poolId) {
 
 	// Estimate gas
 	console.log('⛽ Estimating gas...');
-	const encodedCommand = lazyLottoIface.encodeFunctionData('addMultipleFungiblePrizes', [
+	const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'addMultipleFungiblePrizes', [
 		poolId,
 		token,
 		amounts,
-	]);
-	const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+	], 800000, payableAmount);
+	const gasEstimate = gasInfo.gasLimit;
 	console.log(`   Gas: ~${gasEstimate}\n`);
 
 	// Calculate HBAR needed
@@ -391,7 +394,7 @@ async function addMultipleFungiblePrizes(client, lazyLottoIface, poolId) {
 
 	const gasLimit = Math.floor(gasEstimate * 1.2);
 
-	const [success, txReceipt] = await contractExecuteFunction(
+	const [receipt, results, record] = await contractExecuteFunction(
 		contractId,
 		lazyLottoIface,
 		client,
@@ -401,13 +404,13 @@ async function addMultipleFungiblePrizes(client, lazyLottoIface, poolId) {
 		payableAmount,
 	);
 
-	if (!success) {
+	if (receipt.status.toString() !== 'SUCCESS') {
 		console.error('\n❌ Transaction failed');
 		process.exit(1);
 	}
 
 	console.log('\n✅ Prizes added successfully!');
-	console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+	console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 }
 
 // Run the script

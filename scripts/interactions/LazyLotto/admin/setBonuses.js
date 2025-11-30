@@ -48,18 +48,21 @@ async function setBonuses() {
 	let client;
 
 	try {
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -77,8 +80,8 @@ async function setBonuses() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
+		const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Menu
 		console.log('Select bonus type to configure:');
@@ -198,9 +201,8 @@ async function setBonuses() {
 		}
 
 		// Estimate gas
-		const encodedCommand = lazyLottoIface.encodeFunctionData(functionName, params);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
-		console.log(`⛽ Estimated gas: ~${gasEstimate} gas\n`);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, functionName, params, 150000);
+		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
 		const confirm = await prompt('Apply bonus configuration? (yes/no): ');
@@ -214,7 +216,7 @@ async function setBonuses() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -223,13 +225,13 @@ async function setBonuses() {
 			params,
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log('\n✅ Bonus configured successfully!');
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 	}
 	catch (error) {

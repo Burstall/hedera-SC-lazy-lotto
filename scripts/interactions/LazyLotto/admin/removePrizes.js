@@ -45,7 +45,7 @@ async function convertToHederaId(evmAddress) {
 		return 'HBAR';
 	}
 
-	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	const hederaId = await homebrewPopulateAccountNum(env, evmAddress);
 	return hederaId ? hederaId.toString() : evmAddress;
 }
@@ -66,18 +66,21 @@ async function removePrizes() {
 			process.exit(1);
 		}
 
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -96,8 +99,8 @@ async function removePrizes() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
+		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Check pool status
 		console.log('🔍 Checking pool status...');
@@ -168,8 +171,8 @@ async function removePrizes() {
 
 		// Estimate gas
 		console.log('\n⛽ Estimating gas...');
-		const encodedCommand = lazyLottoIface.encodeFunctionData('removePrizes', [poolId]);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'removePrizes', [poolId], 500000);
+		const gasEstimate = gasInfo.gasLimit;
 		console.log(`   Estimated: ~${gasEstimate} gas\n`);
 
 		// Confirm
@@ -185,7 +188,7 @@ async function removePrizes() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -194,13 +197,13 @@ async function removePrizes() {
 			[poolId],
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log('\n✅ Prizes removed successfully!');
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 		console.log('💰 Prizes returned to your account\n');
 
 	}

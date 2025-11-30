@@ -45,7 +45,7 @@ async function convertToHederaId(evmAddress) {
 		return 'HBAR';
 	}
 
-	const { homebrewPopulateAccountNum } = require('../../../utils/hederaMirrorHelpers');
+	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	const hederaId = await homebrewPopulateAccountNum(env, evmAddress);
 	return hederaId ? hederaId.toString() : evmAddress;
 }
@@ -57,18 +57,21 @@ async function claimFromPrizeNFT() {
 		// Get serials parameter
 		let serialsStr = process.argv[2];
 
+		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
+		const envUpper = env.toUpperCase();
+
 		// Initialize client
-		if (env.toUpperCase() === 'MAINNET') {
+		if (envUpper === 'MAINNET' || envUpper === 'MAIN') {
 			client = Client.forMainnet();
 		}
-		else if (env.toUpperCase() === 'TESTNET') {
+		else if (envUpper === 'TESTNET' || envUpper === 'TEST') {
 			client = Client.forTestnet();
 		}
-		else if (env.toUpperCase() === 'PREVIEWNET') {
+		else if (envUpper === 'PREVIEWNET' || envUpper === 'PREVIEW') {
 			client = Client.forPreviewnet();
 		}
 		else {
-			throw new Error(`Unknown environment: ${env}`);
+			throw new Error(`Unknown environment: ${env}. Use TESTNET, MAINNET, or PREVIEWNET`);
 		}
 
 		client.setOperator(operatorId, operatorKey);
@@ -87,9 +90,9 @@ async function claimFromPrizeNFT() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../utils/gasHelpers');
-		const { getSerialsOwned } = require('../../../utils/hederaMirrorHelpers');
+		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
+		const { getSerialsOwned } = require('../../../../utils/hederaMirrorHelpers');
 
 		// Get prize NFT token from contract
 		console.log('🔍 Fetching prize NFT collection...');
@@ -163,9 +166,8 @@ async function claimFromPrizeNFT() {
 		console.log(`\nYou have ${nftPrizes.length} NFT-format prize(s)\n`);
 
 		// Estimate gas
-		const encodedCommand = lazyLottoIface.encodeFunctionData('claimPrizeFromNFT', [serials]);
-		const gasEstimate = await estimateGas(env, contractId, encodedCommand, operatorId);
-		console.log(`⛽ Estimated gas: ~${gasEstimate} gas\n`);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'claimPrizeFromNFT', [serials], 500000);
+		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
 		console.log('⚠️  Prize NFTs will be wiped (destroyed) after claiming.');
@@ -180,7 +182,7 @@ async function claimFromPrizeNFT() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [success, txReceipt] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -189,13 +191,13 @@ async function claimFromPrizeNFT() {
 			[serials],
 		);
 
-		if (!success) {
+		if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
 
 		console.log('\n✅ Prizes claimed successfully!');
-		console.log(`📋 Transaction: ${txReceipt.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 		console.log('🎁 Prizes have been transferred to your account.');
 		console.log('🔥 Prize NFTs have been wiped (destroyed).\n');

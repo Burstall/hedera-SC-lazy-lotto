@@ -1,10 +1,11 @@
 /**
- * LazyLotto Unpause Pool Script
+ * LazyLotto Set PRNG Contract Script
  *
- * Unpauses a pool to allow ticket purchases.
+ * Update the PRNG (Pseudo-Random Number Generator) contract address.
+ * Used for VRF randomness in roll outcomes.
  * Requires ADMIN role.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/unpausePool.js [poolId]
+ * Usage: node scripts/interactions/LazyLotto/admin/setPrng.js
  */
 
 const {
@@ -39,22 +40,10 @@ function prompt(question) {
 	});
 }
 
-async function unpausePool() {
+async function setPrng() {
 	let client;
 
 	try {
-		let poolIdStr = process.argv[2];
-
-		if (!poolIdStr) {
-			poolIdStr = await prompt('Enter pool ID to unpause: ');
-		}
-
-		const poolId = parseInt(poolIdStr);
-		if (isNaN(poolId) || poolId < 0) {
-			console.error('❌ Invalid pool ID');
-			process.exit(1);
-		}
-
 		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
 		const envUpper = env.toUpperCase();
 
@@ -75,11 +64,10 @@ async function unpausePool() {
 		client.setOperator(operatorId, operatorKey);
 
 		console.log('\n╔════════════════════════════════════════════════════════════╗');
-		console.log('║            LazyLotto Unpause Pool (Admin)                 ║');
+		console.log('║          LazyLotto Set PRNG Contract (Admin)              ║');
 		console.log('╚════════════════════════════════════════════════════════════╝\n');
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
-		console.log(`📄 Contract: ${contractId.toString()}`);
-		console.log(`🎰 Pool: #${poolId}\n`);
+		console.log(`📄 Contract: ${contractId.toString()}\n`);
 
 		// Load contract ABI
 		const contractJson = JSON.parse(
@@ -88,32 +76,77 @@ async function unpausePool() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
+		// Get current PRNG contract
+		try {
+			const encodedQuery = lazyLottoIface.encodeFunctionData('prng', []);
+			const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedQuery, operatorId, false);
+			const decoded = lazyLottoIface.decodeFunctionResult('prng', result);
+			const currentPrng = decoded[0];
+
+			// Try to convert to Hedera ID
+			const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
+			const hederaId = await homebrewPopulateAccountNum(env, currentPrng);
+
+			console.log(`📊 Current PRNG contract: ${currentPrng}`);
+			if (hederaId) {
+				console.log(`   (Hedera ID: ${hederaId.toString()})\n`);
+			}
+			else {
+				console.log('');
+			}
+		}
+		catch {
+			console.log('⚠️  Could not fetch current PRNG contract\n');
+		}
+
+		// Get new PRNG address
+		const prngInput = await prompt('Enter new PRNG contract (0.0.xxxxx or 0x...): ');
+
+		let prngAddress;
+		if (prngInput.startsWith('0x')) {
+			// EVM address
+			prngAddress = prngInput;
+		}
+		else {
+			// Hedera ID - convert to EVM
+			try {
+				const prngContractId = ContractId.fromString(prngInput);
+				prngAddress = prngContractId.toSolidityAddress();
+			}
+			catch {
+				console.error('❌ Invalid contract ID format');
+				process.exit(1);
+			}
+		}
+
+		console.log(`\n🎲 New PRNG contract: ${prngAddress}`);
+
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'unpausePool', [poolId], 100000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'setPrng', [prngAddress], 100000);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
-		const confirm = await prompt(`Unpause pool #${poolId}? (yes/no): `);
+		const confirm = await prompt(`Set PRNG contract to ${prngInput}? (yes/no): `);
 		if (confirm.toLowerCase() !== 'yes' && confirm.toLowerCase() !== 'y') {
 			console.log('\n❌ Operation cancelled');
 			process.exit(0);
 		}
 
 		// Execute
-		console.log('\n🔄 Unpausing pool...');
+		console.log('\n🔄 Setting PRNG contract...');
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
 			gasLimit,
-			'unpausePool',
-			[poolId],
+			'setPrng',
+			[prngAddress],
 		);
 
 		if (receipt.status.toString() !== 'SUCCESS') {
@@ -121,14 +154,12 @@ async function unpausePool() {
 			process.exit(1);
 		}
 
-		console.log('\n✅ Pool unpaused successfully!');
+		console.log('\n✅ PRNG contract updated successfully!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
-
-		console.log('▶️  Pool is now active. Ticket purchases allowed.\n');
 
 	}
 	catch (error) {
-		console.error('\n❌ Error unpausing pool:', error.message);
+		console.error('\n❌ Error setting PRNG contract:', error.message);
 		if (error.status) {
 			console.error('Status:', error.status.toString());
 		}
@@ -142,4 +173,4 @@ async function unpausePool() {
 }
 
 // Run the script
-unpausePool();
+setPrng();

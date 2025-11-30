@@ -5,26 +5,30 @@
  * It checks for existing deployments and allows reuse, making it safe for partial deployments.
  *
  * Required Environment Variables (.env):
- * - CONTRACT_NAME=LazyLotto
- * - STORAGE_CONTRACT_NAME=LazyLottoStorage
  * - ACCOUNT_ID=0.0.xxxxx
  * - PRIVATE_KEY=302...
  * - ENVIRONMENT=TEST/MAIN/PREVIEW (defaults to TEST if not set)
  *
  * Optional (reuse existing):
  * - LAZY_TOKEN_ID=0.0.xxxxx
- * - LAZY_SCT_CONTRACT_ID=0.0.xxxxx
+ * - LAZY_SCT_CONTRACT_ID=0.0.xxxxx (not currently used by LazyLotto)
  * - LAZY_GAS_STATION_CONTRACT_ID=0.0.xxxxx
  * - LAZY_DELEGATE_REGISTRY_CONTRACT_ID=0.0.xxxxx
  * - PRNG_CONTRACT_ID=0.0.xxxxx
  * - LAZY_LOTTO_STORAGE=0.0.xxxxx
  * - LAZY_LOTTO_CONTRACT_ID=0.0.xxxxx
  *
+ * For verification-only mode:
+ * - VERIFY_ONLY=true (skips deployment, only runs verification)
+ *
  * Usage:
  * npm run deploy:lazylotto
  *
  * Or directly:
  * node scripts/deployments/deployLazyLotto.js
+ *
+ * Verification only:
+ * VERIFY_ONLY=true node scripts/deployments/deployLazyLotto.js
  */
 
 const fs = require('fs');
@@ -36,8 +40,8 @@ const {
 	TokenId,
 	ContractFunctionParameters,
 } = require('@hashgraph/sdk');
-const { contractDeployFunction, contractExecuteFunction } = require('../../utils/solidityHelpers');
-const { readOnlyEVMFromMirrorNode, estimateGas } = require('../../utils/hederaMirrorHelpers');
+const { contractDeployFunction, contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
+const { estimateGas } = require('../../utils/gasHelpers');
 const { ethers } = require('ethers');
 
 // Load environment variables
@@ -54,6 +58,7 @@ const lazyContractCreator = 'LAZYTokenCreator';
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'TEST';
+const verifyOnly = process.env.VERIFY_ONLY === 'true';
 
 // Deployment configuration
 // 0% burn for standard LAZY token
@@ -541,7 +546,7 @@ async function fundLazyGasStation() {
 
 	const transferTx = await new TransferTransaction()
 		.addHbarTransfer(operatorId, -parseFloat(fundAmount))
-		.addHbarTransfer(deployedContracts.lazyGasStation, parseFloat(fundAmount))
+		.addHbarTransfer(AccountId.fromString(deployedContracts.lazyGasStation.toString()), parseFloat(fundAmount))
 		.execute(client);
 
 	const receipt = await transferTx.getReceipt(client);
@@ -602,6 +607,43 @@ async function verifyDeployment() {
 async function main() {
 	try {
 		await initializeClient();
+
+		// If verify-only mode, skip deployment and just verify
+		if (verifyOnly) {
+			console.log('\n🔍 VERIFICATION ONLY MODE');
+			console.log('===================================\n');
+			console.log('⚠️  Skipping deployment steps...\n');
+
+			// Load existing contract IDs from environment
+			if (!process.env.LAZY_TOKEN_ID) throw new Error('LAZY_TOKEN_ID required for verification');
+			if (!process.env.LAZY_GAS_STATION_CONTRACT_ID) throw new Error('LAZY_GAS_STATION_CONTRACT_ID required for verification');
+			if (!process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) throw new Error('LAZY_DELEGATE_REGISTRY_CONTRACT_ID required for verification');
+			if (!process.env.PRNG_CONTRACT_ID) throw new Error('PRNG_CONTRACT_ID required for verification');
+			if (!process.env.LAZY_LOTTO_STORAGE) throw new Error('LAZY_LOTTO_STORAGE required for verification');
+			if (!process.env.LAZY_LOTTO_CONTRACT_ID) throw new Error('LAZY_LOTTO_CONTRACT_ID required for verification');
+
+			deployedContracts.lazyToken = TokenId.fromString(process.env.LAZY_TOKEN_ID);
+			deployedContracts.lazySCT = process.env.LAZY_SCT_CONTRACT_ID ? ContractId.fromString(process.env.LAZY_SCT_CONTRACT_ID) : null;
+			deployedContracts.lazyGasStation = ContractId.fromString(process.env.LAZY_GAS_STATION_CONTRACT_ID);
+			deployedContracts.lazyDelegateRegistry = ContractId.fromString(process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID);
+			deployedContracts.prng = ContractId.fromString(process.env.PRNG_CONTRACT_ID);
+			deployedContracts.lazyLottoStorage = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
+			deployedContracts.lazyLotto = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+
+			// Load interfaces for verification
+			const lazyLottoJson = JSON.parse(fs.readFileSync(`./abi/${contractName}.json`));
+			lazyLottoIface = new ethers.Interface(lazyLottoJson);
+
+			const lazyLottoStorageJson = JSON.parse(fs.readFileSync(`./abi/${storageContractName}.json`));
+			lazyLottoStorageIface = new ethers.Interface(lazyLottoStorageJson);
+
+			await verifyDeployment();
+
+			console.log('\n✅ Verification Complete!');
+			process.exit(0);
+		}
+
+		// Normal deployment flow
 		await deployLazyToken();
 		await deployLazyGasStation();
 		await deployLazyDelegateRegistry();

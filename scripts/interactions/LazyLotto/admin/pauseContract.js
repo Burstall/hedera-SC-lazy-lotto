@@ -1,10 +1,11 @@
 /**
- * LazyLotto Unpause Pool Script
+ * LazyLotto Contract Pause/Unpause Script
  *
- * Unpauses a pool to allow ticket purchases.
+ * Pause or unpause the entire LazyLotto contract (emergency stop).
+ * This is different from pool-level pause - this affects ALL operations.
  * Requires ADMIN role.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/unpausePool.js [poolId]
+ * Usage: node scripts/interactions/LazyLotto/admin/pauseContract.js
  */
 
 const {
@@ -39,22 +40,10 @@ function prompt(question) {
 	});
 }
 
-async function unpausePool() {
+async function pauseContract() {
 	let client;
 
 	try {
-		let poolIdStr = process.argv[2];
-
-		if (!poolIdStr) {
-			poolIdStr = await prompt('Enter pool ID to unpause: ');
-		}
-
-		const poolId = parseInt(poolIdStr);
-		if (isNaN(poolId) || poolId < 0) {
-			console.error('❌ Invalid pool ID');
-			process.exit(1);
-		}
-
 		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
 		const envUpper = env.toUpperCase();
 
@@ -75,11 +64,10 @@ async function unpausePool() {
 		client.setOperator(operatorId, operatorKey);
 
 		console.log('\n╔════════════════════════════════════════════════════════════╗');
-		console.log('║            LazyLotto Unpause Pool (Admin)                 ║');
+		console.log('║        LazyLotto Contract Pause/Unpause (Admin)           ║');
 		console.log('╚════════════════════════════════════════════════════════════╝\n');
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
-		console.log(`📄 Contract: ${contractId.toString()}`);
-		console.log(`🎰 Pool: #${poolId}\n`);
+		console.log(`📄 Contract: ${contractId.toString()}\n`);
 
 		// Load contract ABI
 		const contractJson = JSON.parse(
@@ -91,29 +79,55 @@ async function unpausePool() {
 		const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
+		// Menu
+		console.log('⚠️  Contract-level pause affects ALL operations globally.\n');
+		console.log('Select action:');
+		console.log('1. Pause Contract (Emergency Stop)');
+		console.log('2. Unpause Contract');
+
+		const choice = await prompt('\nEnter choice (1-2): ');
+
+		let functionName, actionDesc;
+
+		switch (choice) {
+		case '1':
+			functionName = 'pause';
+			actionDesc = 'Pause';
+			console.log('\n🛑 Pause Contract (Emergency Stop)\n');
+			break;
+		case '2':
+			functionName = 'unpause';
+			actionDesc = 'Unpause';
+			console.log('\n✅ Unpause Contract\n');
+			break;
+		default:
+			console.error('❌ Invalid choice');
+			process.exit(1);
+		}
+
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'unpausePool', [poolId], 100000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, functionName, [], 100000);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
-		const confirm = await prompt(`Unpause pool #${poolId}? (yes/no): `);
+		const confirm = await prompt(`${actionDesc} the entire LazyLotto contract? (yes/no): `);
 		if (confirm.toLowerCase() !== 'yes' && confirm.toLowerCase() !== 'y') {
 			console.log('\n❌ Operation cancelled');
 			process.exit(0);
 		}
 
 		// Execute
-		console.log('\n🔄 Unpausing pool...');
+		console.log(`\n🔄 ${actionDesc}ing contract...`);
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
 			gasLimit,
-			'unpausePool',
-			[poolId],
+			functionName,
+			[],
 		);
 
 		if (receipt.status.toString() !== 'SUCCESS') {
@@ -121,14 +135,12 @@ async function unpausePool() {
 			process.exit(1);
 		}
 
-		console.log('\n✅ Pool unpaused successfully!');
+		console.log(`\n✅ Contract ${actionDesc.toLowerCase()} successfully!`);
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
-
-		console.log('▶️  Pool is now active. Ticket purchases allowed.\n');
 
 	}
 	catch (error) {
-		console.error('\n❌ Error unpausing pool:', error.message);
+		console.error('\n❌ Error managing contract pause state:', error.message);
 		if (error.status) {
 			console.error('Status:', error.status.toString());
 		}
@@ -142,4 +154,4 @@ async function unpausePool() {
 }
 
 // Run the script
-unpausePool();
+pauseContract();
