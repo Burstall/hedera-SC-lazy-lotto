@@ -94,20 +94,21 @@ async function claimFromPrizeNFT() {
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 		const { getSerialsOwned } = require('../../../../utils/hederaMirrorHelpers');
 
-		// Get prize NFT token from contract
-		console.log('🔍 Fetching prize NFT collection...');
+		// Get pool token address from user (prize NFTs are pool-specific)
+		console.log('🔍 Prize NFTs are pool-specific. You need to specify which pool token.\n');
 
-		const encodedQuery = lazyLottoIface.encodeFunctionData('prizeTicketCollection');
-		const prizeNFTAddress = await readOnlyEVMFromMirrorNode(
-			env,
-			contractId,
-			encodedQuery,
-			lazyLottoIface,
-			'prizeTicketCollection',
-			false,
-		);
+		const poolTokenInput = await prompt('Enter pool token ID (0.0.xxxxx): ');
 
-		const prizeNFTId = await convertToHederaId(prizeNFTAddress);
+		// Convert to EVM address
+		function convertToEvmAddress(hederaId) {
+			if (hederaId.startsWith('0x')) return hederaId;
+			const parts = hederaId.split('.');
+			const num = parts[parts.length - 1];
+			return '0x' + BigInt(num).toString(16).padStart(40, '0');
+		}
+
+		const prizeNFTAddress = convertToEvmAddress(poolTokenInput);
+		const prizeNFTId = poolTokenInput;
 		console.log(`Prize NFT Collection: ${prizeNFTId}\n`);
 
 		// Get user's prize NFTs

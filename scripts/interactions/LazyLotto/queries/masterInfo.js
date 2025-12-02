@@ -26,6 +26,9 @@ const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+const storageContractId = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
+
+// Helper: Convert Hedera ID to EVM address
 
 async function convertToHederaId(evmAddress) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
@@ -74,20 +77,71 @@ async function getMasterInfo() {
 		console.log(`📄 Contract: ${contractId.toString()}`);
 		console.log(`👤 Querying as: ${operatorId.toString()}\n`);
 
+		// Test if contract exists first by checking mirror node
+		console.log('🔍 Verifying contract exists on mirror node...');
+		const baseUrl = require('../../../../utils/hederaMirrorHelpers').getBaseURL(env);
+		const axios = require('axios');
+
+		try {
+			const contractResponse = await axios.get(`${baseUrl}/api/v1/contracts/${contractId.toString()}`);
+			if (contractResponse.data && contractResponse.data.contract_id) {
+				console.log('✅ Contract found on mirror node\n');
+			}
+		}
+		catch (error) {
+			if (error.response && error.response.status === 404) {
+				console.error('❌ Contract not found on mirror node.');
+				console.error('   This could mean:');
+				console.error('   1. The contract address is incorrect');
+				console.error('   2. The contract was recently deployed (wait a few minutes for mirror node to sync)');
+				console.error('   3. You are on the wrong network (check ENVIRONMENT in .env)\n');
+				console.error(`   Contract ID: ${contractId.toString()}`);
+				console.error(`   Environment: ${env.toUpperCase()}\n`);
+				console.error('   Try running this script again in a few minutes if the contract was just deployed.\n');
+				process.exit(1);
+			}
+			console.warn('⚠️  Could not verify contract on mirror node, continuing anyway...\n');
+		}
+
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
 		);
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
+		const storageContractJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/LazyLottoStorage.sol/LazyLottoStorage.json'),
+		);
+
+		const lazyLottoStorageIface = new ethers.Interface(storageContractJson.abi);
+
 		// Import helper
 		const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 
 		console.log('🔍 Fetching contract configuration...\n');
 
-		// Get immutable variables
-		let encodedCommand = lazyLottoIface.encodeFunctionData('lazyToken');
-		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		// Get immutable variables (with error handling for 404)
+		let encodedCommand, result;
+
+		try {
+			encodedCommand = lazyLottoIface.encodeFunctionData('lazyToken');
+			console.log('Fetching LAZY token address...', env, contractId.toString(), encodedCommand, operatorId.toString());
+			result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		}
+		catch (error) {
+			if (error.response && error.response.status === 404) {
+				console.error('❌ Contract not found on mirror node.');
+				console.error('   This could mean:');
+				console.error('   1. The contract address is incorrect');
+				console.error('   2. The contract was recently deployed and mirror node is still indexing');
+				console.error('   3. You are on the wrong network (check ENVIRONMENT in .env)\n');
+				console.error(`   Contract ID: ${storageContractId.toString()}`);
+				console.error(`   Environment: ${env.toUpperCase()}\n`);
+				process.exit(1);
+			}
+			throw error;
+		}
+
 		const lazyTokenAddr = lazyLottoIface.decodeFunctionResult('lazyToken', result);
 		const lazyToken = await convertToHederaId(lazyTokenAddr[0]);
 

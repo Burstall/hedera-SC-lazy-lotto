@@ -113,15 +113,13 @@ async function getPoolInfo() {
 
 		console.log('🔍 Fetching pool data...\n');
 
-		// Get pool details
+		// Get pool details (includes prizes)
 		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
 
-		// Get all prizes
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolPrizes', [poolId]);
-		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const prizes = lazyLottoIface.decodeFunctionResult('getPoolPrizes', result);
+		// Prizes are included in pool details
+		const prizes = poolDetails.prizes;
 
 		// Display pool configuration
 		console.log('═══════════════════════════════════════════════════════════');

@@ -116,12 +116,11 @@ async function addPrizePackage() {
 
 		// Check admin or prize manager role
 		console.log('🔍 Verifying permissions...');
-		const adminRole = ethers.keccak256(ethers.toUtf8Bytes('ADMIN'));
 		const userEvmAddress = '0x' + operatorId.toSolidityAddress();
 
-		let encodedCommand = lazyLottoIface.encodeFunctionData('hasRole', [adminRole, userEvmAddress]);
+		let encodedCommand = lazyLottoIface.encodeFunctionData('isAdmin', [userEvmAddress]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const hasAdmin = lazyLottoIface.decodeFunctionResult('hasRole', result);
+		const hasAdmin = lazyLottoIface.decodeFunctionResult('isAdmin', result);
 
 		encodedCommand = lazyLottoIface.encodeFunctionData('isPrizeManager', [userEvmAddress]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);

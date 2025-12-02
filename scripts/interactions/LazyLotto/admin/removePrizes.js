@@ -128,16 +128,8 @@ async function removePrizes() {
 		console.log(`Pool: "${poolDetails.name}"`);
 		console.log(`Total prizes available: ${poolDetails.totalPrizesAvailable.toString()}`);
 
-		// Get prize packages
-		const encodedPrizeQuery = lazyLottoIface.encodeFunctionData('getPoolPrizes', [poolId]);
-		const prizes = await readOnlyEVMFromMirrorNode(
-			env,
-			contractId,
-			encodedPrizeQuery,
-			lazyLottoIface,
-			'getPoolPrizes',
-			false,
-		);
+		// Get prize packages from pool details
+		const prizes = poolDetails.prizes;
 
 		if (!prizes || prizes.length === 0) {
 			console.log('\n⚠️  No prizes to remove');

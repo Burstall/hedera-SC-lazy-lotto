@@ -12,6 +12,8 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
@@ -100,12 +102,11 @@ async function createPool() {
 
 		// Check admin role
 		console.log('🔍 Verifying admin role...');
-		const adminRole = ethers.keccak256(ethers.toUtf8Bytes('ADMIN'));
 		const userEvmAddress = '0x' + operatorId.toSolidityAddress();
 
-		let encodedCommand = lazyLottoIface.encodeFunctionData('hasRole', [adminRole, userEvmAddress]);
+		let encodedCommand = lazyLottoIface.encodeFunctionData('isAdmin', [userEvmAddress]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const hasAdmin = lazyLottoIface.decodeFunctionResult('hasRole', result);
+		const hasAdmin = lazyLottoIface.decodeFunctionResult('isAdmin', result);
 
 		if (!hasAdmin[0]) {
 			console.error('❌ You do not have ADMIN role on this contract');
@@ -146,54 +147,144 @@ async function createPool() {
 		// Create new pool NFT token or use existing
 		const createNewToken = await prompt('Create new pool token? (yes/no): ');
 
-		let poolTokenId;
+		let tokenName, tokenSymbol, tokenMemo;
 
 		if (createNewToken.toLowerCase() === 'yes' || createNewToken.toLowerCase() === 'y') {
-			await prompt('Enter token name: ');
-			await prompt('Enter token symbol: ');
+			tokenName = await prompt('Enter token name: ');
+			tokenSymbol = await prompt('Enter token symbol: ');
+			tokenMemo = await prompt('Enter token memo (optional, press enter to skip): ') || 'LazyLotto Pool Token';
 
 			console.log('\n💡 Note: Pool token creation requires ~20 HBAR fee\n');
-
-			poolTokenId = null;
 		}
 		else {
-			const tokenIdStr = await prompt('Enter existing pool token ID (0.0.xxxxx): ');
-			poolTokenId = convertToEvmAddress(tokenIdStr);
+			console.error('❌ Only new token creation is supported. Use existing tokens for advanced scenarios.');
+			process.exit(1);
+		}
+
+		// Get metadata CIDs
+		const ticketCID = await prompt('Enter ticket metadata CID (for unrolled tickets): ');
+		const winCID = await prompt('Enter winning ticket metadata CID: ');
+
+		if (!ticketCID || !winCID) {
+			console.error('❌ Both ticket CID and win CID are required');
+			process.exit(1);
+		}
+
+		// Royalties (optional, max 10)
+		const addRoyalties = await prompt('Add royalties? (yes/no): ');
+		const royalties = [];
+
+		if (addRoyalties.toLowerCase() === 'yes' || addRoyalties.toLowerCase() === 'y') {
+			let addingRoyalties = true;
+
+			while (addingRoyalties && royalties.length < 10) {
+				console.log(`\n📝 Adding royalty ${royalties.length + 1}/10`);
+
+				const royaltyAccount = await prompt('Enter royalty account (0.0.xxxxx): ');
+				const royaltyPercentage = await prompt('Enter royalty percentage (e.g., 5 for 5%): ');
+				const fallbackFeeHbar = await prompt('Enter fallback fee in HBAR (e.g., 1.5): ');
+
+				const percentage = parseFloat(royaltyPercentage);
+				const fallbackHbar = parseFloat(fallbackFeeHbar);
+
+				if (isNaN(percentage) || percentage < 0 || percentage > 100) {
+					console.error('❌ Invalid royalty percentage');
+					continue;
+				}
+
+				if (isNaN(fallbackHbar) || fallbackHbar < 0) {
+					console.error('❌ Invalid fallback fee');
+					continue;
+				}
+
+				const numerator = Math.floor(percentage * 100);
+				const denominator = 10000;
+				const fallbackFeeTinybar = Math.floor(fallbackHbar * 100_000_000);
+
+				royalties.push({
+					numerator: numerator,
+					denominator: denominator,
+					fallbackfee: fallbackFeeTinybar,
+					account: convertToEvmAddress(royaltyAccount),
+				});
+
+				console.log(`✅ Added: ${percentage}% to ${royaltyAccount}, fallback: ${fallbackHbar} HBAR`);
+
+				if (royalties.length < 10) {
+					const addMore = await prompt('\nAdd another royalty? (yes/no): ');
+					addingRoyalties = addMore.toLowerCase() === 'yes' || addMore.toLowerCase() === 'y';
+				}
+				else {
+					console.log('\n⚠️  Maximum of 10 royalties reached');
+					addingRoyalties = false;
+				}
+			}
+
+			// Summarize royalties
+			console.log('\n═══════════════════════════════════════════════════════════');
+			console.log('  ROYALTY SUMMARY');
+			console.log('═══════════════════════════════════════════════════════════');
+
+			let totalRoyaltyPercentage = 0;
+			royalties.forEach((royalty, index) => {
+				const percentage = (royalty.numerator / royalty.denominator) * 100;
+				const fallbackHbar = royalty.fallbackfee / 100_000_000;
+				totalRoyaltyPercentage += percentage;
+
+				console.log(`  ${index + 1}. ${percentage}% → ${royalty.account.substring(0, 10)}...`);
+				console.log(`     Fallback: ${fallbackHbar} HBAR`);
+			});
+
+			console.log(`\n  Total Royalty: ${totalRoyaltyPercentage.toFixed(2)}%`);
+			console.log('═══════════════════════════════════════════════════════════\n');
+
+			if (totalRoyaltyPercentage > 100) {
+				console.error('⚠️  WARNING: Total royalty percentage exceeds 100%!');
+			}
+
+			const confirmRoyalties = await prompt('Confirm royalties? (yes to continue, no to skip royalties): ');
+			if (confirmRoyalties.toLowerCase() !== 'yes' && confirmRoyalties.toLowerCase() !== 'y') {
+				royalties.length = 0;
+				// Clear royalties array
+				console.log('❌ Royalties cleared, continuing without royalties\n');
+			}
 		}
 
 		// Summary
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Pool Token:       ${tokenName} (${tokenSymbol})`);
 		console.log(`  Win Rate:         ${formatWinRate(winRateThousandthsOfBps)}`);
 		console.log(`  Entry Fee:        ${entryFee} ${feeToken === '0x0000000000000000000000000000000000000000' ? 'HBAR' : await convertToHederaId(feeToken)}`);
-		console.log(`  Pool Token:       ${poolTokenId ? await convertToHederaId(poolTokenId) : 'NEW (will be created)'}`);
+		console.log(`  Ticket CID:       ${ticketCID}`);
+		console.log(`  Win CID:          ${winCID}`);
+		console.log(`  Royalties:        ${royalties.length > 0 ? 'Yes' : 'No'}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		// Estimate gas
 		console.log('⛽ Estimating gas...');
 
-		let functionName;
-		let functionArgs;
-		let payableAmount = '0';
-
-		if (poolTokenId === null) {
-			functionName = 'createPool';
-			functionArgs = [winRateThousandthsOfBps, entryFee, feeToken];
-			payableAmount = '2000000000';
-		}
-		else {
-			functionName = 'createPoolWithToken';
-			functionArgs = [winRateThousandthsOfBps, entryFee, feeToken, poolTokenId];
-		}
+		const functionName = 'createPool';
+		const functionArgs = [
+			tokenName,
+			tokenSymbol,
+			tokenMemo,
+			royalties,
+			ticketCID,
+			winCID,
+			winRateThousandthsOfBps,
+			entryFee,
+			feeToken,
+		];
+		// 20 HBAR for token creation
+		const payableAmount = Number(new Hbar(20).toTinybars());
 
 		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, functionName, functionArgs, 800000, payableAmount);
 		const gasEstimate = gasInfo.gasLimit;
 		console.log(`   Gas: ~${gasEstimate}\n`);
 
-		if (payableAmount !== '0') {
-			console.log('💰 Pool creation fee: 20 HBAR (for NFT token creation)\n');
-		}
+		console.log('💰 Pool creation fee: 20 HBAR (for NFT token creation)\n');
 
 		// Confirm
 		const confirm = await prompt('Proceed with pool creation? (yes/no): ');
@@ -214,7 +305,7 @@ async function createPool() {
 			gasLimit,
 			functionName,
 			functionArgs,
-			payableAmount,
+			new Hbar(Number(payableAmount), HbarUnit.Tinybar),
 		);
 
 		if (receipt.status.toString() !== 'SUCCESS') {
@@ -225,12 +316,29 @@ async function createPool() {
 		console.log('\n✅ Pool created successfully!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
-		// Get new pool ID
-		encodedCommand = lazyLottoIface.encodeFunctionData('totalPools');
-		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const totalPools = lazyLottoIface.decodeFunctionResult('totalPools', result);
+		// Decode the poolId from the contract function result
+		let newPoolId;
+		try {
+			// The createPool function returns the poolId
+			const decodedResult = lazyLottoIface.decodeFunctionResult('createPool', results);
+			newPoolId = Number(decodedResult.poolId);
+			console.log(`🎰 New Pool ID: #${newPoolId}\n`);
+		}
+		catch (decodeError) {
+			console.log('⚠️  Could not decode pool ID from transaction result');
+			console.log('    Use the queries/masterInfo.js script to view all pools\n');
 
-		const newPoolId = Number(totalPools[0]) - 1;
+			console.log(decodeError);
+
+			console.log('💡 Next steps:');
+			console.log('   - Use addPrizePackage.js to add prizes to the pool');
+			console.log('   - Users can buy entries once prizes are added\n');
+			return;
+		}
+
+		// Wait a moment for mirror node to sync
+		console.log('⏳ Waiting for mirror node to sync...');
+		await new Promise(resolve => setTimeout(resolve, 3000));
 
 		// Get pool details
 		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [newPoolId]);

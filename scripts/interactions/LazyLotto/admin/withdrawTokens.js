@@ -181,28 +181,11 @@ async function withdrawTokens() {
 			const storageBalance = await queryTokenBalance(env, storageContractId.toString(), tokenId.toString());
 			console.log(`Storage contract balance: ${storageBalance.toString()} units`);
 
-			// Check ftTokensForPrizes
-			const encodedQuery = lazyLottoIface.encodeFunctionData('ftTokensForPrizes', [tokenAddress]);
-			const allocatedForPrizes = await readOnlyEVMFromMirrorNode(
-				env,
-				contractId,
-				encodedQuery,
-				lazyLottoIface,
-				'ftTokensForPrizes',
-				false,
-			);
+			// Note: The contract's transferFungible function has built-in safety checks
+			// to ensure prize obligations are maintained
+			console.log(`⚠️  Contract will verify prize obligations before allowing withdrawal\n`);
 
-			console.log(`Allocated for prizes: ${allocatedForPrizes.toString()} units`);
-
-			const available = storageBalance - allocatedForPrizes;
-			console.log(`Available to withdraw: ${available.toString()} units\n`);
-
-			if (available <= 0n) {
-				console.error('❌ No excess tokens available to withdraw');
-				process.exit(1);
-			}
-
-			const amountStr = await prompt(`Enter amount to withdraw (max ${available.toString()}): `);
+			const amountStr = await prompt(`Enter amount to withdraw: `);
 
 			let amount;
 			try {
