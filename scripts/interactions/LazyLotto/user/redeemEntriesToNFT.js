@@ -108,14 +108,15 @@ async function redeemEntriesToNFT() {
 		// Get user's entries
 		const userEvmAddress = operatorId.toSolidityAddress();
 		let encodedCommand = lazyLottoIface.encodeFunctionData('getUsersEntries', [poolId, userEvmAddress]);
-		const entries = await readOnlyEVMFromMirrorNode(
+		let result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedCommand,
-			lazyLottoIface,
-			'getUsersEntries',
+			operatorId,
 			false,
 		);
+		const entriesResult = lazyLottoIface.decodeFunctionResult('getUsersEntries', result);
+		const entries = entriesResult[0];
 
 		const totalEntries = Number(entries);
 
@@ -128,14 +129,15 @@ async function redeemEntriesToNFT() {
 
 		// Get pool details
 		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedCommand,
-			lazyLottoIface,
-			'getPoolDetails',
+			operatorId,
 			false,
 		);
+		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const poolDetails = poolDetailsResult[0];
 
 		console.log('Pool Token:', await convertToHederaId(poolDetails.poolTokenId));
 

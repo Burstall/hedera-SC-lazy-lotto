@@ -152,14 +152,15 @@ async function claimFromPrizeNFT() {
 
 		const userAddress = operatorId.toSolidityAddress();
 		const encodedPrizeQuery = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userAddress]);
-		const pendingPrizes = await readOnlyEVMFromMirrorNode(
+		const result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedPrizeQuery,
-			lazyLottoIface,
-			'getPendingPrizes',
+			operatorId,
 			false,
 		);
+		const pendingPrizesResult = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
+		const pendingPrizes = pendingPrizesResult[0];
 
 		// Filter for NFT format prizes
 		const nftPrizes = pendingPrizes.filter(p => p.formatType === 1);

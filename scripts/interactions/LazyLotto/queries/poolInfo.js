@@ -14,17 +14,23 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
 
+const { homebrewPopulateAccountNum, EntityType, getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+
+let tokenDets = null;
 
 // Helper: Prompt user
 function prompt(question) {
@@ -42,11 +48,11 @@ function prompt(question) {
 }
 
 // Helper: Convert Hedera ID to EVM address
-async function convertToHederaId(evmAddress) {
+async function convertToHederaId(evmAddress, entityType = null) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
-	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
-	return await homebrewPopulateAccountNum(env, evmAddress);
+	// Use null to try all entity types (accounts, tokens, contracts)
+	return await homebrewPopulateAccountNum(env, evmAddress, entityType);
 }
 
 // Helper: Format win rate
@@ -56,7 +62,7 @@ function formatWinRate(thousandthsOfBps) {
 
 // Helper: Format HBAR
 function formatHbar(tinybars) {
-	return (Number(tinybars) / 100_000_000).toFixed(8) + ' ℏ';
+	return new Hbar(Number(tinybars), HbarUnit.Tinybar).toString();
 }
 
 async function getPoolInfo() {
@@ -114,9 +120,11 @@ async function getPoolInfo() {
 		console.log('🔍 Fetching pool data...\n');
 
 		// Get pool details (includes prizes)
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		// ethers v6 returns Result object - access first element
+		const poolDetails = poolDetailsResult[0];
 
 		// Prizes are included in pool details
 		const prizes = poolDetails.prizes;
@@ -125,15 +133,20 @@ async function getPoolInfo() {
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL CONFIGURATION');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Win Rate:         ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(poolDetails.winRateThousandthsOfBps))}`);
 
-		const feeToken = await convertToHederaId(poolDetails.feeToken);
+		const feeToken = await convertToHederaId(poolDetails.feeToken, EntityType.TOKEN);
+
+		if (feeToken !== 'HBAR') {
+			tokenDets = await getTokenDetails(env, feeToken);
+		}
+
 		const feeAmount = feeToken === 'HBAR'
-			? formatHbar(poolDetails.entryFee)
-			: `${poolDetails.entryFee} (${feeToken})`;
+			? formatHbar(Number(poolDetails.entryFee))
+			: `${poolDetails.entryFee / 10 ** tokenDets.decimals} (${feeToken})`;
 		console.log(`  Entry Fee:        ${feeAmount}`);
 
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId, EntityType.TOKEN)}`);
 		console.log(`  State:            ${poolDetails.paused ? '⏸️  PAUSED' : poolDetails.closed ? '🔒 CLOSED' : '✅ ACTIVE'}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
@@ -142,33 +155,40 @@ async function getPoolInfo() {
 		console.log('  PRIZES');
 		console.log('═══════════════════════════════════════════════════════════');
 
-		if (prizes[0].length === 0) {
+		if (prizes.length === 0) {
 			console.log('  No prizes in this pool\n');
 		}
 		else {
-			console.log(`  Total: ${prizes[0].length} prize(s)\n`);
+			console.log(`  Total: ${prizes.length} prize(s)\n`);
 
-			for (let i = 0; i < prizes[0].length; i++) {
-				const prize = prizes[0][i];
+			for (let i = 0; i < prizes.length; i++) {
+				const prize = prizes[i];
 				console.log(`  Prize #${i}:`);
 
 				// FT component
-				if (prize.amount > 0) {
-					const tokenId = await convertToHederaId(prize.token);
-					const amount = tokenId === 'HBAR' ? formatHbar(prize.amount) : prize.amount.toString();
-					console.log(`    FT:   ${amount} ${tokenId}`);
+				if (Number(prize.amount) > 0) {
+					const prizeTokenId = await convertToHederaId(prize.token);
+					let amount;
+					if (prizeTokenId === 'HBAR') {
+						amount = formatHbar(Number(prize.amount));
+					}
+					else {
+						const prizeTokenDets = await getTokenDetails(env, prizeTokenId);
+						amount = `${Number(prize.amount) / (10 ** prizeTokenDets.decimals)} ${prizeTokenDets.symbol}`;
+					}
+					console.log(`    FT:   ${amount}`);
 				}
 
 				// NFT components
 				const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
 				if (nftTokens.length > 0) {
-					console.log(`    NFTs: ${prize.nftSerials.length} NFT(s) from ${nftTokens.length} collection(s)`);
+					// prize.nftSerials is an array of arrays - flatten to count total
+					const totalSerials = prize.nftSerials.reduce((sum, serialArray) => sum + serialArray.length, 0);
+					console.log(`    NFTs: ${totalSerials} NFT(s) from ${nftTokens.length} collection(s)`);
 					for (let j = 0; j < nftTokens.length; j++) {
 						const tokenId = await convertToHederaId(nftTokens[j]);
-						// Count serials for this token
-						const serialCount = prize.nftSerials.filter((_, idx) =>
-							prize.nftTokens[idx] === nftTokens[j],
-						).length;
+						// Each NFT token has its own array of serials
+						const serialCount = prize.nftSerials[j].length;
 						console.log(`          - ${tokenId}: ${serialCount} serial(s)`);
 					}
 				}
@@ -184,9 +204,9 @@ async function getPoolInfo() {
 		console.log('  SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Pool State:     ${poolDetails.paused ? 'PAUSED' : poolDetails.closed ? 'CLOSED' : 'ACTIVE'}`);
-		console.log(`  Win Rate:       ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
+		console.log(`  Win Rate:       ${formatWinRate(Number(poolDetails.winRateThousandthsOfBps))}`);
 		console.log(`  Entry Fee:      ${feeAmount}`);
-		console.log(`  Total Prizes:   ${prizes[0].length}`);
+		console.log(`  Total Prizes:   ${prizes.length}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		console.log('✅ Pool info query complete!\n');

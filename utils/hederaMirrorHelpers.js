@@ -2,6 +2,13 @@ const { AccountId } = require('@hashgraph/sdk');
 const { default: axios } = require('axios');
 const { ethers } = require('hardhat');
 
+// Entity type enum for mirror node queries
+const EntityType = {
+	ACCOUNT: 'accounts',
+	TOKEN: 'tokens',
+	CONTRACT: 'contracts',
+};
+
 function getBaseURL(env) {
 	if (env.toLowerCase() == 'test' || env.toLowerCase() == 'testnet') {
 		return 'https://testnet.mirrornode.hedera.com';
@@ -511,9 +518,10 @@ async function getContractEVMAddress(env, contractId) {
  * Uses mirror to get the correct EVM address
  * @param {string} env
  * @param {AccountId | string} accountId
+ * @param {string} entityType - Optional: EntityType.ACCOUNT, EntityType.TOKEN, or EntityType.CONTRACT. Defaults to trying all if null.
  * @returns string
  */
-async function homebrewPopulateAccountEvmAddress(env, accountId) {
+async function homebrewPopulateAccountEvmAddress(env, accountId, entityType = null) {
 	if (accountId === null) {
 		throw new Error('field `accountId` should not be null');
 	}
@@ -530,35 +538,100 @@ async function homebrewPopulateAccountEvmAddress(env, accountId) {
 		return ethers.ZeroAddress;
 	}
 
+	const entityId = acctId.num.toString();
 	let evmAddress;
-	try {
-		const url = `${baseUrl}/api/v1/accounts/${acctId.num.toString()}`;
-		const mirrorAccountId = (await axios.get(url)).data.evm_address;
-		evmAddress = ethers.getAddress(mirrorAccountId);
+
+	// If entityType is specified, try that specific type
+	if (entityType) {
+		try {
+			const url = `${baseUrl}/api/v1/${entityType}/${entityId}`;
+			const response = await axios.get(url);
+			evmAddress = ethers.getAddress(response.data.evm_address);
+			return evmAddress;
+		}
+		catch (error) {
+			console.error(`Error fetching EVM address from ${entityType}:`, error.message);
+			evmAddress = acctId.toSolidityAddress();
+			return evmAddress;
+		}
 	}
-	catch (error) {
-		console.error('Error fetching EVM address:', error);
-		evmAddress = acctId.toSolidityAddress();
+
+	// If no entityType specified, try accounts first, then tokens, then contracts
+	const typesToTry = [EntityType.ACCOUNT, EntityType.TOKEN, EntityType.CONTRACT];
+
+	for (const type of typesToTry) {
+		try {
+			const url = `${baseUrl}/api/v1/${type}/${entityId}`;
+			const response = await axios.get(url);
+			evmAddress = ethers.getAddress(response.data.evm_address);
+			return evmAddress;
+		}
+		catch {
+			// Continue to next type
+			continue;
+		}
 	}
+
+	// If all failed, fall back to toSolidityAddress
+	console.error('Error fetching EVM address from all entity types, using toSolidityAddress fallback');
+	evmAddress = acctId.toSolidityAddress();
 	return evmAddress;
 }
 
-async function homebrewPopulateAccountNum(env, evmAddress) {
+/**
+ * Converts EVM address to Hedera ID format
+ * @param {string} env
+ * @param {string} evmAddress
+ * @param {string} entityType - Optional: EntityType.ACCOUNT, EntityType.TOKEN, or EntityType.CONTRACT. Defaults to trying all if null.
+ * @returns {string} Hedera ID in format 0.0.xxxxx
+ */
+async function homebrewPopulateAccountNum(env, evmAddress, entityType = null) {
 	if (evmAddress === null) {
 		throw new Error('field `evmAddress` should not be null');
 	}
 
 	const baseUrl = getBaseURL(env);
 
-	const url = `${baseUrl}/api/v1/accounts/${evmAddress}`;
-	const mirrorAccountId = (await axios.get(url)).data.account;
-	const acctId = AccountId.fromString(mirrorAccountId);
-	const accountId = acctId.toString();
+	// If entityType is specified, try that specific type
+	if (entityType) {
+		try {
+			const url = `${baseUrl}/api/v1/${entityType}/${evmAddress}`;
+			const response = await axios.get(url);
+			// Different entity types have different ID field names
+			const entityId = response.data.account || response.data.token_id || response.data.contract_id;
+			return entityId;
+		}
+		catch (error) {
+			throw new Error(`Failed to resolve ${entityType} with EVM address ${evmAddress}: ${error.message}`);
+		}
+	}
 
-	return accountId;
+	// If no entityType specified, try accounts first, then tokens, then contracts
+	const typesToTry = [
+		{ type: EntityType.ACCOUNT, idField: 'account' },
+		{ type: EntityType.TOKEN, idField: 'token_id' },
+		{ type: EntityType.CONTRACT, idField: 'contract_id' },
+	];
+
+	for (const { type, idField } of typesToTry) {
+		try {
+			const url = `${baseUrl}/api/v1/${type}/${evmAddress}`;
+			const response = await axios.get(url);
+			const entityId = response.data[idField];
+			if (entityId) return entityId;
+		}
+		catch {
+			// Continue to next type
+			continue;
+		}
+	}
+
+	// If all failed, throw error
+	throw new Error(`Failed to resolve EVM address ${evmAddress} as account, token, or contract`);
 }
 
 module.exports = {
+	EntityType,
 	checkMirrorAllowance,
 	checkMirrorNFTAllowance,
 	getSerialsOwned,

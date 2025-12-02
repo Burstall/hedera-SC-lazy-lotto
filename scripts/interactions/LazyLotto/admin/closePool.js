@@ -95,17 +95,18 @@ async function closePool() {
 		console.log('🔍 Checking pool status...');
 
 		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		const result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedQuery,
-			lazyLottoIface,
-			'getPoolDetails',
+			operatorId,
 			false,
 		);
+		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const poolDetails = poolDetailsResult[0];
 
-		if (!poolDetails || !poolDetails.used) {
-			console.error('\n❌ Pool does not exist or is not in use');
+		if (!poolDetails) {
+			console.error('\n❌ Pool does not exist');
 			process.exit(1);
 		}
 
@@ -114,19 +115,12 @@ async function closePool() {
 			process.exit(0);
 		}
 
-		console.log(`Pool: "${poolDetails.name}"`);
-		console.log(`Total Entries: ${poolDetails.totalEntries.toString()}`);
-		console.log(`Outstanding Tokens: ${poolDetails.tokensForPoolPrizes.toString()}\n`);
+		console.log(`Outstanding Entries: ${poolDetails.outstandingEntries.toString()}\n`);
 
-		// Warn if there are outstanding entries/prizes
-		if (poolDetails.totalEntries > 0n) {
+		// Warn if there are outstanding entries
+		if (Number(poolDetails.outstandingEntries) > 0) {
 			console.log('⚠️  WARNING: Pool has outstanding entries!');
 			console.log('   Users should roll and claim prizes before closing.\n');
-		}
-
-		if (poolDetails.tokensForPoolPrizes > 0n) {
-			console.log('⚠️  WARNING: Pool has outstanding prize tokens!');
-			console.log('   All prizes should be claimed before closing.\n');
 		}
 
 		// Estimate gas
@@ -146,7 +140,7 @@ async function closePool() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,

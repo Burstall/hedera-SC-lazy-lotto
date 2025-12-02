@@ -12,11 +12,15 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const { getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -128,7 +132,8 @@ async function buyEntry() {
 		// Get pool details
 		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const poolDetails = poolDetailsResult[0];
 
 		// Validate pool state
 		if (poolDetails.paused) {
@@ -146,11 +151,17 @@ async function buyEntry() {
 		const feePerEntry = poolDetails.entryFee;
 		const totalFee = BigInt(feePerEntry) * BigInt(quantity);
 
+		// Get token details for formatting
+		let tokenDets = null;
+		if (feeToken !== 'HBAR') {
+			tokenDets = await getTokenDetails(env, feeToken);
+		}
+
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL INFORMATION');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Win Rate:         ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
-		console.log(`  Entry Fee:        ${feeToken === 'HBAR' ? formatHbar(feePerEntry) : `${feePerEntry} ${feeToken}`}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(poolDetails.winRateThousandthsOfBps))}`);
+		console.log(`  Entry Fee:        ${feeToken === 'HBAR' ? new Hbar(Number(feePerEntry), HbarUnit.Tinybar).toString() : `${Number(feePerEntry) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
 		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
@@ -158,20 +169,18 @@ async function buyEntry() {
 		console.log('  PURCHASE SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Quantity:         ${quantity} entries`);
-		console.log(`  Total Cost:       ${feeToken === 'HBAR' ? formatHbar(totalFee) : `${totalFee} ${feeToken}`}`);
-		console.log('═══════════════════════════════════════════════════════════\n');
-
-		// Check if FT payment required
+		console.log(`  Total Cost:       ${feeToken === 'HBAR' ? new Hbar(Number(totalFee), HbarUnit.Tinybar).toString() : `${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
+		console.log('═══════════════════════════════════════════════════════════\n');		// Check if FT payment required
 		if (feeToken !== 'HBAR') {
 			const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
 			const balance = await checkMirrorBalance(env, operatorId.toString(), feeToken);
 
-			console.log(`💰 Your ${feeToken} balance: ${balance}\n`);
+			console.log(`💰 Your ${tokenDets.symbol} balance: ${Number(balance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}\n`);
 
 			if (BigInt(balance) < totalFee) {
-				console.error(`❌ Insufficient ${feeToken} balance`);
-				console.error(`   Required: ${totalFee}`);
-				console.error(`   Available: ${balance}`);
+				console.error(`❌ Insufficient ${tokenDets.symbol} balance`);
+				console.error(`   Required: ${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`);
+				console.error(`   Available: ${Number(balance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`);
 				process.exit(1);
 			}
 

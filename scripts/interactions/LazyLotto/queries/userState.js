@@ -15,11 +15,16 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const { getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+const { homebrewPopulateAccountNum, EntityType } = require('../../../../utils/hederaMirrorHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -50,21 +55,16 @@ function convertToEvmAddress(hederaId) {
 	return '0x' + BigInt(num).toString(16).padStart(40, '0');
 }
 
-async function convertToHederaId(evmAddress) {
+async function convertToHederaId(evmAddress, entityType = null) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
-	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
-	return await homebrewPopulateAccountNum(env, evmAddress);
+	// Use null to try all entity types (accounts, tokens, contracts)
+	return await homebrewPopulateAccountNum(env, evmAddress, entityType);
 }
 
 // Helper: Format win rate
 function formatWinRate(thousandthsOfBps) {
-	return (thousandthsOfBps / 1_000_000).toFixed(4) + '%';
-}
-
-// Helper: Format HBAR
-function formatHbar(tinybars) {
-	return (Number(tinybars) / 100_000_000).toFixed(8) + ' ℏ';
+	return (Number(thousandthsOfBps) / 1_000_000).toFixed(4) + '%';
 }
 
 async function getUserState() {
@@ -151,7 +151,8 @@ async function getUserState() {
 				// Get pool details
 				encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [i]);
 				result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-				const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+				const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+				const poolDetails = poolDetailsResult[0];
 
 				userEntries.push({
 					poolId: i,
@@ -179,7 +180,17 @@ async function getUserState() {
 				console.log(`    Tickets:    ${entry.entryCount}`);
 				console.log(`    Win Rate:   ${formatWinRate(entry.winRate)} (base)`);
 				console.log(`    Boosted:    ${formatWinRate(Number(entry.winRate) + Number(boostBps[0]))}`);
-				console.log(`    Entry Fee:  ${entry.feeToken === 'HBAR' ? formatHbar(entry.entryFee) : `${entry.entryFee} (${entry.feeToken})`}`);
+
+				// Format entry fee with proper decimals
+				let formattedFee;
+				if (entry.feeToken === 'HBAR') {
+					formattedFee = new Hbar(Number(entry.entryFee), HbarUnit.Tinybar).toString();
+				}
+				else {
+					const tokenDets = await getTokenDetails(env, entry.feeToken);
+					formattedFee = `${Number(entry.entryFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`;
+				}
+				console.log(`    Entry Fee:  ${formattedFee}`);
 				console.log();
 			}
 		}
@@ -214,12 +225,17 @@ async function getUserState() {
 				if (prize.amount > 0) {
 					const tokenId = prize.token === '0x0000000000000000000000000000000000000000'
 						? 'HBAR'
-						: await convertToHederaId(prize.token);
-					prizeItems.push(
-						tokenId === 'HBAR'
-							? formatHbar(prize.amount)
-							: `${prize.amount} ${tokenId}`,
-					);
+						: await convertToHederaId(prize.token, EntityType.TOKEN);
+
+					let formattedAmount;
+					if (tokenId === 'HBAR') {
+						formattedAmount = new Hbar(Number(prize.amount), HbarUnit.Tinybar).toString();
+					}
+					else {
+						const tokenDets = await getTokenDetails(env, tokenId);
+						formattedAmount = `${Number(prize.amount) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`;
+					}
+					prizeItems.push(formattedAmount);
 				}
 				if (prize.nftTokens.length > 0) {
 					const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
