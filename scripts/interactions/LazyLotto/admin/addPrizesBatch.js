@@ -4,6 +4,8 @@ const {
 	ContractExecuteTransaction,
 	ContractFunctionParameters,
 	TokenId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { setNFTAllowanceAll } = require('../../../../utils/hederaHelpers');
 const {
@@ -13,7 +15,6 @@ const {
 	getNFTApprovedForAllAllowances,
 } = require('../../../../utils/nodeHelpers');
 const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
-const { gasEstimation } = require('../../../../utils/gasHelpers');
 const { getArgFlag } = require('../../../../utils/solidityHelpers');
 
 /**
@@ -319,33 +320,31 @@ const main = async () => {
 
 		// Estimate gas for this package
 		try {
-			const [, gasLimit] = await gasEstimation(
-				env,
-				contractId,
-				'addPrizePackage',
-				params,
-				operatorId,
-			);
+			// Calculate gas with association buffer
+			const baseGas = 800000;
+			const finalGasLimit = baseGas + tokenAssociationGas;
 
-			// Add token association gas if needed
-			const finalGasLimit = gasLimit + tokenAssociationGas;
-			console.log(`   ⛽ Base Gas: ${gasLimit.toLocaleString()}`);
+			console.log(`   ⛽ Gas Estimate: ${finalGasLimit.toLocaleString()}`);
 			if (tokenAssociationGas > 0) {
-				console.log(`   ⛽ Final Gas: ${finalGasLimit.toLocaleString()} (includes association gas)`);
+				console.log(`   💡 (Includes +${tokenAssociationGas.toLocaleString()} for ${(tokenAssociationGas / 1_000_000)} token association(s))`);
 			}
 
 			// Submit transaction
-			const contractExecTx = await new ContractExecuteTransaction()
+			let contractExecTx = new ContractExecuteTransaction()
 				.setContractId(contractId)
 				.setGas(finalGasLimit)
-				.setFunction('addPrizePackage', params)
-				.freezeWith(client);
+				.setFunction('addPrizePackage', params);
+
+			// Add HBAR payment if package contains HBAR
+			if (pkg.hbar) {
+				contractExecTx = contractExecTx.setPayableAmount(new Hbar(Number(pkg.hbar), HbarUnit.Tinybar));
+			}
+
+			contractExecTx = await contractExecTx.freezeWith(client);
 
 			const contractExecSign = await contractExecTx.sign(operatorKey);
 			const contractExecSubmit = await contractExecSign.execute(client);
-			const contractExecRx = await contractExecSubmit.getReceipt(client);
-
-			if (contractExecRx.status.toString() !== 'SUCCESS') {
+			const contractExecRx = await contractExecSubmit.getReceipt(client); if (contractExecRx.status.toString() !== 'SUCCESS') {
 				throw new Error(`Failed: ${contractExecRx.status.toString()}`);
 			}
 

@@ -198,14 +198,26 @@ async function getPoolInfo() {
 					const totalSerials = prize.nftSerials.reduce((sum, serialArray) => sum + serialArray.length, 0);
 					console.log(`    NFTs: ${totalSerials} NFT(s) from ${nftTokens.length} collection(s)`);
 					for (let j = 0; j < nftTokens.length; j++) {
-						const tokenId = await convertToHederaId(nftTokens[j]);
-						// Each NFT token has its own array of serials
-						const serialCount = prize.nftSerials[j].length;
-						console.log(`          - ${tokenId}: ${serialCount} serial(s)`);
-					}
-				}
+						const tokenId = await convertToHederaId(nftTokens[j], EntityType.TOKEN);
 
-				console.log();
+						// Get token details from mirror node
+						let tokenSymbol = tokenId;
+						let tokenName = 'Unknown';
+						try {
+							tokenDets = await getTokenDetails(env, tokenId);
+							tokenSymbol = tokenDets.symbol || tokenId;
+							tokenName = tokenDets.name || 'Unknown';
+						}
+						catch {
+							// Use token ID if details unavailable
+						}
+
+						// Each NFT token has its own array of serials
+						const serials = prize.nftSerials[j].map(s => Number(s));
+						const serialsStr = serials.join(', ');
+						console.log(`          - ${tokenId} (${tokenSymbol} - ${tokenName}): [${serialsStr}]`);
+					}
+				} console.log();
 			}
 		}
 

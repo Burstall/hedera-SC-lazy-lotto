@@ -359,21 +359,39 @@ async function getMasterInfo() {
 					tokenDetailsCache.set(prizeTokenId, await getTokenDetails(env, prizeTokenId));
 				}
 
-				const nftTokensConverted = await Promise.all(
-					prizePackage[0].nftTokens.map(async addr =>
-						addr === '0x0000000000000000000000000000000000000000'
-							? null
-							: await convertToHederaId(addr),
-					),
-				); const prize = {
+				// Convert NFT token addresses and cache their details
+				const nftTokensWithDetails = [];
+				for (let k = 0; k < prizePackage[0].nftTokens.length; k++) {
+					const addr = prizePackage[0].nftTokens[k];
+					if (addr === '0x0000000000000000000000000000000000000000') continue;
+
+					const tokenId = await convertToHederaId(addr, EntityType.TOKEN);
+
+					// Cache token details for NFT
+					if (!tokenDetailsCache.has(tokenId)) {
+						try {
+							tokenDetailsCache.set(tokenId, await getTokenDetails(env, tokenId));
+						}
+						catch {
+							// If token details fail, use basic info
+							tokenDetailsCache.set(tokenId, { symbol: tokenId, name: 'Unknown' });
+						}
+					}
+
+					const serials = prizePackage[0].nftSerials[k].map(s => Number(s));
+					nftTokensWithDetails.push({
+						tokenId,
+						serials,
+					});
+				}
+
+				const prize = {
 					token: prizeTokenId,
 					amount: Number(prizePackage[0].amount),
-					nftTokens: nftTokensConverted.filter(t => t !== null),
-					nftSerials: prizePackage[0].nftSerials.map(serialArray => serialArray.map(s => Number(s))),
-				}; pool.prizes.push(prize);
-			}
-
-			pools.push(pool);
+					nftTokens: nftTokensWithDetails,
+				};
+				pool.prizes.push(prize);
+			} pools.push(pool);
 		}
 
 		// Display all pools
@@ -408,10 +426,22 @@ async function getMasterInfo() {
 							: `${prize.amount / (10 ** prizeTokenDets.decimals)} ${prizeTokenDets.symbol}`;
 						prizeItems.push(formattedAmount);
 					}
+
+					// Build main prize line
 					if (prize.nftTokens.length > 0) {
-						prizeItems.push(`${prize.nftSerials.length} NFTs from ${prize.nftTokens.length} collection(s)`);
+						const totalSerials = prize.nftTokens.reduce((sum, nft) => sum + nft.serials.length, 0);
+						prizeItems.push(`${totalSerials} NFT${totalSerials !== 1 ? 's' : ''}`);
 					}
 					console.log(`│    ${idx + 1}. ${prizeItems.join(' + ')}`);
+
+					// Show NFT details on separate lines
+					if (prize.nftTokens.length > 0) {
+						prize.nftTokens.forEach(nft => {
+							const tokenDets = tokenDetailsCache.get(nft.tokenId);
+							const serialsStr = nft.serials.join(', ');
+							console.log(`│        - ${nft.tokenId} (${tokenDets.symbol}): [${serialsStr}]`);
+						});
+					}
 				});
 			}
 			else {

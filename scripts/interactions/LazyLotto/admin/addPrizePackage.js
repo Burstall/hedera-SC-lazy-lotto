@@ -464,24 +464,24 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId
 	}
 
 	// Estimate gas
-	console.log('⛽ Estimating gas...');
+	console.log('\n⛽ Estimating gas...');
+	const fallbackGas = 800000 + tokenAssociationGas;
 	const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'addPrizePackage', [
 		poolId,
 		ftToken,
 		ftAmount,
 		nftTokens,
 		nftSerials,
-	], 800000, ftToken === '0x0000000000000000000000000000000000000000' ? ftAmount : '0');
-	let gasEstimate = gasInfo.gasLimit;
+	], fallbackGas, ftToken === '0x0000000000000000000000000000000000000000' ? ftAmount : '0');
+	const gasEstimate = gasInfo.gasLimit;
 
-	// Add token association gas if needed
+	// Show final gas with association info if applicable
 	if (tokenAssociationGas > 0) {
-		console.log(`   Base Gas: ~${gasEstimate.toLocaleString()}`);
-		gasEstimate += tokenAssociationGas;
-		console.log(`   Final Gas: ~${gasEstimate.toLocaleString()} (includes association gas)\n`);
+		console.log(`   Gas Estimate: ~${gasEstimate.toLocaleString()}`);
+		console.log(`   💡 (Includes +${tokenAssociationGas.toLocaleString()} for ${(tokenAssociationGas / 1_000_000)} token association(s))\n`);
 	}
 	else {
-		console.log(`   Gas: ~${gasEstimate.toLocaleString()}\n`);
+		console.log(`   Gas: ~${gasEstimate}\n`);
 	}
 
 	// Calculate HBAR needed
@@ -509,7 +509,7 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId
 		gasLimit,
 		'addPrizePackage',
 		[poolId, ftToken, ftAmount, nftTokens, nftSerials],
-		payableAmount,
+		new Hbar(payableAmount, HbarUnit.Tinybar),
 	);
 
 	if (receipt.status.toString() !== 'SUCCESS') {
