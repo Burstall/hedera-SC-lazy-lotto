@@ -354,17 +354,31 @@ async function createPool() {
 		await new Promise(resolve => setTimeout(resolve, 3000));
 
 		// Get pool details
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [newPoolId]);
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [newPoolId]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const [, , verifyWinRate, verifyEntryFee, , , verifyPoolTokenId, , , verifyFeeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
+
+		// Format entry fee with proper decimals
+		const verifyFeeTokenId = await convertToHederaId(verifyFeeToken);
+		let formattedEntryFee;
+		if (verifyFeeToken === '0x0000000000000000000000000000000000000000') {
+			// HBAR
+			formattedEntryFee = new Hbar(Number(verifyEntryFee), HbarUnit.Tinybar).toString();
+		}
+		else {
+			// FT - get token details for decimals
+			const verifyTokenDets = await getTokenDetails(env, verifyFeeTokenId);
+			formattedEntryFee = `${Number(verifyEntryFee) / (10 ** verifyTokenDets.decimals)} ${verifyTokenDets.symbol}`;
+		}
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  NEW POOL DETAILS');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Pool ID:          #${newPoolId}`);
-		console.log(`  Win Rate:         ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
-		console.log(`  Entry Fee:        ${entryFee} ${await convertToHederaId(poolDetails.feeToken)}`);
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(verifyWinRate))}`);
+		console.log(`  Entry Fee:        ${formattedEntryFee}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(verifyPoolTokenId)}`);
 		console.log('  State:            ACTIVE');
 		console.log('═══════════════════════════════════════════════════════════\n');
 

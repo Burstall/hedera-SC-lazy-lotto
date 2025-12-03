@@ -94,9 +94,15 @@ async function claimAllPrizes() {
 
 		// Get pending prizes
 		const userEvmAddress = '0x' + operatorId.toSolidityAddress();
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userEvmAddress]);
+		// Get pending prizes count first
+		const countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userEvmAddress]);
+		const countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);
+		const prizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
+
+		// Get all pending prizes
+		let encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userEvmAddress, 0, Number(prizeCount)]);
 		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
+		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
 
 		if (pendingPrizes[0].length === 0) {
 			console.log('❌ You have no pending prizes to claim\n');

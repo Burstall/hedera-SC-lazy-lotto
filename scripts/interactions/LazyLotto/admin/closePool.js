@@ -94,7 +94,7 @@ async function closePool() {
 		// Check pool status first
 		console.log('🔍 Checking pool status...');
 
-		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		const result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
@@ -102,23 +102,24 @@ async function closePool() {
 			operatorId,
 			false,
 		);
-		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
-		const poolDetails = poolDetailsResult[0];
+		const poolBasicInfo = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
+		// Destructure: (ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken)
+		const [, , , , , outstandingEntries, , , closed] = poolBasicInfo;
 
-		if (!poolDetails) {
+		if (!poolBasicInfo) {
 			console.error('\n❌ Pool does not exist');
 			process.exit(1);
 		}
 
-		if (poolDetails.closed) {
+		if (closed) {
 			console.log('\n⚠️  Pool is already closed');
 			process.exit(0);
 		}
 
-		console.log(`Outstanding Entries: ${poolDetails.outstandingEntries.toString()}\n`);
+		console.log(`Outstanding Entries: ${outstandingEntries.toString()}\n`);
 
 		// Warn if there are outstanding entries
-		if (Number(poolDetails.outstandingEntries) > 0) {
+		if (Number(outstandingEntries) > 0) {
 			console.log('⚠️  WARNING: Pool has outstanding entries!');
 			console.log('   Users should roll and claim prizes before closing.\n');
 		}

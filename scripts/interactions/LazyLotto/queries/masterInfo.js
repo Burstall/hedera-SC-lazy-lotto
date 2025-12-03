@@ -315,13 +315,12 @@ async function getMasterInfo() {
 		const tokenDetailsCache = new Map();
 
 		for (let i = 0; i < Number(totalPools[0]); i++) {
-			encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [i]);
+			encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [i]);
 			result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-			const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
-			// ethers v6 returns Result object - access first element
-			const poolDetails = poolDetailsResult[0];
+			const poolBasicInfo = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
+			const [ticketCID, winCID, winRate, entryFee, prizeCount, outstandingEntries, poolTokenId, paused, closed, feeToken] = poolBasicInfo;
 
-			const feeTokenAddr = poolDetails.feeToken;
+			const feeTokenAddr = feeToken;
 			const feeTokenId = feeTokenAddr === '0x0000000000000000000000000000000000000000'
 				? 'HBAR'
 				: await convertToHederaId(feeTokenAddr);
@@ -333,15 +332,15 @@ async function getMasterInfo() {
 
 			const pool = {
 				id: i,
-				ticketCID: poolDetails.ticketCID,
-				winCID: poolDetails.winCID,
-				winRateThousandthsOfBps: Number(poolDetails.winRateThousandthsOfBps),
-				entryFee: Number(poolDetails.entryFee),
-				prizeCount: poolDetails.prizes.length,
-				outstandingEntries: Number(poolDetails.outstandingEntries),
-				poolTokenId: await convertToHederaId(poolDetails.poolTokenId),
-				paused: poolDetails.paused,
-				closed: poolDetails.closed,
+				ticketCID: ticketCID,
+				winCID: winCID,
+				winRateThousandthsOfBps: Number(winRate),
+				entryFee: Number(entryFee),
+				prizeCount: Number(prizeCount),
+				outstandingEntries: Number(outstandingEntries),
+				poolTokenId: await convertToHederaId(poolTokenId),
+				paused: paused,
+				closed: closed,
 				feeToken: feeTokenId,
 			};
 			pool.prizes = [];

@@ -1,0 +1,24 @@
+{
+  "_description": "Type C: NFT only - multiple serials from one collection",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "Package with 8 NFTs from the same collection",
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [1, 2, 3, 4, 5, 10, 15, 20]
+        }
+      ]
+    },
+    {
+      "_comment": "Another package with 3 NFTs from same collection",
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [100, 101, 102]
+        }
+      ]
+    }
+  ]
+}

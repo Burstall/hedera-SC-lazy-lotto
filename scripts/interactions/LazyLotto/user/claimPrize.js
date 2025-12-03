@@ -97,9 +97,15 @@ async function claimPrize() {
 
 		// Get pending prizes
 		const userEvmAddress = '0x' + operatorId.toSolidityAddress();
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userEvmAddress]);
-		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
+		// Get pending prizes count first
+		let countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userEvmAddress]);
+		let countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);
+		const prizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
+
+		// Get all pending prizes
+		let encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userEvmAddress, 0, Number(prizeCount)]);
+		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
 
 		if (pendingPrizes[0].length === 0) {
 			console.log('❌ You have no pending prizes to claim\n');
@@ -209,9 +215,14 @@ async function claimPrize() {
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
 		// Get updated pending prizes
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userEvmAddress]);
+		// Get updated pending prizes
+		countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userEvmAddress]);
+		countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);
+		const newPrizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
+
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userEvmAddress, 0, Number(newPrizeCount)]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const newPendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
+		const newPendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  UPDATED STATE');

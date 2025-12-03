@@ -124,27 +124,23 @@ async function buyAndRoll() {
 		// Get pool details
 		console.log('🔍 Fetching pool details...');
 
-		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		const poolBasicInfo = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedQuery,
-			lazyLottoIface,
-			'getPoolDetails',
+			operatorId,
 			false,
 		);
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenIdEvmAddr, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', poolBasicInfo);
 
-		if (!poolDetails || !poolDetails.used) {
-			console.error('\n❌ Pool does not exist');
-			process.exit(1);
-		}
-
-		if (poolDetails.closed) {
+		if (closed) {
 			console.error('\n❌ Pool is closed');
 			process.exit(1);
 		}
 
-		if (poolDetails.paused) {
+		if (paused) {
 			console.error('\n❌ Pool is paused');
 			process.exit(1);
 		}

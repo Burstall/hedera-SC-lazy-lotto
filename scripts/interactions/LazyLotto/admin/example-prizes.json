@@ -1,0 +1,62 @@
+{
+  "_description": "Example showing all prize package types (A-E)",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "Type A: HBAR only",
+      "hbar": "10"
+    },
+    {
+      "_comment": "Type B: FT only",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "1000000"
+      }
+    },
+    {
+      "_comment": "Type C: NFT only (single collection, multiple serials)",
+      "nfts": [
+        {
+          "token": "0.0.67890",
+          "serials": [1, 2, 3]
+        }
+      ]
+    },
+    {
+      "_comment": "Type C: NFT only (multiple collections)",
+      "nfts": [
+        {
+          "token": "0.0.11111",
+          "serials": [5]
+        },
+        {
+          "token": "0.0.22222",
+          "serials": [10, 11]
+        }
+      ]
+    },
+    {
+      "_comment": "Type D: HBAR + NFT",
+      "hbar": "50",
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [1]
+        }
+      ]
+    },
+    {
+      "_comment": "Type E: FT + NFT",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "500000"
+      },
+      "nfts": [
+        {
+          "token": "0.0.67890",
+          "serials": [4, 5]
+        }
+      ]
+    }
+  ]
+}

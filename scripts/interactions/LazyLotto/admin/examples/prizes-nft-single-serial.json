@@ -1,0 +1,15 @@
+{
+  "_description": "Type C: NFT only - single serial from one collection",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "One NFT - serial #42 from collection 0.0.99999",
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [42]
+        }
+      ]
+    }
+  ]
+}

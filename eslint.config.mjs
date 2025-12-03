@@ -38,7 +38,7 @@ export default [...compat.extends('eslint:recommended'), {
 		curly: ['error', 'multi-line', 'consistent'],
 		'dot-location': ['error', 'property'],
 		'handle-callback-err': 'off',
-		indent: ['error', 'tab'],
+		indent: ['warn', 'tab'],
 		'keyword-spacing': 'error',
 
 		'max-nested-callbacks': ['error', {

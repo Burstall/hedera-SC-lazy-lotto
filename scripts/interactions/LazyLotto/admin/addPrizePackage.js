@@ -167,14 +167,10 @@ async function addPrizePackage() {
 
 		// Get pool details - query individual fields to avoid large response issues
 		// Check if pool is closed
-		encodedCommand = lazyLottoIface.encodeFunctionData('pools', [poolId]);
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolData = lazyLottoIface.decodeFunctionResult('pools', result);
-
-		const poolClosed = poolData.closed;
-		const poolPaused = poolData.paused;
-		const poolTokenId = poolData.poolTokenId;
-		const prizeCount = poolData.prizes.length;
+		const [, , , , prizeCount, , poolTokenId, poolPaused, poolClosed] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
 		if (poolClosed) {
 			console.error('❌ Pool is closed. Cannot add prizes.');
@@ -185,7 +181,7 @@ async function addPrizePackage() {
 		console.log('  POOL INFORMATION');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Pool Token:       ${await convertToHederaId(poolTokenId, EntityType.TOKEN)}`);
-		console.log(`  Current Prizes:   ${prizeCount}`);
+		console.log(`  Current Prizes:   ${Number(prizeCount)}`);
 		console.log(`  State:            ${poolPaused ? 'PAUSED' : 'ACTIVE'}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
@@ -404,26 +400,35 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId
 			);
 			// Convert NFT token addresses to TokenId objects
 			const nftTokenIdList = [];
+			const storageIdString = ContractId.fromString(storageId).toString();
+
 			for (const nftTokenAddr of nftTokens) {
 				const tokenId = await convertToHederaId(nftTokenAddr, EntityType.TOKEN);
-				if (!allowanceInPlace[ContractId.fromString(storageId).toString()].includes(tokenId.toString())) {
+				// Check if allowance exists for this spender and if the token is already approved
+				const spenderAllowances = allowanceInPlace[storageIdString] || [];
+				if (!spenderAllowances.includes(tokenId.toString())) {
 					nftTokenIdList.push(TokenId.fromString(tokenId));
 				}
 			}
 
-			const allowanceStatus = await setNFTAllowanceAll(
-				client,
-				nftTokenIdList,
-				operatorId,
-				ContractId.fromString(storageId),
-				`LazyLotto NFT Prize Pool #${poolId}`,
-			);
-
-			if (allowanceStatus !== 'SUCCESS') {
-				console.error('❌ Failed to set NFT allowances:', allowanceStatus);
-				process.exit(1);
+			if (nftTokenIdList.length === 0) {
+				console.log('✅ All NFT allowances already in place. Skipping.\n');
 			}
-			console.log('✅ NFT allowances set successfully\n');
+			else {
+				const allowanceStatus = await setNFTAllowanceAll(
+					client,
+					nftTokenIdList,
+					operatorId,
+					ContractId.fromString(storageId),
+					`LazyLotto NFT Prize Pool #${poolId}`,
+				);
+
+				if (allowanceStatus !== 'SUCCESS') {
+					console.error('❌ Failed to set NFT allowances:', allowanceStatus);
+					process.exit(1);
+				}
+				console.log('✅ NFT allowances set successfully\n');
+			}
 		}
 		catch (error) {
 			console.error('❌ Error setting NFT allowances:', error.message);
@@ -434,6 +439,30 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId
 	await sleep(5000);
 	// Wait for allowances to propagate
 
+	// Check NFT token associations with storage contract and calculate extra gas needed
+	let tokenAssociationGas = 0;
+	if (nftTokens.length > 0) {
+		console.log('🔍 Checking NFT token associations with storage contract...');
+		for (const nftToken of nftTokens) {
+			const tokenIdStr = await convertToHederaId(nftToken, EntityType.TOKEN);
+			const balance = await checkMirrorBalance(env, storageId, tokenIdStr);
+			if (balance === null) {
+				// Token not associated - need extra gas for association
+				tokenAssociationGas += 1_000_000;
+				console.log(`   ⚠️  ${tokenIdStr} not associated with storage (+1M gas)`);
+			}
+			else {
+				console.log(`   ✅ ${tokenIdStr} already associated with storage`);
+			}
+		}
+		if (tokenAssociationGas > 0) {
+			console.log(`   📊 Total association gas to add: +${tokenAssociationGas.toLocaleString()}\n`);
+		}
+		else {
+			console.log();
+		}
+	}
+
 	// Estimate gas
 	console.log('⛽ Estimating gas...');
 	const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'addPrizePackage', [
@@ -443,8 +472,17 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId
 		nftTokens,
 		nftSerials,
 	], 800000, ftToken === '0x0000000000000000000000000000000000000000' ? ftAmount : '0');
-	const gasEstimate = gasInfo.gasLimit;
-	console.log(`   Gas: ~${gasEstimate}\n`);
+	let gasEstimate = gasInfo.gasLimit;
+
+	// Add token association gas if needed
+	if (tokenAssociationGas > 0) {
+		console.log(`   Base Gas: ~${gasEstimate.toLocaleString()}`);
+		gasEstimate += tokenAssociationGas;
+		console.log(`   Final Gas: ~${gasEstimate.toLocaleString()} (includes association gas)\n`);
+	}
+	else {
+		console.log(`   Gas: ~${gasEstimate.toLocaleString()}\n`);
+	}
 
 	// Calculate HBAR needed
 	const payableAmount = ftToken === '0x0000000000000000000000000000000000000000' ? ftAmount : '0';

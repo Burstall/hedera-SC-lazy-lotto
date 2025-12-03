@@ -96,8 +96,20 @@ async function redeemPrizeToNFT() {
 		// Get pending prizes
 		console.log('🔍 Fetching pending prizes...');
 
+		// Get pending prizes count first
 		const userAddress = operatorId.toSolidityAddress();
-		const encodedQuery = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userAddress]);
+		const countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userAddress]);
+		const countResult = await readOnlyEVMFromMirrorNode(
+			env,
+			contractId,
+			countQuery,
+			operatorId,
+			false,
+		);
+		const prizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
+
+		// Get all pending prizes
+		const encodedQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userAddress, 0, Number(prizeCount)]);
 		const result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
@@ -105,8 +117,7 @@ async function redeemPrizeToNFT() {
 			operatorId,
 			false,
 		);
-		const pendingPrizesResult = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
-		const pendingPrizes = pendingPrizesResult[0];
+		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
 
 		if (!pendingPrizes || pendingPrizes.length === 0) {
 			console.log('\n⚠️  No pending prizes found');

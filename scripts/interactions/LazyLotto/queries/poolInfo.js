@@ -119,35 +119,47 @@ async function getPoolInfo() {
 
 		console.log('🔍 Fetching pool data...\n');
 
-		// Get pool details (includes prizes)
-		const encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		// Get pool basic info (new API - no prizes array)
+		const encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
-		// ethers v6 returns Result object - access first element
-		const poolDetails = poolDetailsResult[0];
+		const poolBasicInfo = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
-		// Prizes are included in pool details
-		const prizes = poolDetails.prizes;
+		// Destructure the tuple: (ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken)
+		const [, , winRateThousandthsOfBps, entryFee, prizeCount, outstandingEntries, poolTokenId, paused, closed, feeToken] = poolBasicInfo;
+
+		// Fetch individual prizes if any exist
+		const prizes = [];
+		const prizeCountNum = Number(prizeCount);
+		if (prizeCountNum > 0) {
+			console.log(`📦 Fetching ${prizeCountNum} prize package(s)...`);
+			for (let i = 0; i < prizeCountNum; i++) {
+				const prizeQuery = lazyLottoIface.encodeFunctionData('getPrizePackage', [poolId, i]);
+				const prizeResult = await readOnlyEVMFromMirrorNode(env, contractId, prizeQuery, operatorId, false);
+				const prizePackage = lazyLottoIface.decodeFunctionResult('getPrizePackage', prizeResult);
+				prizes.push(prizePackage[0]);
+			}
+		}
 
 		// Display pool configuration
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL CONFIGURATION');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Win Rate:         ${formatWinRate(Number(poolDetails.winRateThousandthsOfBps))}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(winRateThousandthsOfBps))}`);
 
-		const feeToken = await convertToHederaId(poolDetails.feeToken, EntityType.TOKEN);
+		const feeTokenId = await convertToHederaId(feeToken, EntityType.TOKEN);
 
-		if (feeToken !== 'HBAR') {
-			tokenDets = await getTokenDetails(env, feeToken);
+		if (feeTokenId !== 'HBAR') {
+			tokenDets = await getTokenDetails(env, feeTokenId);
 		}
 
-		const feeAmount = feeToken === 'HBAR'
-			? formatHbar(Number(poolDetails.entryFee))
-			: `${poolDetails.entryFee / 10 ** tokenDets.decimals} (${feeToken})`;
+		const feeAmount = feeTokenId === 'HBAR'
+			? formatHbar(Number(entryFee))
+			: `${entryFee / 10 ** tokenDets.decimals} (${feeTokenId})`;
 		console.log(`  Entry Fee:        ${feeAmount}`);
 
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId, EntityType.TOKEN)}`);
-		console.log(`  State:            ${poolDetails.paused ? '⏸️  PAUSED' : poolDetails.closed ? '🔒 CLOSED' : '✅ ACTIVE'}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(poolTokenId, EntityType.TOKEN)}`);
+		console.log(`  Outstanding:      ${outstandingEntries} entries`);
+		console.log(`  State:            ${paused ? '⏸️  PAUSED' : closed ? '🔒 CLOSED' : '✅ ACTIVE'}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		// Display prizes
@@ -203,8 +215,8 @@ async function getPoolInfo() {
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Pool State:     ${poolDetails.paused ? 'PAUSED' : poolDetails.closed ? 'CLOSED' : 'ACTIVE'}`);
-		console.log(`  Win Rate:       ${formatWinRate(Number(poolDetails.winRateThousandthsOfBps))}`);
+		console.log(`  Pool State:     ${paused ? 'PAUSED' : closed ? 'CLOSED' : 'ACTIVE'}`);
+		console.log(`  Win Rate:       ${formatWinRate(Number(winRateThousandthsOfBps))}`);
 		console.log(`  Entry Fee:      ${feeAmount}`);
 		console.log(`  Total Prizes:   ${prizes.length}`);
 		console.log('═══════════════════════════════════════════════════════════\n');

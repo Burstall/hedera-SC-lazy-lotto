@@ -28,9 +28,11 @@ async function estimateGas(env, contractId, contractInterface, operatorId, funct
 		);
 
 		const estimatedGas = Number(gasEstimate);
-		const gasWithBuffer = Math.ceil(estimatedGas * 1.20);
+		const multiplier = estimatedGas < 600_000 ? 1.50 : 1.20;
+		const gasWithBuffer = Math.min(Math.ceil(estimatedGas * multiplier), 14_500_000);
+		// Cap at 14.5 million gas
 
-		console.log(`${openerString}\t📊 Gas Estimate: ${estimatedGas.toLocaleString()} | With 20% buffer: ${gasWithBuffer.toLocaleString()}`);
+		console.log(`${openerString}\t📊 Gas Estimate: ${estimatedGas.toLocaleString()} | With ${((multiplier - 1) * 100).toFixed(0)}% buffer: ${gasWithBuffer.toLocaleString()}`);
 
 		return {
 			gasLimit: gasWithBuffer,

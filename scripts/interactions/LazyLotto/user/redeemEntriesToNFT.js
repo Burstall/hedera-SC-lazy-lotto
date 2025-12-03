@@ -128,7 +128,7 @@ async function redeemEntriesToNFT() {
 		console.log(`✅ You have ${totalEntries} memory entries in pool #${poolId}\n`);
 
 		// Get pool details
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
@@ -136,10 +136,10 @@ async function redeemEntriesToNFT() {
 			operatorId,
 			false,
 		);
-		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
-		const poolDetails = poolDetailsResult[0];
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
-		console.log('Pool Token:', await convertToHederaId(poolDetails.poolTokenId));
+		console.log('Pool Token:', await convertToHederaId(poolTokenId));
 
 		// Determine quantity to redeem
 		let quantity;

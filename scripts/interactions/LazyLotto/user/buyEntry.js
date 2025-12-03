@@ -130,50 +130,50 @@ async function buyEntry() {
 		console.log('🔍 Fetching pool details...\n');
 
 		// Get pool details
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetailsResult = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
-		const poolDetails = poolDetailsResult[0];
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstandingEntries, poolTokenId, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
 		// Validate pool state
-		if (poolDetails.paused) {
+		if (paused) {
 			console.error('❌ Pool is paused. Cannot buy entries.');
 			process.exit(1);
 		}
 
-		if (poolDetails.closed) {
+		if (closed) {
 			console.error('❌ Pool is closed. Cannot buy entries.');
 			process.exit(1);
 		}
 
 		// Display pool info
-		const feeToken = await convertToHederaId(poolDetails.feeToken);
-		const feePerEntry = poolDetails.entryFee;
+		const feeTokenId = await convertToHederaId(feeToken);
+		const feePerEntry = entryFee;
 		const totalFee = BigInt(feePerEntry) * BigInt(quantity);
 
 		// Get token details for formatting
 		let tokenDets = null;
-		if (feeToken !== 'HBAR') {
-			tokenDets = await getTokenDetails(env, feeToken);
+		if (feeTokenId !== 'HBAR') {
+			tokenDets = await getTokenDetails(env, feeTokenId);
 		}
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL INFORMATION');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Win Rate:         ${formatWinRate(Number(poolDetails.winRateThousandthsOfBps))}`);
-		console.log(`  Entry Fee:        ${feeToken === 'HBAR' ? new Hbar(Number(feePerEntry), HbarUnit.Tinybar).toString() : `${Number(feePerEntry) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(winRate))}`);
+		console.log(`  Entry Fee:        ${feeTokenId === 'HBAR' ? new Hbar(Number(feePerEntry), HbarUnit.Tinybar).toString() : `${Number(feePerEntry) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(poolTokenId)}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  PURCHASE SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Quantity:         ${quantity} entries`);
-		console.log(`  Total Cost:       ${feeToken === 'HBAR' ? new Hbar(Number(totalFee), HbarUnit.Tinybar).toString() : `${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
+		console.log(`  Total Cost:       ${feeTokenId === 'HBAR' ? new Hbar(Number(totalFee), HbarUnit.Tinybar).toString() : `${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
 		console.log('═══════════════════════════════════════════════════════════\n');		// Check if FT payment required
-		if (feeToken !== 'HBAR') {
+		if (feeTokenId !== 'HBAR') {
 			const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
-			const balance = await checkMirrorBalance(env, operatorId.toString(), feeToken);
+			const balance = await checkMirrorBalance(env, operatorId.toString(), feeTokenId);
 
 			console.log(`💰 Your ${tokenDets.symbol} balance: ${Number(balance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}\n`);
 

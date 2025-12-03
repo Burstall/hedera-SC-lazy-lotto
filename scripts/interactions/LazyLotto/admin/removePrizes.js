@@ -105,33 +105,26 @@ async function removePrizes() {
 		// Check pool status
 		console.log('🔍 Checking pool status...');
 
-		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		const poolBasicInfo = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedQuery,
-			lazyLottoIface,
-			'getPoolDetails',
+			operatorId,
 			false,
 		);
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', poolBasicInfo);
 
-		if (!poolDetails || !poolDetails.used) {
-			console.error('\n❌ Pool does not exist');
-			process.exit(1);
-		}
-
-		if (!poolDetails.closed) {
+		if (!closed) {
 			console.error('\n❌ Pool is not closed. Must close pool first.');
 			process.exit(1);
 		}
 
-		console.log(`Pool: "${poolDetails.name}"`);
-		console.log(`Total prizes available: ${poolDetails.totalPrizesAvailable.toString()}`);
+		console.log(`Total prizes in pool: ${Number(prizeCount)}`);
 
-		// Get prize packages from pool details
-		const prizes = poolDetails.prizes;
-
-		if (!prizes || prizes.length === 0) {
+		// Get prize packages from pool
+		if (Number(prizeCount) === 0) {
 			console.log('\n⚠️  No prizes to remove');
 			process.exit(0);
 		}

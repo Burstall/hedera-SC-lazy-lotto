@@ -1,0 +1,28 @@
+{
+  "_description": "Type A: HBAR only prize packages",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "100 HBAR grand prize",
+      "hbar": "100"
+    },
+    {
+      "_comment": "50 HBAR second prize",
+      "hbar": "50"
+    },
+    {
+      "_comment": "25 HBAR third prize",
+      "hbar": "25"
+    },
+    {
+      "_comment": "10 HBAR consolation",
+      "hbar": "10"
+    },
+    {
+      "hbar": "10"
+    },
+    {
+      "hbar": "10"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "_description": "Type C: NFT only - multiple collections with various serial arrays",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "Package with NFTs from 4 different collections",
+      "nfts": [
+        {
+          "token": "0.0.11111",
+          "serials": [1, 2, 3]
+        },
+        {
+          "token": "0.0.22222",
+          "serials": [100]
+        },
+        {
+          "token": "0.0.33333",
+          "serials": [5, 10, 15, 20, 25]
+        },
+        {
+          "token": "0.0.44444",
+          "serials": [7, 14, 21]
+        }
+      ]
+    },
+    {
+      "_comment": "Another package with 2 collections",
+      "nfts": [
+        {
+          "token": "0.0.55555",
+          "serials": [1]
+        },
+        {
+          "token": "0.0.66666",
+          "serials": [50, 51]
+        }
+      ]
+    }
+  ]
+}

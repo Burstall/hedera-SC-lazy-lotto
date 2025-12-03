@@ -13,6 +13,8 @@ This project implements sophisticated lottery and reward systems that leverage H
 #### 1. **LazyLotto** - Multi-Pool Lottery System
 A comprehensive lottery platform supporting multiple independent lottery pools with various prize types, ticket systems, and bonus mechanisms.
 
+**⚠️ Breaking Changes - December 2025:** Contract API updated to v2.1 with paginated query functions. See [API Breaking Changes Guide](./LazyLotto-API_BREAKING_CHANGES.md) for migration instructions.
+
 **Key Features:**
 - Multiple independent lottery pools with customizable parameters
 - Support for HBAR, HTS tokens, and NFT prizes
@@ -20,9 +22,11 @@ A comprehensive lottery platform supporting multiple independent lottery pools w
 - Sophisticated boost system for enhanced win rates
 - Prize management system with convertible prize NFTs
 - Admin-controlled pool lifecycle management
-- **Documentation**: See [LazyLotto Business Logic](./LazyLotto-BUSINESS_LOGIC.md) and [UX Guide](./LazyLotto-UX_IMPLEMENTATION_GUIDE.md)
+- **Paginated queries** for scalability with 100+ prizes/pools
+- **Documentation**: See [Business Logic](./LazyLotto-BUSINESS_LOGIC.md), [UX Guide](./LazyLotto-UX_IMPLEMENTATION_GUIDE.md), and [API Changes](./LazyLotto-API_BREAKING_CHANGES.md)
 - **Scripts**: 22 interaction scripts in `scripts/interactions/LazyLotto/`
 - **Tests**: Comprehensive test suite in `test/LazyLotto.test.js`
+- **Contract Size**: 23.782 KB / 24 KB (optimized)
 
 #### 2. **LazyTradeLotto** - Trade-Based Reward System
 A reward mechanism that incentivizes NFT trading activity with lottery-style prizes and a progressive jackpot system.
