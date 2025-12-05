@@ -155,6 +155,24 @@ async function initializeClient() {
 
 	client.setOperator(operatorId, operatorKey);
 	console.log(`👤 Operator: ${operatorId.toString()}\n`);
+
+	// Show current .env configuration
+	console.log('📋 Current .env Configuration:');
+	console.log('   LAZY_TOKEN_ID:', process.env.LAZY_TOKEN_ID || '(not set - will deploy new)');
+	console.log('   LAZY_SCT_CONTRACT_ID:', process.env.LAZY_SCT_CONTRACT_ID || '(not set - will deploy new)');
+	console.log('   LAZY_GAS_STATION_CONTRACT_ID:', process.env.LAZY_GAS_STATION_CONTRACT_ID || '(not set - will deploy new)');
+	console.log('   LAZY_DELEGATE_REGISTRY_CONTRACT_ID:', process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID || '(not set - will deploy new)');
+	console.log('   PRNG_CONTRACT_ID:', process.env.PRNG_CONTRACT_ID || '(not set - will deploy new)');
+	console.log('   LAZY_LOTTO_STORAGE:', process.env.LAZY_LOTTO_STORAGE || '(not set - will deploy new)');
+	console.log('   LAZY_LOTTO_CONTRACT_ID:', process.env.LAZY_LOTTO_CONTRACT_ID || '(not set - will deploy new)');
+	console.log('');
+
+	const proceed = await prompt('❓ Review the above configuration. Proceed with deployment? (yes/no): ');
+	if (proceed.toLowerCase() !== 'yes' && proceed.toLowerCase() !== 'y') {
+		console.log('🛑 Deployment cancelled. Please update your .env file and try again.');
+		process.exit(0);
+	}
+	console.log('');
 }
 
 // Step 2: Deploy or reuse LAZY token and SCT
@@ -165,10 +183,24 @@ async function deployLazyToken() {
 	if (process.env.LAZY_SCT_CONTRACT_ID && process.env.LAZY_TOKEN_ID) {
 		deployedContracts.lazySCT = ContractId.fromString(process.env.LAZY_SCT_CONTRACT_ID);
 		deployedContracts.lazyToken = TokenId.fromString(process.env.LAZY_TOKEN_ID);
-		console.log(`✅ Using existing LAZY Token: ${deployedContracts.lazyToken.toString()}`);
-		console.log(`✅ Using existing LAZY SCT: ${deployedContracts.lazySCT.toString()}`);
+		console.log(`✅ Found existing LAZY Token: ${deployedContracts.lazyToken.toString()}`);
+		console.log(`✅ Found existing LAZY SCT: ${deployedContracts.lazySCT.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing LAZY Token and SCT? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove LAZY_TOKEN_ID and LAZY_SCT_CONTRACT_ID, or deploy a new LAZY token manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contracts');
 	}
 	else {
+		console.log('⚠️  No existing LAZY Token or SCT found in .env');
+		const deployNew = await prompt('❓ Deploy new LAZY Token and SCT? (yes/no): ');
+		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled. Please set LAZY_TOKEN_ID and LAZY_SCT_CONTRACT_ID in .env to use existing contracts.');
+			process.exit(0);
+		}
+
 		console.log('🔨 Deploying LAZY Token Creator (SCT)...');
 
 		const lazyJson = JSON.parse(
@@ -238,9 +270,23 @@ async function deployLazyGasStation() {
 
 	if (process.env.LAZY_GAS_STATION_CONTRACT_ID) {
 		deployedContracts.lazyGasStation = ContractId.fromString(process.env.LAZY_GAS_STATION_CONTRACT_ID);
-		console.log(`✅ Using existing LazyGasStation: ${deployedContracts.lazyGasStation.toString()}`);
+		console.log(`✅ Found existing LazyGasStation: ${deployedContracts.lazyGasStation.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing LazyGasStation? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove LAZY_GAS_STATION_CONTRACT_ID or deploy a new one manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contract');
 	}
 	else {
+		console.log('⚠️  No existing LazyGasStation found in .env');
+		const deployNew = await prompt('❓ Deploy new LazyGasStation? (yes/no): ');
+		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled. Please set LAZY_GAS_STATION_CONTRACT_ID in .env to use an existing contract.');
+			process.exit(0);
+		}
+
 		console.log('🔨 Deploying LazyGasStation...');
 
 		const lazyGasStationJson = JSON.parse(
@@ -280,9 +326,23 @@ async function deployLazyDelegateRegistry() {
 
 	if (process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) {
 		deployedContracts.lazyDelegateRegistry = ContractId.fromString(process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID);
-		console.log(`✅ Using existing LazyDelegateRegistry: ${deployedContracts.lazyDelegateRegistry.toString()}`);
+		console.log(`✅ Found existing LazyDelegateRegistry: ${deployedContracts.lazyDelegateRegistry.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing LazyDelegateRegistry? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove LAZY_DELEGATE_REGISTRY_CONTRACT_ID or deploy a new one manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contract');
 	}
 	else {
+		console.log('⚠️  No existing LazyDelegateRegistry found in .env');
+		const deployNew = await prompt('❓ Deploy new LazyDelegateRegistry? (yes/no): ');
+		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled. Please set LAZY_DELEGATE_REGISTRY_CONTRACT_ID in .env to use an existing contract.');
+			process.exit(0);
+		}
+
 		console.log('🔨 Deploying LazyDelegateRegistry...');
 
 		const lazyDelegateRegistryJson = JSON.parse(
@@ -309,9 +369,23 @@ async function deployPRNG() {
 
 	if (process.env.PRNG_CONTRACT_ID) {
 		deployedContracts.prng = ContractId.fromString(process.env.PRNG_CONTRACT_ID);
-		console.log(`✅ Using existing PRNG: ${deployedContracts.prng.toString()}`);
+		console.log(`✅ Found existing PRNG: ${deployedContracts.prng.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing PRNG? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove PRNG_CONTRACT_ID or deploy a new one manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contract');
 	}
 	else {
+		console.log('⚠️  No existing PRNG found in .env');
+		const deployNew = await prompt('❓ Deploy new PRNG Generator? (yes/no): ');
+		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled. Please set PRNG_CONTRACT_ID in .env to use an existing contract.');
+			process.exit(0);
+		}
+
 		console.log('🔨 Deploying PRNG Generator...');
 
 		const prngJson = JSON.parse(
@@ -338,9 +412,23 @@ async function deployLazyLottoStorage() {
 
 	if (process.env.LAZY_LOTTO_STORAGE) {
 		deployedContracts.lazyLottoStorage = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
-		console.log(`✅ Using existing LazyLottoStorage: ${deployedContracts.lazyLottoStorage.toString()}`);
+		console.log(`✅ Found existing LazyLottoStorage: ${deployedContracts.lazyLottoStorage.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing LazyLottoStorage? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove LAZY_LOTTO_STORAGE or deploy a new one manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contract');
 	}
 	else {
+		console.log('⚠️  No existing LazyLottoStorage found in .env');
+		const deployNew = await prompt('❓ Deploy new LazyLottoStorage? (yes/no): ');
+		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled. Please set LAZY_LOTTO_STORAGE in .env to use an existing contract.');
+			process.exit(0);
+		}
+
 		console.log('🔨 Deploying LazyLottoStorage...');
 
 		const storageBytecode = JSON.parse(
@@ -375,8 +463,22 @@ async function deployLazyLotto() {
 
 	if (process.env.LAZY_LOTTO_CONTRACT_ID) {
 		deployedContracts.lazyLotto = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
-		console.log(`✅ Using existing LazyLotto: ${deployedContracts.lazyLotto.toString()}`);
+		console.log(`✅ Found existing LazyLotto: ${deployedContracts.lazyLotto.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing LazyLotto? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove LAZY_LOTTO_CONTRACT_ID or deploy a new one manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contract');
 		return;
+	}
+
+	console.log('⚠️  No existing LazyLotto found in .env');
+	const deployNew = await prompt('❓ Deploy new LazyLotto? (yes/no): ');
+	if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+		console.log('🛑 Deployment cancelled. Please set LAZY_LOTTO_CONTRACT_ID in .env to use an existing contract.');
+		process.exit(0);
 	}
 
 	console.log('🔨 Deploying LazyLotto main contract...');

@@ -1146,64 +1146,6 @@
         "inputs": [
             {
                 "internalType": "address",
-                "name": "user",
-                "type": "address"
-            }
-        ],
-        "name": "getPendingPrizes",
-        "outputs": [
-            {
-                "components": [
-                    {
-                        "internalType": "uint256",
-                        "name": "poolId",
-                        "type": "uint256"
-                    },
-                    {
-                        "internalType": "bool",
-                        "name": "asNFT",
-                        "type": "bool"
-                    },
-                    {
-                        "components": [
-                            {
-                                "internalType": "address",
-                                "name": "token",
-                                "type": "address"
-                            },
-                            {
-                                "internalType": "uint256",
-                                "name": "amount",
-                                "type": "uint256"
-                            },
-                            {
-                                "internalType": "address[]",
-                                "name": "nftTokens",
-                                "type": "address[]"
-                            },
-                            {
-                                "internalType": "uint256[][]",
-                                "name": "nftSerials",
-                                "type": "uint256[][]"
-                            }
-                        ],
-                        "internalType": "struct LazyLotto.PrizePackage",
-                        "name": "prize",
-                        "type": "tuple"
-                    }
-                ],
-                "internalType": "struct LazyLotto.PendingPrize[]",
-                "name": "",
-                "type": "tuple[]"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "address",
                 "name": "tokenId",
                 "type": "address"
             },
@@ -1266,34 +1208,53 @@
     {
         "inputs": [
             {
+                "internalType": "address",
+                "name": "user",
+                "type": "address"
+            }
+        ],
+        "name": "getPendingPrizesCount",
+        "outputs": [
+            {
                 "internalType": "uint256",
-                "name": "id",
+                "name": "",
                 "type": "uint256"
             }
         ],
-        "name": "getPoolDetails",
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "user",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "startIndex",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "count",
+                "type": "uint256"
+            }
+        ],
+        "name": "getPendingPrizesPage",
         "outputs": [
             {
                 "components": [
                     {
-                        "internalType": "string",
-                        "name": "ticketCID",
-                        "type": "string"
-                    },
-                    {
-                        "internalType": "string",
-                        "name": "winCID",
-                        "type": "string"
-                    },
-                    {
                         "internalType": "uint256",
-                        "name": "winRateThousandthsOfBps",
+                        "name": "poolId",
                         "type": "uint256"
                     },
                     {
-                        "internalType": "uint256",
-                        "name": "entryFee",
-                        "type": "uint256"
+                        "internalType": "bool",
+                        "name": "asNFT",
+                        "type": "bool"
                     },
                     {
                         "components": [
@@ -1318,39 +1279,78 @@
                                 "type": "uint256[][]"
                             }
                         ],
-                        "internalType": "struct LazyLotto.PrizePackage[]",
-                        "name": "prizes",
-                        "type": "tuple[]"
-                    },
-                    {
-                        "internalType": "uint256",
-                        "name": "outstandingEntries",
-                        "type": "uint256"
-                    },
-                    {
-                        "internalType": "address",
-                        "name": "poolTokenId",
-                        "type": "address"
-                    },
-                    {
-                        "internalType": "bool",
-                        "name": "paused",
-                        "type": "bool"
-                    },
-                    {
-                        "internalType": "bool",
-                        "name": "closed",
-                        "type": "bool"
-                    },
-                    {
-                        "internalType": "address",
-                        "name": "feeToken",
-                        "type": "address"
+                        "internalType": "struct LazyLotto.PrizePackage",
+                        "name": "prize",
+                        "type": "tuple"
                     }
                 ],
-                "internalType": "struct LazyLotto.LottoPool",
+                "internalType": "struct LazyLotto.PendingPrize[]",
                 "name": "",
-                "type": "tuple"
+                "type": "tuple[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "id",
+                "type": "uint256"
+            }
+        ],
+        "name": "getPoolBasicInfo",
+        "outputs": [
+            {
+                "internalType": "string",
+                "name": "ticketCID",
+                "type": "string"
+            },
+            {
+                "internalType": "string",
+                "name": "winCID",
+                "type": "string"
+            },
+            {
+                "internalType": "uint256",
+                "name": "winRateThousandthsOfBps",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "entryFee",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "prizeCount",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "outstandingEntries",
+                "type": "uint256"
+            },
+            {
+                "internalType": "address",
+                "name": "poolTokenId",
+                "type": "address"
+            },
+            {
+                "internalType": "bool",
+                "name": "paused",
+                "type": "bool"
+            },
+            {
+                "internalType": "bool",
+                "name": "closed",
+                "type": "bool"
+            },
+            {
+                "internalType": "address",
+                "name": "feeToken",
+                "type": "address"
             }
         ],
         "stateMutability": "view",
@@ -1408,9 +1408,19 @@
                 "internalType": "address",
                 "name": "user",
                 "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "startPoolId",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "count",
+                "type": "uint256"
             }
         ],
-        "name": "getUserEntries",
+        "name": "getUserEntriesPage",
         "outputs": [
             {
                 "internalType": "uint256[]",

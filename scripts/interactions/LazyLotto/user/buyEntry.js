@@ -12,11 +12,18 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const { getTokenDetails, homebrewPopulateAccountEvmAddress, checkMirrorBalance, checkMirrorAllowance } = require('../../../../utils/hederaMirrorHelpers');
+const { setFTAllowance } = require('../../../../utils/hederaHelpers');
+const { sleep } = require('@directus/sdk');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -52,11 +59,6 @@ function formatWinRate(thousandthsOfBps) {
 	return (thousandthsOfBps / 1_000_000).toFixed(4) + '%';
 }
 
-// Helper: Format HBAR
-function formatHbar(tinybars) {
-	return (Number(tinybars) / 100_000_000).toFixed(8) + ' ℏ';
-}
-
 async function buyEntry() {
 	let client;
 
@@ -69,23 +71,12 @@ async function buyEntry() {
 			poolIdStr = await prompt('Enter pool ID: ');
 		}
 
-		if (!quantityStr) {
-			quantityStr = await prompt('Enter quantity to purchase: ');
-		}
-
 		const poolId = parseInt(poolIdStr);
-		const quantity = parseInt(quantityStr);
 
 		if (isNaN(poolId) || poolId < 0) {
 			console.error('❌ Invalid pool ID');
 			process.exit(1);
 		}
-
-		if (isNaN(quantity) || quantity <= 0) {
-			console.error('❌ Invalid quantity (must be positive)');
-			process.exit(1);
-		}
-
 		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
 		const envUpper = env.toUpperCase();
 
@@ -110,83 +101,160 @@ async function buyEntry() {
 		console.log('╚════════════════════════════════════════════════════════════╝\n');
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
 		console.log(`📄 Contract: ${contractId.toString()}`);
-		console.log(`🎰 Pool: #${poolId}`);
-		console.log(`🎫 Quantity: ${quantity}\n`);
+		console.log(`🎰 Pool: #${poolId}\n`);
 
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
 		);
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
-
-		// Import helpers
 		const { readOnlyEVMFromMirrorNode, contractExecuteFunction } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		console.log('🔍 Fetching pool details...\n');
 
 		// Get pool details
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
+		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		// eslint-disable-next-line no-unused-vars
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstandingEntries, poolTokenId, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
 		// Validate pool state
-		if (poolDetails.paused) {
+		if (paused) {
 			console.error('❌ Pool is paused. Cannot buy entries.');
 			process.exit(1);
 		}
 
-		if (poolDetails.closed) {
+		if (closed) {
 			console.error('❌ Pool is closed. Cannot buy entries.');
 			process.exit(1);
 		}
 
 		// Display pool info
-		const feeToken = await convertToHederaId(poolDetails.feeToken);
-		const feePerEntry = poolDetails.entryFee;
-		const totalFee = BigInt(feePerEntry) * BigInt(quantity);
+		const feeTokenId = await convertToHederaId(feeToken);
+		const feePerEntry = entryFee;
+
+		// Get token details for formatting
+		let tokenDets = null;
+		if (feeTokenId !== 'HBAR') {
+			tokenDets = await getTokenDetails(env, feeTokenId);
+		}
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL INFORMATION');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Win Rate:         ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
-		console.log(`  Entry Fee:        ${feeToken === 'HBAR' ? formatHbar(feePerEntry) : `${feePerEntry} ${feeToken}`}`);
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(winRate))}`);
+		console.log(`  Entry Fee:        ${feeTokenId === 'HBAR' ? new Hbar(Number(feePerEntry), HbarUnit.Tinybar).toString() : `${Number(feePerEntry) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(poolTokenId)}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
+		// Get and display current entries
+		const userEvmAddress = await homebrewPopulateAccountEvmAddress(env, operatorId.toString());
+		encodedCommand = lazyLottoIface.encodeFunctionData('getUsersEntries', [poolId, userEvmAddress]);
+		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		const currentEntries = lazyLottoIface.decodeFunctionResult('getUsersEntries', result);
+
 		console.log('═══════════════════════════════════════════════════════════');
+		console.log('  CURRENT STATE');
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Your entries in pool #${poolId}: ${currentEntries[0]}`);
+		console.log('═══════════════════════════════════════════════════════════\n');
+
+		// Now prompt for quantity
+		if (!quantityStr) {
+			quantityStr = await prompt('Enter quantity to purchase: ');
+		}
+
+		const quantity = parseInt(quantityStr);
+
+		if (isNaN(quantity) || quantity <= 0) {
+			console.error('❌ Invalid quantity (must be positive)');
+			process.exit(1);
+		}
+
+		const totalFee = BigInt(feePerEntry) * BigInt(quantity);
+
+		console.log('\n═══════════════════════════════════════════════════════════');
 		console.log('  PURCHASE SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Quantity:         ${quantity} entries`);
-		console.log(`  Total Cost:       ${feeToken === 'HBAR' ? formatHbar(totalFee) : `${totalFee} ${feeToken}`}`);
+		console.log(`  Total Cost:       ${feeTokenId === 'HBAR' ? new Hbar(Number(totalFee), HbarUnit.Tinybar).toString() : `${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
-
 		// Check if FT payment required
-		if (feeToken !== 'HBAR') {
-			const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
-			const balance = await checkMirrorBalance(env, operatorId.toString(), feeToken);
+		if (feeTokenId !== 'HBAR') {
+			const balance = await checkMirrorBalance(env, operatorId.toString(), feeTokenId);
 
-			console.log(`💰 Your ${feeToken} balance: ${balance}\n`);
+			console.log(`💰 Your ${tokenDets.symbol} balance: ${Number(balance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}\n`);
 
 			if (BigInt(balance) < totalFee) {
-				console.error(`❌ Insufficient ${feeToken} balance`);
-				console.error(`   Required: ${totalFee}`);
-				console.error(`   Available: ${balance}`);
+				console.error(`❌ Insufficient ${tokenDets.symbol} balance`);
+				console.error(`   Required: ${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`);
+				console.error(`   Available: ${Number(balance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`);
 				process.exit(1);
 			}
 
-			// Check allowance to storage contract
+			// Get storage contract and check allowance
 			encodedCommand = lazyLottoIface.encodeFunctionData('storageContract');
 			result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 			const storageAddress = lazyLottoIface.decodeFunctionResult('storageContract', result);
 			const storageId = await convertToHederaId(storageAddress[0]);
 
-			console.log(`📝 Note: Token approval must be set for storage contract: ${storageId}`);
-			console.log('   Use Hedera token approval or the LazyGasStation for allowances.\n');
+			// Check for LAZY token (uses LazyGasStation) or other FTs (uses Storage)
+			const lazyTokenIdStr = process.env.LAZY_TOKEN_ID;
+			const isLazy = lazyTokenIdStr && feeTokenId === lazyTokenIdStr;
+			const spenderContractId = isLazy ? process.env.LAZY_GAS_STATION_CONTRACT_ID : storageId;
+			const spenderName = isLazy ? 'LazyGasStation' : 'Storage';
+
+			console.log(`🔍 Checking ${tokenDets.symbol} allowance to ${spenderName} contract...`);
+			const currentAllowance = await checkMirrorAllowance(
+				env,
+				operatorId.toString(),
+				feeTokenId,
+				spenderContractId,
+			);
+
+			if (BigInt(currentAllowance) < totalFee) {
+				console.log('\n⚠️  Insufficient allowance');
+				console.log(`   Current: ${Number(currentAllowance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`);
+				console.log(`   Required: ${Number(totalFee) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`);
+				console.log(`   Spender: ${spenderContractId}\n`);
+
+				const setAllowance = await prompt('Set token allowance? (yes/no): ');
+				if (setAllowance.toLowerCase() !== 'yes' && setAllowance.toLowerCase() !== 'y') {
+					console.log('\n❌ Purchase cancelled - insufficient allowance');
+					process.exit(0);
+				}
+
+				console.log(`\n🔗 Setting ${tokenDets.symbol} allowance to ${spenderName} contract...`);
+				const feeTokenIdObj = TokenId.fromString(feeTokenId);
+				const spenderContractIdObj = ContractId.fromString(spenderContractId);
+
+				const allowanceResult = await setFTAllowance(
+					client,
+					feeTokenIdObj,
+					operatorId,
+					spenderContractIdObj,
+					totalFee,
+				);
+
+				if (allowanceResult !== 'SUCCESS') {
+					console.error('❌ Failed to set token allowance');
+					process.exit(1);
+				}
+
+				console.log('✅ Allowance set successfully');
+				console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+				await sleep(5000);
+			}
+			else {
+				console.log(`✅ Sufficient allowance: ${Number(currentAllowance) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}\n`);
+			}
 		}
 
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'buyEntry', [poolId, quantity], 300000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'buyEntry', [poolId, quantity], 500000,
+			feeTokenId === 'HBAR' ? Number(totalFee) : 0);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm purchase
@@ -201,16 +269,14 @@ async function buyEntry() {
 
 		// 20% buffer for gas
 		const gasLimit = Math.floor(gasEstimate * 1.2);
-		const payableAmount = feeToken === 'HBAR' ? totalFee.toString() : '0';
-
-		const [receipt, results, record] = await contractExecuteFunction(
+		const payableAmount = feeTokenId === 'HBAR' ? totalFee : 0; const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
 			gasLimit,
 			'buyEntry',
 			[poolId, quantity],
-			payableAmount,
+			new Hbar(payableAmount, HbarUnit.Tinybar),
 		);
 
 		if (receipt.status.toString() !== 'SUCCESS') {
@@ -219,10 +285,11 @@ async function buyEntry() {
 		}
 
 		console.log('\n✅ Entries purchased successfully!');
-		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+		console.log(`📋 Transaction: ${record.transactionId.toString()}`);
+		console.log('⏳ Waiting 5 seconds for mirror node to sync...\n');
+		await new Promise(resolve => setTimeout(resolve, 5000));
 
 		// Get updated entry count
-		const userEvmAddress = '0x' + operatorId.toSolidityAddress();
 		encodedCommand = lazyLottoIface.encodeFunctionData('getUsersEntries', [poolId, userEvmAddress]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 		const entries = lazyLottoIface.decodeFunctionResult('getUsersEntries', result);

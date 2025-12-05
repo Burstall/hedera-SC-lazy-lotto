@@ -108,84 +108,156 @@ async function grantEntry() {
 			process.exit(1);
 		}
 
-		// Get recipient address
-		const recipientInput = await prompt('Enter recipient (0.0.xxxxx or 0x...): ');
+		// Get recipient addresses (comma-separated)
+		const recipientInput = await prompt('Enter recipient(s) (comma-separated, 0.0.xxxxx or 0x...): ');
+		const recipientInputs = recipientInput.split(',').map(r => r.trim()).filter(r => r.length > 0);
 
-		let recipientAddress;
-		if (recipientInput.startsWith('0x')) {
-			// EVM address
-			recipientAddress = recipientInput;
-		}
-		else {
-			// Hedera ID - convert to EVM
-			try {
-				const accountId = AccountId.fromString(recipientInput);
-				recipientAddress = accountId.toSolidityAddress();
-			}
-			catch {
-				console.error('❌ Invalid account ID format');
-				process.exit(1);
-			}
-		}
-
-		// Get ticket count
-		const ticketCountStr = await prompt('Enter number of tickets to grant: ');
-
-		let ticketCount;
-		try {
-			ticketCount = parseInt(ticketCountStr);
-			if (isNaN(ticketCount) || ticketCount <= 0) {
-				console.error('❌ Ticket count must be positive');
-				process.exit(1);
-			}
-		}
-		catch {
-			console.error('❌ Invalid ticket count format');
+		if (recipientInputs.length === 0) {
+			console.error('❌ No recipients provided');
 			process.exit(1);
 		}
 
-		console.log(`\n🎁 Granting ${ticketCount} free entries`);
-		console.log(`   Pool: ${poolId}`);
-		console.log(`   Recipient: ${recipientInput}`);
+		// Convert all recipients to EVM addresses
+		const recipients = [];
+		for (const input of recipientInputs) {
+			let recipientAddress;
+			if (input.startsWith('0x')) {
+				// EVM address
+				recipientAddress = input;
+			}
+			else {
+				// Hedera ID - convert to EVM
+				try {
+					const accountId = AccountId.fromString(input);
+					recipientAddress = '0x' + accountId.toSolidityAddress();
+				}
+				catch {
+					console.error(`❌ Invalid account ID format: ${input}`);
+					process.exit(1);
+				}
+			}
+			recipients.push({ input, address: recipientAddress });
+		}
 
-		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'adminGrantEntry', [
-			poolId,
-			ticketCount,
-			recipientAddress,
-		], 200000);
-		const gasEstimate = gasInfo.gasLimit;
+		console.log(`\n✅ Parsed ${recipients.length} recipient(s)`);
+
+		// Get ticket counts
+		const ticketCountStr = await prompt(`Enter ticket count(s):\n  - Single number for all users\n  - Comma-separated list (must match ${recipients.length} recipients)\n  Count(s): `);
+		const ticketCountInputs = ticketCountStr.split(',').map(t => t.trim()).filter(t => t.length > 0);
+
+		let ticketCounts = [];
+		if (ticketCountInputs.length === 1) {
+			// Single count - apply to all
+			const count = parseInt(ticketCountInputs[0]);
+			if (isNaN(count) || count <= 0) {
+				console.error('❌ Ticket count must be positive');
+				process.exit(1);
+			}
+			ticketCounts = new Array(recipients.length).fill(count);
+			console.log(`\n✅ Applying ${count} entries to all ${recipients.length} recipient(s)`);
+		}
+		else if (ticketCountInputs.length === recipients.length) {
+			// Individual counts
+			for (const countStr of ticketCountInputs) {
+				const count = parseInt(countStr);
+				if (isNaN(count) || count <= 0) {
+					console.error(`❌ Invalid ticket count: ${countStr}`);
+					process.exit(1);
+				}
+				ticketCounts.push(count);
+			}
+			console.log('\n✅ Using individual entry counts for each recipient');
+		}
+		else {
+			console.error(`❌ Ticket count mismatch: provided ${ticketCountInputs.length} counts for ${recipients.length} recipients`);
+			console.error('   Provide either 1 count (for all) or exactly matching counts');
+			process.exit(1);
+		}
+
+		// Calculate total
+		const totalTickets = ticketCounts.reduce((sum, count) => sum + count, 0);
+
+		// Display summary
+		console.log('\n═══════════════════════════════════════════════════════════');
+		console.log('  GRANT ENTRIES SUMMARY');
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Pool: #${poolId}`);
+		console.log(`  Recipients: ${recipients.length}`);
+		console.log(`  Total Entries: ${totalTickets}`);
+		console.log('');
+		for (let i = 0; i < recipients.length; i++) {
+			console.log(`  ${i + 1}. ${recipients[i].input} → ${ticketCounts[i]} entries`);
+		}
+		console.log('═══════════════════════════════════════════════════════════');
+
+		console.log('═══════════════════════════════════════════════════════════');
 
 		// Confirm
-		const confirm = await prompt(`Grant ${ticketCount} entries to ${recipientInput}? (yes/no): `);
+		const confirm = await prompt(`\n⚠️  Proceed with granting ${totalTickets} total entries to ${recipients.length} recipient(s)? (yes/no): `);
 		if (confirm.toLowerCase() !== 'yes' && confirm.toLowerCase() !== 'y') {
 			console.log('\n❌ Operation cancelled');
 			process.exit(0);
 		}
 
-		// Execute
-		console.log('\n🔄 Granting entries...');
+		// Execute grants for each recipient
+		console.log('\n🔄 Granting entries...\n');
+		let successCount = 0;
 
-		const gasLimit = Math.floor(gasEstimate * 1.2);
+		for (let i = 0; i < recipients.length; i++) {
+			const recipient = recipients[i];
+			const count = ticketCounts[i];
 
-		const [receipt, , record] = await contractExecuteFunction(
-			contractId,
-			lazyLottoIface,
-			client,
-			gasLimit,
-			'adminGrantEntry',
-			[poolId, ticketCount, recipientAddress],
-		);
+			console.log(`📦 ${i + 1}/${recipients.length}: ${recipient.input} (${count} entries)`);
 
-		if (receipt.status.toString() !== 'SUCCESS') {
-			console.error('\n❌ Transaction failed');
-			process.exit(1);
+			try {
+				// Estimate gas
+				const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'adminGrantEntry', [
+					poolId,
+					count,
+					recipient.address,
+				], 200000);
+				const gasEstimate = gasInfo.gasLimit;
+				const gasLimit = Math.floor(gasEstimate * 1.2);
+
+				// Execute
+				const [receipt, , record] = await contractExecuteFunction(
+					contractId,
+					lazyLottoIface,
+					client,
+					gasLimit,
+					'adminGrantEntry',
+					[poolId, count, recipient.address],
+				);
+
+				if (receipt.status.toString() !== 'SUCCESS') {
+					console.error(`   ❌ Failed: ${receipt.status.toString()}`);
+				}
+				else {
+					console.log(`   ✅ Success - TX: ${record.transactionId.toString()}`);
+					successCount++;
+				}
+			}
+			catch (error) {
+				console.error(`   ❌ Error: ${error.message}`);
+			}
+
+			console.log('');
 		}
 
-		console.log('\n✅ Entries granted successfully!');
-		console.log(`🎁 ${ticketCount} entries granted to ${recipientInput}`);
-		console.log(`   Pool: ${poolId}`);
-		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+		// Final summary
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log('  RESULTS');
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Successful: ${successCount}/${recipients.length}`);
+		console.log(`  Failed: ${recipients.length - successCount}/${recipients.length}`);
+		if (successCount === recipients.length) {
+			console.log('  ✅ All entries granted successfully!');
+			console.log(`  🎁 Total: ${totalTickets} entries to ${recipients.length} recipients`);
+		}
+		else {
+			console.log('  ⚠️  Some grants failed - see errors above');
+		}
+		console.log('═══════════════════════════════════════════════════════════\n');
 
 	}
 	catch (error) {

@@ -14,17 +14,23 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
 
+const { homebrewPopulateAccountNum, EntityType, getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+
+let tokenDets = null;
 
 // Helper: Prompt user
 function prompt(question) {
@@ -42,11 +48,11 @@ function prompt(question) {
 }
 
 // Helper: Convert Hedera ID to EVM address
-async function convertToHederaId(evmAddress) {
+async function convertToHederaId(evmAddress, entityType = null) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
-	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
-	return await homebrewPopulateAccountNum(env, evmAddress);
+	// Use null to try all entity types (accounts, tokens, contracts)
+	return await homebrewPopulateAccountNum(env, evmAddress, entityType);
 }
 
 // Helper: Format win rate
@@ -56,7 +62,7 @@ function formatWinRate(thousandthsOfBps) {
 
 // Helper: Format HBAR
 function formatHbar(tinybars) {
-	return (Number(tinybars) / 100_000_000).toFixed(8) + ' ℏ';
+	return new Hbar(Number(tinybars), HbarUnit.Tinybar).toString();
 }
 
 async function getPoolInfo() {
@@ -113,28 +119,47 @@ async function getPoolInfo() {
 
 		console.log('🔍 Fetching pool data...\n');
 
-		// Get pool details (includes prizes)
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		// Get pool basic info (new API - no prizes array)
+		const encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		const poolBasicInfo = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
-		// Prizes are included in pool details
-		const prizes = poolDetails.prizes;
+		// Destructure the tuple: (ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken)
+		const [, , winRateThousandthsOfBps, entryFee, prizeCount, outstandingEntries, poolTokenId, paused, closed, feeToken] = poolBasicInfo;
+
+		// Fetch individual prizes if any exist
+		const prizes = [];
+		const prizeCountNum = Number(prizeCount);
+		if (prizeCountNum > 0) {
+			console.log(`📦 Fetching ${prizeCountNum} prize package(s)...`);
+			for (let i = 0; i < prizeCountNum; i++) {
+				const prizeQuery = lazyLottoIface.encodeFunctionData('getPrizePackage', [poolId, i]);
+				const prizeResult = await readOnlyEVMFromMirrorNode(env, contractId, prizeQuery, operatorId, false);
+				const prizePackage = lazyLottoIface.decodeFunctionResult('getPrizePackage', prizeResult);
+				prizes.push(prizePackage[0]);
+			}
+		}
 
 		// Display pool configuration
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  POOL CONFIGURATION');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Win Rate:         ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(winRateThousandthsOfBps))}`);
 
-		const feeToken = await convertToHederaId(poolDetails.feeToken);
-		const feeAmount = feeToken === 'HBAR'
-			? formatHbar(poolDetails.entryFee)
-			: `${poolDetails.entryFee} (${feeToken})`;
+		const feeTokenId = await convertToHederaId(feeToken, EntityType.TOKEN);
+
+		if (feeTokenId !== 'HBAR') {
+			tokenDets = await getTokenDetails(env, feeTokenId);
+		}
+
+		const feeAmount = feeTokenId === 'HBAR'
+			? formatHbar(Number(entryFee))
+			: `${entryFee / 10 ** tokenDets.decimals} (${feeTokenId})`;
 		console.log(`  Entry Fee:        ${feeAmount}`);
 
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
-		console.log(`  State:            ${poolDetails.paused ? '⏸️  PAUSED' : poolDetails.closed ? '🔒 CLOSED' : '✅ ACTIVE'}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(poolTokenId, EntityType.TOKEN)}`);
+		console.log(`  Outstanding:      ${outstandingEntries} entries`);
+		console.log(`  State:            ${paused ? '⏸️  PAUSED' : closed ? '🔒 CLOSED' : '✅ ACTIVE'}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		// Display prizes
@@ -142,38 +167,57 @@ async function getPoolInfo() {
 		console.log('  PRIZES');
 		console.log('═══════════════════════════════════════════════════════════');
 
-		if (prizes[0].length === 0) {
+		if (prizes.length === 0) {
 			console.log('  No prizes in this pool\n');
 		}
 		else {
-			console.log(`  Total: ${prizes[0].length} prize(s)\n`);
+			console.log(`  Total: ${prizes.length} prize(s)\n`);
 
-			for (let i = 0; i < prizes[0].length; i++) {
-				const prize = prizes[0][i];
+			for (let i = 0; i < prizes.length; i++) {
+				const prize = prizes[i];
 				console.log(`  Prize #${i}:`);
 
 				// FT component
-				if (prize.amount > 0) {
-					const tokenId = await convertToHederaId(prize.token);
-					const amount = tokenId === 'HBAR' ? formatHbar(prize.amount) : prize.amount.toString();
-					console.log(`    FT:   ${amount} ${tokenId}`);
+				if (Number(prize.amount) > 0) {
+					const prizeTokenId = await convertToHederaId(prize.token);
+					let amount;
+					if (prizeTokenId === 'HBAR') {
+						amount = formatHbar(Number(prize.amount));
+					}
+					else {
+						const prizeTokenDets = await getTokenDetails(env, prizeTokenId);
+						amount = `${Number(prize.amount) / (10 ** prizeTokenDets.decimals)} ${prizeTokenDets.symbol}`;
+					}
+					console.log(`    FT:   ${amount}`);
 				}
 
 				// NFT components
 				const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
 				if (nftTokens.length > 0) {
-					console.log(`    NFTs: ${prize.nftSerials.length} NFT(s) from ${nftTokens.length} collection(s)`);
+					// prize.nftSerials is an array of arrays - flatten to count total
+					const totalSerials = prize.nftSerials.reduce((sum, serialArray) => sum + serialArray.length, 0);
+					console.log(`    NFTs: ${totalSerials} NFT(s) from ${nftTokens.length} collection(s)`);
 					for (let j = 0; j < nftTokens.length; j++) {
-						const tokenId = await convertToHederaId(nftTokens[j]);
-						// Count serials for this token
-						const serialCount = prize.nftSerials.filter((_, idx) =>
-							prize.nftTokens[idx] === nftTokens[j],
-						).length;
-						console.log(`          - ${tokenId}: ${serialCount} serial(s)`);
-					}
-				}
+						const tokenId = await convertToHederaId(nftTokens[j], EntityType.TOKEN);
 
-				console.log();
+						// Get token details from mirror node
+						let tokenSymbol = tokenId;
+						let tokenName = 'Unknown';
+						try {
+							tokenDets = await getTokenDetails(env, tokenId);
+							tokenSymbol = tokenDets.symbol || tokenId;
+							tokenName = tokenDets.name || 'Unknown';
+						}
+						catch {
+							// Use token ID if details unavailable
+						}
+
+						// Each NFT token has its own array of serials
+						const serials = prize.nftSerials[j].map(s => Number(s));
+						const serialsStr = serials.join(', ');
+						console.log(`          - ${tokenId} (${tokenSymbol} - ${tokenName}): [${serialsStr}]`);
+					}
+				} console.log();
 			}
 		}
 
@@ -183,10 +227,10 @@ async function getPoolInfo() {
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  SUMMARY');
 		console.log('═══════════════════════════════════════════════════════════');
-		console.log(`  Pool State:     ${poolDetails.paused ? 'PAUSED' : poolDetails.closed ? 'CLOSED' : 'ACTIVE'}`);
-		console.log(`  Win Rate:       ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
+		console.log(`  Pool State:     ${paused ? 'PAUSED' : closed ? 'CLOSED' : 'ACTIVE'}`);
+		console.log(`  Win Rate:       ${formatWinRate(Number(winRateThousandthsOfBps))}`);
 		console.log(`  Entry Fee:      ${feeAmount}`);
-		console.log(`  Total Prizes:   ${prizes[0].length}`);
+		console.log(`  Total Prizes:   ${prizes.length}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
 		console.log('✅ Pool info query complete!\n');

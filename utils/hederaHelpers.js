@@ -201,7 +201,7 @@ async function sendNFTWithAllowance(
  * @param {AccountId} _spenderId
  * @returns {String} status of the transaction
  */
-async function setNFTAllowanceAll(client, _tokenIdList, _ownerId, _spenderId) {
+async function setNFTAllowanceAll(client, _tokenIdList, _ownerId, _spenderId, memo = null) {
 	// use an inner/outer loop to maxSupply but in batches of 20
 	let batch = 0;
 	for (let outer = 0; outer < _tokenIdList.length; outer += 20) {
@@ -218,9 +218,10 @@ async function setNFTAllowanceAll(client, _tokenIdList, _ownerId, _spenderId) {
 				_spenderId,
 			);
 		}
-		approvalTx.setTransactionMemo(
-			`NFT  (all serials) allowance (batch ${batch++})`,
-		);
+		const memoText = memo
+			? `${memo} (batch ${batch++})`
+			: `NFT  (all serials) allowance (batch ${batch++})`;
+		approvalTx.setTransactionMemo(memoText);
 		approvalTx.freezeWith(client);
 		const exResp = await approvalTx.execute(client);
 		const receipt = await exResp.getReceipt(client).catch((e) => {
@@ -426,7 +427,7 @@ async function setNFTAllowance(
  * @param {*} _spenderId the spender to authorize
  * @param {Number} amount amount to approve
  */
-async function setFTAllowance(client, _tokenId, _ownerId, _spenderId, amount) {
+async function setFTAllowance(client, _tokenId, _ownerId, _spenderId, amount, memo = null) {
 	const approvalTx =
 		new AccountAllowanceApproveTransaction().approveTokenAllowance(
 			_tokenId,
@@ -434,6 +435,9 @@ async function setFTAllowance(client, _tokenId, _ownerId, _spenderId, amount) {
 			_spenderId,
 			amount,
 		);
+	if (memo) {
+		approvalTx.setTransactionMemo(memo);
+	}
 	approvalTx.freezeWith(client);
 	const exResp = await approvalTx.execute(client);
 	const receipt = await exResp.getReceipt(client).catch((e) => {

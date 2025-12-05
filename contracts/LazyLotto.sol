@@ -1048,17 +1048,53 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         return pools.length;
     }
 
-    /// @notice Get the details of a specific pool
-    /// @param id The ID of the pool to get details for
-    /// @return LottoPool The details of the specified pool
-    function getPoolDetails(
+    /// @notice Get basic pool information without the prizes array
+    /// @dev Use this to avoid response size issues with pools that have many prizes
+    /// @param id The ID of the pool
+    /// @return ticketCID IPFS CID for ticket image
+    /// @return winCID IPFS CID for winner image
+    /// @return winRateThousandthsOfBps Win rate in thousandths of basis points
+    /// @return entryFee Cost to enter (in pool token base units)
+    /// @return prizeCount Number of prizes (NOT the array)
+    /// @return outstandingEntries Entries purchased but not rolled
+    /// @return poolTokenId Token address for pool entry
+    /// @return paused Whether pool is paused
+    /// @return closed Whether pool is closed
+    /// @return feeToken Token address for fees
+    function getPoolBasicInfo(
         uint256 id
-    ) external view returns (LottoPool memory) {
-        if (id < pools.length) {
-            return pools[id];
-        } else {
+    )
+        external
+        view
+        returns (
+            string memory ticketCID,
+            string memory winCID,
+            uint256 winRateThousandthsOfBps,
+            uint256 entryFee,
+            uint256 prizeCount,
+            uint256 outstandingEntries,
+            address poolTokenId,
+            bool paused,
+            bool closed,
+            address feeToken
+        )
+    {
+        if (id >= pools.length) {
             revert LottoPoolNotFound(id);
         }
+        LottoPool storage pool = pools[id];
+        return (
+            pool.ticketCID,
+            pool.winCID,
+            pool.winRateThousandthsOfBps,
+            pool.entryFee,
+            pool.prizes.length,
+            pool.outstandingEntries,
+            pool.poolTokenId,
+            pool.paused,
+            pool.closed,
+            pool.feeToken
+        );
     }
 
     /// @notice Get the user's entries for a specific pool
@@ -1072,26 +1108,68 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         return userEntries[poolId][user];
     }
 
-    /// @notice Get the user's entries across all pools
-    /// @param user The address of the user to get entries for
-    /// @return uint256[] memory The number of entries the user has in each pool
-    function getUserEntries(
-        address user
+    /// @notice Get a page of user entries across pools
+    /// @dev Use this to avoid response size issues with many pools
+    /// @param user The address of the user
+    /// @param startPoolId Starting pool ID (0-based)
+    /// @param count Maximum number of entries to return
+    /// @return uint256[] memory Entry counts for requested pool range
+    function getUserEntriesPage(
+        address user,
+        uint256 startPoolId,
+        uint256 count
     ) external view returns (uint256[] memory) {
-        uint256[] memory entries = new uint256[](pools.length);
-        for (uint256 i = 0; i < pools.length; i++) {
-            entries[i] = userEntries[i][user];
+        uint256 poolCount = pools.length;
+        if (startPoolId >= poolCount) {
+            return new uint256[](0);
         }
-        return entries;
+        uint256 endPoolId = startPoolId + count;
+        if (endPoolId > poolCount) {
+            endPoolId = poolCount;
+        }
+        uint256 resultSize = endPoolId - startPoolId;
+        uint256[] memory result = new uint256[](resultSize);
+        for (uint256 i = 0; i < resultSize; i++) {
+            result[i] = userEntries[startPoolId + i][user];
+        }
+        return result;
     }
 
-    /// @notice Get the user's pending prizes (all)
-    /// @param user The address of the user to get pending prizes for
-    /// @return PendingPrize[] memory The user's pending prizes
-    function getPendingPrizes(
+    /// @notice Get count of pending prizes for a user
+    /// @dev Use this before fetching to check if pagination needed
+    /// @param user The address of the user
+    /// @return uint256 Number of pending prizes
+    function getPendingPrizesCount(
         address user
+    ) external view returns (uint256) {
+        return pending[user].length;
+    }
+
+    /// @notice Get a page of pending prizes for a user
+    /// @dev Use this to avoid response size issues with many prizes
+    /// @param user The address of the user
+    /// @param startIndex Starting index (0-based)
+    /// @param count Maximum number of prizes to return
+    /// @return PendingPrize[] memory Slice of user's pending prizes
+    function getPendingPrizesPage(
+        address user,
+        uint256 startIndex,
+        uint256 count
     ) external view returns (PendingPrize[] memory) {
-        return pending[user];
+        uint256 totalPrizes = pending[user].length;
+        if (startIndex >= totalPrizes) {
+            return new PendingPrize[](0);
+        }
+        uint256 endIndex = startIndex + count;
+        if (endIndex > totalPrizes) {
+            endIndex = totalPrizes;
+        }
+        uint256 resultSize = endIndex - startIndex;
+        PendingPrize[] memory result = new PendingPrize[](resultSize);
+        for (uint256 i = 0; i < resultSize; i++) {
+            result[i] = pending[user][startIndex + i];
+        }
+        return result;
     }
 
     /// @notice Get a specific pending prize for a user by index
@@ -1135,6 +1213,16 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             revert BadParameters();
         }
         return pools[poolId].prizes[prizeIndex];
+    }
+
+    /// @notice Get the amount of fungible tokens needed for prizes
+    /// @param token The address of the fungible token
+    /// @return uint256 The amount of fungible tokens needed
+    /// @dev Zero Address(0) indicates HBAR
+    function getFungiblesNeededForPrizes(
+        address token
+    ) external view returns (uint256) {
+        return ftTokensForPrizes[token];
     }
 
     /// @notice Check if an address is an admin

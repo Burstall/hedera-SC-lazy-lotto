@@ -11,10 +11,15 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
+const { setHbarAllowance, associateTokensToAccount } = require('../../../../utils/hederaHelpers');
+const { sleep } = require('@directus/sdk');
 require('dotenv').config();
 
 // Environment setup
@@ -22,6 +27,7 @@ const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+const storageContractId = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
 
 // Helper: Prompt user
 function prompt(question) {
@@ -97,9 +103,15 @@ async function claimPrize() {
 
 		// Get pending prizes
 		const userEvmAddress = '0x' + operatorId.toSolidityAddress();
-		let encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userEvmAddress]);
+		// Get pending prizes count first
+		let countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userEvmAddress]);
+		let countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);
+		const prizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
+
+		// Get all pending prizes
+		let encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userEvmAddress, 0, Number(prizeCount)]);
 		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
+		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
 
 		if (pendingPrizes[0].length === 0) {
 			console.log('❌ You have no pending prizes to claim\n');
@@ -175,6 +187,76 @@ async function claimPrize() {
 		console.log(`  Contents: ${prizeItems.join(' + ')}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
+		// Check and associate required tokens
+		console.log('🔍 Checking token associations...');
+		const tokensToAssociate = [];
+		const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
+
+		// Check FT token
+		if (prize.amount > 0 && prize.token !== '0x0000000000000000000000000000000000000000') {
+			const ftTokenId = await convertToHederaId(prize.token);
+			const ftBalance = await checkMirrorBalance(env, operatorId, ftTokenId);
+			if (ftBalance === null) {
+				console.log(`  🔗 FT token ${ftTokenId} needs association`);
+				tokensToAssociate.push(TokenId.fromString(ftTokenId));
+			}
+		}
+
+		// Check NFT tokens
+		const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
+		for (const nftToken of nftTokens) {
+			const nftTokenId = await convertToHederaId(nftToken);
+			const nftBalance = await checkMirrorBalance(env, operatorId, nftTokenId);
+			if (nftBalance === null) {
+				console.log(`  🔗 NFT token ${nftTokenId} needs association`);
+				tokensToAssociate.push(TokenId.fromString(nftTokenId));
+			}
+		}
+
+		// Associate tokens if needed
+		if (tokensToAssociate.length > 0) {
+			console.log(`\n🔗 Associating ${tokensToAssociate.length} token(s)...`);
+			const associateTx = await associateTokensToAccount(
+				client,
+				operatorId,
+				operatorKey,
+				tokensToAssociate,
+			);
+			if (associateTx.status.toString() !== 'SUCCESS') {
+				console.error('❌ Failed to associate tokens');
+				process.exit(1);
+			}
+		}
+		else {
+			console.log('✅ All required tokens already associated');
+		}
+
+		// Check HBAR allowance if prize contains NFTs
+		if (nftTokens.length > 0) {
+			console.log('\n🔍 Checking HBAR allowance for NFT transfers...');
+			const { checkMirrorHbarAllowance } = require('../../../../utils/hederaMirrorHelpers');
+			const hbarAllowance = await checkMirrorHbarAllowance(env, operatorId, storageContractId);
+			const requiredHbar = nftTokens.length;
+
+			if (!hbarAllowance || hbarAllowance < requiredHbar) {
+				console.log(`🔗 Setting HBAR allowance (${requiredHbar} HBAR) to storage contract...`);
+				const allowanceTx = await setHbarAllowance(
+					client,
+					operatorId,
+					storageContractId,
+					new Hbar(requiredHbar, HbarUnit.Hbar),
+				);
+
+				if (allowanceTx.status.toString() !== 'SUCCESS') {
+					console.error('❌ Failed to set HBAR allowance');
+					process.exit(1);
+				}
+			}
+			else {
+				console.log(`✅ HBAR allowance already set (${hbarAllowance} HBAR)`);
+			}
+		}
+
 		// Estimate gas
 		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'claimPrize', [prizeIndex], 500000);
 		const gasEstimate = gasInfo.gasLimit;
@@ -191,7 +273,7 @@ async function claimPrize() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -208,10 +290,16 @@ async function claimPrize() {
 		console.log('\n✅ Prize claimed successfully!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
+		console.log('🔍 Waiting on sync to fetch updated pending prizes...\n');
+		await sleep(5000);
 		// Get updated pending prizes
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userEvmAddress]);
+		countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userEvmAddress]);
+		countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);
+		const newPrizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
+
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userEvmAddress, 0, Number(newPrizeCount)]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const newPendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizes', result);
+		const newPendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  UPDATED STATE');

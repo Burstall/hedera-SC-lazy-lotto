@@ -94,39 +94,34 @@ async function closePool() {
 		// Check pool status first
 		console.log('🔍 Checking pool status...');
 
-		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		const encodedQuery = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		const result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedQuery,
-			lazyLottoIface,
-			'getPoolDetails',
+			operatorId,
 			false,
 		);
+		const poolBasicInfo = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
+		// Destructure: (ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken)
+		const [, , , , , outstandingEntries, , , closed] = poolBasicInfo;
 
-		if (!poolDetails || !poolDetails.used) {
-			console.error('\n❌ Pool does not exist or is not in use');
+		if (!poolBasicInfo) {
+			console.error('\n❌ Pool does not exist');
 			process.exit(1);
 		}
 
-		if (poolDetails.closed) {
+		if (closed) {
 			console.log('\n⚠️  Pool is already closed');
 			process.exit(0);
 		}
 
-		console.log(`Pool: "${poolDetails.name}"`);
-		console.log(`Total Entries: ${poolDetails.totalEntries.toString()}`);
-		console.log(`Outstanding Tokens: ${poolDetails.tokensForPoolPrizes.toString()}\n`);
+		console.log(`Outstanding Entries: ${outstandingEntries.toString()}\n`);
 
-		// Warn if there are outstanding entries/prizes
-		if (poolDetails.totalEntries > 0n) {
+		// Warn if there are outstanding entries
+		if (Number(outstandingEntries) > 0) {
 			console.log('⚠️  WARNING: Pool has outstanding entries!');
 			console.log('   Users should roll and claim prizes before closing.\n');
-		}
-
-		if (poolDetails.tokensForPoolPrizes > 0n) {
-			console.log('⚠️  WARNING: Pool has outstanding prize tokens!');
-			console.log('   All prizes should be claimed before closing.\n');
 		}
 
 		// Estimate gas
@@ -146,7 +141,7 @@ async function closePool() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,

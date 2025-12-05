@@ -1,0 +1,50 @@
+{
+  "_description": "Type E: FT + NFT prize packages",
+  "_note": "FT amounts are in human-readable units (script will convert using token decimals)",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "1,000 tokens + rare NFT",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "1000"
+      },
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [1]
+        }
+      ]
+    },
+    {
+      "_comment": "500 tokens + multiple NFTs from one collection",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "500"
+      },
+      "nfts": [
+        {
+          "token": "0.0.88888",
+          "serials": [10, 11, 12]
+        }
+      ]
+    },
+    {
+      "_comment": "250 tokens + NFTs from multiple collections",
+      "ft": {
+        "token": "0.0.67890",
+        "amount": "250"
+      },
+      "nfts": [
+        {
+          "token": "0.0.11111",
+          "serials": [5]
+        },
+        {
+          "token": "0.0.22222",
+          "serials": [100, 101]
+        }
+      ]
+    }
+  ]
+}

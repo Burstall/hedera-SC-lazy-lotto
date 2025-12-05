@@ -1,0 +1,40 @@
+{
+  "_description": "Type D: HBAR + NFT prize packages",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "100 HBAR + single rare NFT",
+      "hbar": "100",
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [1]
+        }
+      ]
+    },
+    {
+      "_comment": "50 HBAR + multiple NFTs from one collection",
+      "hbar": "50",
+      "nfts": [
+        {
+          "token": "0.0.88888",
+          "serials": [10, 11, 12]
+        }
+      ]
+    },
+    {
+      "_comment": "25 HBAR + NFTs from multiple collections",
+      "hbar": "25",
+      "nfts": [
+        {
+          "token": "0.0.11111",
+          "serials": [5]
+        },
+        {
+          "token": "0.0.22222",
+          "serials": [100, 101]
+        }
+      ]
+    }
+  ]
+}

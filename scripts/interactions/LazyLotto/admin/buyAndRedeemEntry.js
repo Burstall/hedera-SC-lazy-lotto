@@ -13,10 +13,12 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
+const { associateTokensToAccount } = require('../../../../utils/hederaHelpers');
 require('dotenv').config();
 
 // Environment setup
@@ -38,6 +40,11 @@ function prompt(question) {
 			resolve(answer);
 		});
 	});
+}
+
+// Helper: Format win rate
+function formatWinRate(thousandthsOfBps) {
+	return (thousandthsOfBps / 1_000_000).toFixed(4) + '%';
 }
 
 async function buyAndRedeemEntry() {
@@ -82,7 +89,7 @@ async function buyAndRedeemEntry() {
 
 		// Get total pools
 		const encodedQuery = lazyLottoIface.encodeFunctionData('totalPools', []);
-		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedQuery, operatorId, false);
+		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedQuery, operatorId, false);
 		const decoded = lazyLottoIface.decodeFunctionResult('totalPools', result);
 		const totalPools = Number(decoded[0]);
 
@@ -125,6 +132,71 @@ async function buyAndRedeemEntry() {
 			process.exit(1);
 		}
 
+		// Get pool token for association check
+		const poolInfoCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		const poolInfoResult = await readOnlyEVMFromMirrorNode(env, contractId, poolInfoCommand, operatorId, false);
+		// eslint-disable-next-line no-unused-vars
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', poolInfoResult);
+
+		if (paused) {
+			console.error('\n❌ Pool is paused');
+			process.exit(1);
+		}
+
+		if (closed) {
+			console.error('\n❌ Pool is closed');
+			process.exit(1);
+		}
+
+		// Get bonus calculation
+		const boostCommand = lazyLottoIface.encodeFunctionData('calculateBoost', [operatorId.toSolidityAddress()]);
+		const boostResult = await readOnlyEVMFromMirrorNode(env, contractId, boostCommand, operatorId, false);
+		const boost = lazyLottoIface.decodeFunctionResult('calculateBoost', boostResult)[0];
+
+		const baseWinRate = Number(winRate);
+		const effectiveWinRate = Math.min(baseWinRate + Number(boost), 100_000_000);
+
+		console.log('\n═══════════════════════════════════════════════════════════');
+		console.log('  POOL DETAILS');
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Base Win Rate:        ${formatWinRate(baseWinRate)}`);
+		if (Number(boost) > 0) {
+			console.log(`  Your Bonus:           +${formatWinRate(Number(boost))}`);
+			console.log(`  Effective Win Rate:   ${formatWinRate(effectiveWinRate)}`);
+		}
+		console.log(`  Prize Packages:       ${prizeCount}`);
+		console.log(`  Outstanding Entries:  ${outstanding}`);
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`\n🎁 Admin privilege: Creating ${ticketCount} FREE NFT tickets`);
+
+		// Associate pool token if needed
+		const { homebrewPopulateAccountNum, EntityType, checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
+
+		const poolTokenHederaId = await homebrewPopulateAccountNum(env, poolTokenId, EntityType.TOKEN);
+		const userBalance = await checkMirrorBalance(env, operatorId, poolTokenHederaId);
+
+		if (userBalance === null) {
+			console.log(`\n🔗 Associating pool NFT token (${poolTokenHederaId})...`);
+			result = await associateTokensToAccount(
+				client,
+				operatorId,
+				operatorKey,
+				[TokenId.fromString(poolTokenHederaId)],
+			);
+
+			if (result !== 'SUCCESS') {
+				console.error('❌ Failed to associate pool token');
+				process.exit(1);
+			}
+			console.log('✅ Pool token associated');
+			console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+			await new Promise(resolve => setTimeout(resolve, 5000));
+		}
+		else {
+			console.log(`\n✅ Pool token (${poolTokenHederaId}) already associated`);
+		}
+
 		console.log(`\n🎫 Creating ${ticketCount} free NFT tickets`);
 		console.log(`   Pool: ${poolId}`);
 		console.log(`   Recipient: ${operatorId.toString()} (admin)`);
@@ -133,7 +205,7 @@ async function buyAndRedeemEntry() {
 		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'adminBuyAndRedeemEntry', [
 			poolId,
 			ticketCount,
-		], 200000);
+		], 2_000_000);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm

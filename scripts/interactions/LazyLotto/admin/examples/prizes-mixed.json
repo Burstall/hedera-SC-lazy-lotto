@@ -1,0 +1,74 @@
+{
+  "_description": "Mixed Types: Multiple packages of different types (A, B, C, D, E)",
+  "_note": "FT amounts are in human-readable units (script will convert using token decimals)",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "Type A",
+      "hbar": "100"
+    },
+    {
+      "_comment": "Type A",
+      "hbar": "50"
+    },
+    {
+      "_comment": "Type B",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "1000"
+      }
+    },
+    {
+      "_comment": "Type B",
+      "ft": {
+        "token": "0.0.67890",
+        "amount": "500"
+      }
+    },
+    {
+      "_comment": "Type C",
+      "nfts": [
+        {
+          "token": "0.0.11111",
+          "serials": [1, 2, 3]
+        }
+      ]
+    },
+    {
+      "_comment": "Type C with multiple collections",
+      "nfts": [
+        {
+          "token": "0.0.22222",
+          "serials": [100, 101]
+        },
+        {
+          "token": "0.0.33333",
+          "serials": [42]
+        }
+      ]
+    },
+    {
+      "_comment": "Type D",
+      "hbar": "25",
+      "nfts": [
+        {
+          "token": "0.0.99999",
+          "serials": [1]
+        }
+      ]
+    },
+    {
+      "_comment": "Type E",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "250"
+      },
+      "nfts": [
+        {
+          "token": "0.0.88888",
+          "serials": [5, 6]
+        }
+      ]
+    }
+  ]
+}

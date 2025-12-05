@@ -1,0 +1,28 @@
+{
+  "_description": "Type B: Fungible Token only prize packages",
+  "_note": "Amounts are in human-readable units (script will convert using token decimals)",
+  "poolId": 0,
+  "packages": [
+    {
+      "_comment": "1,000 tokens (human-readable)",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "1000"
+      }
+    },
+    {
+      "_comment": "500 tokens from same token",
+      "ft": {
+        "token": "0.0.12345",
+        "amount": "500"
+      }
+    },
+    {
+      "_comment": "Different fungible token - 2,000 tokens",
+      "ft": {
+        "token": "0.0.67890",
+        "amount": "2000"
+      }
+    }
+  ]
+}

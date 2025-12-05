@@ -12,10 +12,12 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
+const { associateTokensToAccount } = require('../../../../utils/hederaHelpers');
 require('dotenv').config();
 
 // Environment setup
@@ -108,14 +110,15 @@ async function redeemEntriesToNFT() {
 		// Get user's entries
 		const userEvmAddress = operatorId.toSolidityAddress();
 		let encodedCommand = lazyLottoIface.encodeFunctionData('getUsersEntries', [poolId, userEvmAddress]);
-		const entries = await readOnlyEVMFromMirrorNode(
+		let result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedCommand,
-			lazyLottoIface,
-			'getUsersEntries',
+			operatorId,
 			false,
 		);
+		const entriesResult = lazyLottoIface.decodeFunctionResult('getUsersEntries', result);
+		const entries = entriesResult[0];
 
 		const totalEntries = Number(entries);
 
@@ -127,17 +130,45 @@ async function redeemEntriesToNFT() {
 		console.log(`✅ You have ${totalEntries} memory entries in pool #${poolId}\n`);
 
 		// Get pool details
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [poolId]);
-		const poolDetails = await readOnlyEVMFromMirrorNode(
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedCommand,
-			lazyLottoIface,
-			'getPoolDetails',
+			operatorId,
 			false,
 		);
+		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
-		console.log('Pool Token:', await convertToHederaId(poolDetails.poolTokenId));
+		const poolTokenHederaId = await convertToHederaId(poolTokenId);
+		console.log('Pool Token:', poolTokenHederaId);
+
+		// Associate pool token if needed
+		const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
+		const userBalance = await checkMirrorBalance(env, operatorId, poolTokenHederaId);
+
+		if (userBalance === null) {
+			console.log(`🔗 Associating pool NFT token...`);
+			const result = await associateTokensToAccount(
+				client,
+				operatorId,
+				operatorKey,
+				[TokenId.fromString(poolTokenHederaId)],
+			);
+
+			if (result !== 'SUCCESS') {
+				console.error('❌ Failed to associate pool token');
+				process.exit(1);
+			}
+			console.log(`✅ Pool token associated`);
+			console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+			await new Promise(resolve => setTimeout(resolve, 5000));
+		}
+		else {
+			console.log(`✅ Pool token already associated`);
+		}
+		console.log('');
 
 		// Determine quantity to redeem
 		let quantity;
@@ -164,7 +195,7 @@ async function redeemEntriesToNFT() {
 		console.log(`\n📦 Converting ${quantity} memory entries to NFT tickets...\n`);
 
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'redeemEntriesToNFT', [poolId, quantity], 300000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'redeemEntriesToNFT', [poolId, quantity], 500000);
 		const gasEstimate = gasInfo.gasLimit;
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 

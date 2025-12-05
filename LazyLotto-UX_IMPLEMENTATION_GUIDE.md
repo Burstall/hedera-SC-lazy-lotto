@@ -1,15 +1,35 @@
 # LazyLotto - UX Implementation Guide for Frontend Developers
 
-**Version:** 2.0  
-**Last Updated:** November 12, 2025  
-**Contract Versions:** LazyLotto 23.612 KB | LazyLottoStorage 11.137 KB
+**Version:** 2.1  
+**Last Updated:** December 2, 2025  
+**Contract Versions:** LazyLotto 23.782 KB | LazyLottoStorage 11.137 KB
 **Target Audience:** Frontend Developers, UX Designers, Integration Engineers
+
+---
+
+## ⚠️ Breaking Changes Alert - December 2025
+
+**API Version 2.1 contains breaking changes** due to contract size constraints (24 KB limit). Three view functions have been removed and replaced with paginated alternatives.
+
+**📋 See [API Breaking Changes Guide](./LazyLotto-API_BREAKING_CHANGES.md) for complete migration instructions.**
+
+**Quick Summary:**
+- ❌ `getPoolDetails()` → ✅ `getPoolBasicInfo()` (returns prize count, not array)
+- ❌ `getPendingPrizes()` → ✅ `getPendingPrizesPage()` + `getPendingPrizesCount()`
+- ❌ `getUserEntries()` → ✅ `getUserEntriesPage()`
 
 ---
 
 ## Overview
 
 This guide provides comprehensive instructions for building user-facing applications that interact with the LazyLotto smart contract. It covers all user flows, required contract method calls, data presentation patterns, error handling, gas estimation strategies, and best practices for creating an intuitive lottery experience.
+
+### Key Updates in v2.1
+
+- 🔴 **BREAKING CHANGES**: Three view functions replaced with paginated alternatives (see breaking changes guide)
+- ✅ **Scalability**: Supports pools with 100+ prizes without response size failures
+- ✅ **Performance**: Paginated queries reduce response times for large datasets
+- ✅ **Reliability**: Never fails due to response size limits
 
 ### Key Updates in v2.0
 
@@ -88,15 +108,16 @@ await tokenContract.approve(storageAddress, amount);
 
 **Read-Only (View) Methods:**
 ```solidity
-// Pool information
+// Pool information (UPDATED in v2.1)
 totalPools() → uint256
-getPoolDetails(poolId) → LottoPool
+getPoolBasicInfo(poolId) → (tuple of 10 values)  // 🆕 Replaces getPoolDetails()
 getPrizePackage(poolId, prizeIndex) → PrizePackage
 
-// User data
+// User data (UPDATED in v2.1)
 getUsersEntries(poolId, user) → uint256
-getUserEntries(user) → uint256[]
-getPendingPrizes(user) → PendingPrize[]
+getUserEntriesPage(user, startPoolId, count) → uint256[]  // 🆕 Replaces getUserEntries()
+getPendingPrizesCount(user) → uint256  // 🆕 New function
+getPendingPrizesPage(user, startIndex, count) → PendingPrize[]  // 🆕 Replaces getPendingPrizes()
 getPendingPrize(user, index) → PendingPrize
 
 // Bonus system
@@ -106,7 +127,7 @@ totalNFTBonusTokens() → uint256
 
 // Admin checks
 isAdmin(address) → bool
-isPrizeManager(address) → bool  // NEW in v2.0
+isPrizeManager(address) → bool
 
 // Storage contract reference (CRITICAL for token approvals)
 storageContract() → address
@@ -245,9 +266,43 @@ redeemPrizeToNFT(indices) → int64[]
 // Step 1: Get total number of pools
 const totalPools = await contract.totalPools();
 
-// Step 2: Fetch details for each pool
+// Step 2: Fetch basic info for each pool (v2.1 - using getPoolBasicInfo)
 const pools = [];
 for (let i = 0; i < totalPools; i++) {
+    const poolInfo = await contract.getPoolBasicInfo(i);
+    
+    // Destructure the returned tuple
+    const [
+        ticketCID,
+        winCID,
+        winRateThousandthsOfBps,
+        entryFee,
+        prizeCount,              // Prize COUNT (not array)
+        outstandingEntries,
+        poolTokenId,
+        paused,
+        closed,
+        feeToken
+    ] = poolInfo;
+    
+    pools.push({
+        id: i,
+        ticketCID,
+        winCID,
+        winRate: winRateThousandthsOfBps,
+        entryFee,
+        prizeCount,              // Number of prizes
+        outstandingEntries,
+        poolTokenId,
+        paused,
+        closed,
+        feeToken
+    });
+}
+
+// Step 3: Filter and display (example: show only open pools)
+const activePools = pools.filter(p => !p.closed && !p.paused);
+console.log('Active Pools:', activePools);
   const poolDetails = await contract.getPoolDetails(i);
   
   // Check if pool is active (not paused and not closed)

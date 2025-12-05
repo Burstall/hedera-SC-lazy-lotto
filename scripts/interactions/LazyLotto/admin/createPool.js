@@ -20,11 +20,14 @@ const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
 
+const { homebrewPopulateAccountNum, getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+let tokenDets = null;
 
 // Helper: Prompt user
 function prompt(question) {
@@ -52,7 +55,6 @@ function convertToEvmAddress(hederaId) {
 async function convertToHederaId(evmAddress) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
-	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	return await homebrewPopulateAccountNum(env, evmAddress);
 }
 
@@ -137,11 +139,22 @@ async function createPool() {
 
 		// Entry fee amount
 		const entryFeeStr = await prompt('Enter entry fee amount: ');
-		const entryFee = entryFeeStr;
+		let entryFee = entryFeeStr;
 
 		if (isNaN(Number(entryFee)) || Number(entryFee) <= 0) {
 			console.error('❌ Invalid entry fee');
 			process.exit(1);
+		}
+
+		// need to adjust entry fee by the appropriate decimal places based on token
+		if (feeToken === '0x0000000000000000000000000000000000000000') {
+			// HBAR: convert to tinybars
+			entryFee = Math.floor(Number(new Hbar(Number(entryFee), HbarUnit.Hbar).toTinybars()));
+		}
+		else {
+			// FT: get decimals and convert
+			tokenDets = await getTokenDetails(env, feeTokenStr);
+			entryFee = Math.floor(Number(entryFee) * (10 ** tokenDets.decimals));
 		}
 
 		// Create new pool NFT token or use existing
@@ -199,7 +212,7 @@ async function createPool() {
 
 				const numerator = Math.floor(percentage * 100);
 				const denominator = 10000;
-				const fallbackFeeTinybar = Math.floor(fallbackHbar * 100_000_000);
+				const fallbackFeeTinybar = Math.floor(new Hbar(fallbackHbar, HbarUnit.Hbar).toTinybars());
 
 				royalties.push({
 					numerator: numerator,
@@ -256,7 +269,7 @@ async function createPool() {
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Pool Token:       ${tokenName} (${tokenSymbol})`);
 		console.log(`  Win Rate:         ${formatWinRate(winRateThousandthsOfBps)}`);
-		console.log(`  Entry Fee:        ${entryFee} ${feeToken === '0x0000000000000000000000000000000000000000' ? 'HBAR' : await convertToHederaId(feeToken)}`);
+		console.log(`  Entry Fee:        ${feeToken === '0x0000000000000000000000000000000000000000' ? new Hbar(Number(entryFee), HbarUnit.Tinybar).toString() : entryFee / (10 ** tokenDets.decimals) + ' ' + tokenDets.symbol}`);
 		console.log(`  Ticket CID:       ${ticketCID}`);
 		console.log(`  Win CID:          ${winCID}`);
 		console.log(`  Royalties:        ${royalties.length > 0 ? 'Yes' : 'No'}`);
@@ -316,12 +329,12 @@ async function createPool() {
 		console.log('\n✅ Pool created successfully!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
-		// Decode the poolId from the contract function result
+		// Get the poolId from the contract function result
+		// Note: results is already decoded by contractExecuteFunction
 		let newPoolId;
 		try {
 			// The createPool function returns the poolId
-			const decodedResult = lazyLottoIface.decodeFunctionResult('createPool', results);
-			newPoolId = Number(decodedResult.poolId);
+			newPoolId = Number(results[0]);
 			console.log(`🎰 New Pool ID: #${newPoolId}\n`);
 		}
 		catch (decodeError) {
@@ -341,17 +354,31 @@ async function createPool() {
 		await new Promise(resolve => setTimeout(resolve, 3000));
 
 		// Get pool details
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolDetails', [newPoolId]);
+		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [newPoolId]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const poolDetails = lazyLottoIface.decodeFunctionResult('getPoolDetails', result);
+		const [, , verifyWinRate, verifyEntryFee, , , verifyPoolTokenId, , , verifyFeeToken] =
+			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
+
+		// Format entry fee with proper decimals
+		const verifyFeeTokenId = await convertToHederaId(verifyFeeToken);
+		let formattedEntryFee;
+		if (verifyFeeToken === '0x0000000000000000000000000000000000000000') {
+			// HBAR
+			formattedEntryFee = new Hbar(Number(verifyEntryFee), HbarUnit.Tinybar).toString();
+		}
+		else {
+			// FT - get token details for decimals
+			const verifyTokenDets = await getTokenDetails(env, verifyFeeTokenId);
+			formattedEntryFee = `${Number(verifyEntryFee) / (10 ** verifyTokenDets.decimals)} ${verifyTokenDets.symbol}`;
+		}
 
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  NEW POOL DETAILS');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Pool ID:          #${newPoolId}`);
-		console.log(`  Win Rate:         ${formatWinRate(poolDetails.winRateThousandthsOfBps)}`);
-		console.log(`  Entry Fee:        ${entryFee} ${await convertToHederaId(poolDetails.feeToken)}`);
-		console.log(`  Pool Token:       ${await convertToHederaId(poolDetails.poolTokenId)}`);
+		console.log(`  Win Rate:         ${formatWinRate(Number(verifyWinRate))}`);
+		console.log(`  Entry Fee:        ${formattedEntryFee}`);
+		console.log(`  Pool Token:       ${await convertToHederaId(verifyPoolTokenId)}`);
 		console.log('  State:            ACTIVE');
 		console.log('═══════════════════════════════════════════════════════════\n');
 

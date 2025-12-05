@@ -12,10 +12,16 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
+const { associateTokensToAccount, setHbarAllowance } = require('../../../../utils/hederaHelpers');
+const { homebrewPopulateAccountNum, checkHbarAllowances } = require('../../../../utils/hederaMirrorHelpers');
+const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
+const { sleep } = require('@directus/sdk');
 require('dotenv').config();
 
 // Environment setup
@@ -23,6 +29,7 @@ const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+const storageContractId = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
 
 // Helper: Prompt user
 function prompt(question) {
@@ -45,7 +52,6 @@ async function convertToHederaId(evmAddress) {
 		return 'HBAR';
 	}
 
-	const { homebrewPopulateAccountNum } = require('../../../../utils/hederaMirrorHelpers');
 	const hederaId = await homebrewPopulateAccountNum(env, evmAddress);
 	return hederaId ? hederaId.toString() : evmAddress;
 }
@@ -147,27 +153,114 @@ async function claimFromPrizeNFT() {
 
 		console.log(`\nClaiming ${serials.length} prize NFT(s)...\n`);
 
-		// Get pending prizes to show what will be claimed
-		console.log('🔍 Fetching prize details...');
+		// Check each NFT to verify it's a prize and get details
+		console.log('🔍 Verifying prize NFTs and checking tokens...');
 
-		const userAddress = operatorId.toSolidityAddress();
-		const encodedPrizeQuery = lazyLottoIface.encodeFunctionData('getPendingPrizes', [userAddress]);
-		const pendingPrizes = await readOnlyEVMFromMirrorNode(
-			env,
-			contractId,
-			encodedPrizeQuery,
-			lazyLottoIface,
-			'getPendingPrizes',
-			false,
-		);
+		const tokensToAssociate = new Set();
+		let hasNFTs = false;
 
-		// Filter for NFT format prizes
-		const nftPrizes = pendingPrizes.filter(p => p.formatType === 1);
+		let totalNFTs = 0;
 
-		console.log(`\nYou have ${nftPrizes.length} NFT-format prize(s)\n`);
+		for (const serial of serials) {
+			// Query the prize data for this NFT
+			const encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesByNFT', [prizeNFTAddress, serial]);
+			const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+			const pendingPrize = lazyLottoIface.decodeFunctionResult('getPendingPrizesByNFT', result)[0];
+
+			if (!pendingPrize.asNFT) {
+				console.error(`\n❌ Serial #${serial} is not a prize NFT (it may be a ticket)`);
+				process.exit(1);
+			}
+
+			const prize = pendingPrize.prize;
+
+			// Check FT token
+			if (prize.amount > 0 && prize.token !== '0x0000000000000000000000000000000000000000') {
+				const ftTokenId = await convertToHederaId(prize.token);
+				const ftBalance = await checkMirrorBalance(env, operatorId, ftTokenId);
+				if (ftBalance === null) {
+					tokensToAssociate.add(ftTokenId);
+				}
+			}
+
+			// Check NFT tokens
+			const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
+			if (nftTokens.length > 0) {
+				hasNFTs = true;
+				totalNFTs += nftTokens.length;
+				for (const nftToken of nftTokens) {
+					const nftTokenId = await convertToHederaId(nftToken);
+					const nftBalance = await checkMirrorBalance(env, operatorId, nftTokenId);
+					if (nftBalance === null) {
+						tokensToAssociate.add(nftTokenId);
+					}
+				}
+			}
+		}
+
+		// Associate tokens if needed
+		if (tokensToAssociate.size > 0) {
+			console.log(`\n🔗 Associating ${tokensToAssociate.size} token(s)...`);
+			const tokenIds = Array.from(tokensToAssociate).map(id => TokenId.fromString(id));
+			const result = await associateTokensToAccount(
+				client,
+				operatorId,
+				operatorKey,
+				tokenIds,
+			);
+
+			if (result !== 'SUCCESS') {
+				console.error('❌ Failed to associate tokens');
+				process.exit(1);
+			}
+			console.log('✅ Tokens associated successfully');
+			console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+			await new Promise(resolve => setTimeout(resolve, 5000));
+		}
+		else {
+			console.log('✅ All required tokens already associated');
+		}
+
+		// Check HBAR allowance if any prize contains NFTs
+		if (hasNFTs) {
+			console.log('\n🔍 Checking HBAR allowance for NFT transfers...');
+			const hbarAllowances = await checkHbarAllowances(env, operatorId);
+			let hbarAllowance;
+			const requiredHbar = totalNFTs * serials.length;
+
+			// need to check if there is an hbar allowance for the storage contract
+			for (const allowance of hbarAllowances) {
+				if (allowance.spender === storageContractId.toString()) {
+					hbarAllowance = allowance.amount;
+					break;
+				}
+			}
+
+			if (!hbarAllowance || hbarAllowance < requiredHbar) {
+				console.log('🔗 Setting HBAR allowance (1 HBAR) to storage contract...');
+				const result = await setHbarAllowance(
+					client,
+					operatorId,
+					storageContractId,
+					1,
+					HbarUnit.Hbar,
+				);
+
+				if (result !== 'SUCCESS') {
+					console.error('❌ Failed to set HBAR allowance');
+					process.exit(1);
+				}
+				console.log('✅ HBAR allowance set successfully');
+				console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+				await sleep(5000);
+			}
+			else {
+				console.log(`✅ HBAR allowance already set (${hbarAllowance} HBAR)`);
+			}
+		}
 
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'claimPrizeFromNFT', [serials], 500000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'claimPrizeFromNFT', [prizeNFTAddress, serials], 750_000);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
@@ -183,13 +276,13 @@ async function claimFromPrizeNFT() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
 			gasLimit,
 			'claimPrizeFromNFT',
-			[serials],
+			[prizeNFTAddress, serials],
 		);
 
 		if (receipt.status.toString() !== 'SUCCESS') {
