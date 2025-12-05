@@ -1215,6 +1215,16 @@ contract LazyLotto is ReentrancyGuard, Pausable {
         return pools[poolId].prizes[prizeIndex];
     }
 
+    /// @notice Get the amount of fungible tokens needed for prizes
+    /// @param token The address of the fungible token
+    /// @return uint256 The amount of fungible tokens needed
+    /// @dev Zero Address(0) indicates HBAR
+    function getFungiblesNeededForPrizes(
+        address token
+    ) external view returns (uint256) {
+        return ftTokensForPrizes[token];
+    }
+
     /// @notice Check if an address is an admin
     /// @param a The address to check
     function isAdmin(address a) external view returns (bool) {

@@ -133,6 +133,7 @@ async function buyAndRoll() {
 
 		const poolInfoCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		const poolInfoResult = await readOnlyEVMFromMirrorNode(env, contractId, poolInfoCommand, operatorId, false);
+		// eslint-disable-next-line no-unused-vars
 		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
 			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', poolInfoResult);
 
@@ -216,7 +217,7 @@ async function buyAndRoll() {
 			console.log(`💰 Your balance: ${Number(currentBalance) / (10 ** tokenDetails.decimals)} ${tokenDetails.symbol}`);
 
 			if (BigInt(currentBalance) < totalCost) {
-				console.error(`\n❌ Insufficient balance`);
+				console.error('\n❌ Insufficient token balance');
 				console.error(`   Required: ${Number(totalCost) / (10 ** tokenDetails.decimals)} ${tokenDetails.symbol}`);
 				console.error(`   Available: ${Number(currentBalance) / (10 ** tokenDetails.decimals)} ${tokenDetails.symbol}`);
 				process.exit(1);
@@ -257,7 +258,7 @@ async function buyAndRoll() {
 			console.log(`💰 Your balance: ${hbarBalanceHbar.toString()}`);
 
 			if (BigInt(hbarBalance) < totalCost) {
-				console.error(`\n❌ Insufficient HBAR`);
+				console.error('\n❌ Insufficient HBAR balance');
 				console.error(`   Required: ${totalCostHbar.toString()}`);
 				console.error(`   Available: ${hbarBalanceHbar.toString()}`);
 				process.exit(1);
@@ -275,7 +276,7 @@ async function buyAndRoll() {
 			operatorId,
 			'buyAndRollEntry',
 			[poolId, ticketCount],
-			800000,
+			400_000 + 75_000 * ticketCount,
 			feeTokenHederaId === 'HBAR' ? Number(totalCost) : 0,
 		);
 		const baseGas = gasInfo.gasLimit;
@@ -296,6 +297,8 @@ async function buyAndRoll() {
 		// Execute
 		console.log('\n🔄 Buying and rolling tickets...');
 
+		const payableAmount = feeTokenHederaId === 'HBAR' ? totalCost : 0;
+
 		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
@@ -303,10 +306,8 @@ async function buyAndRoll() {
 			gasLimit,
 			'buyAndRollEntry',
 			[poolId, ticketCount],
-			feeTokenHederaId === 'HBAR' ? totalCost.toString() : undefined,
-		);
-
-		if (receipt.status.toString() !== 'SUCCESS') {
+			new Hbar(payableAmount, HbarUnit.Tinybar),
+		); if (receipt.status.toString() !== 'SUCCESS') {
 			console.error('\n❌ Transaction failed');
 			process.exit(1);
 		}
@@ -314,17 +315,21 @@ async function buyAndRoll() {
 		console.log('\n✅ Buy and roll completed!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
-		// Try to decode results
-		try {
-			const decodedResults = lazyLottoIface.decodeFunctionResult('buyAndRollEntry', results);
-			const wins = Number(decodedResults[0]);
-			const offset = Number(decodedResults[1]);
+		// Decode results - results is already decoded by contractExecuteFunction
+		let wins = 0;
+		let offset = 0; if (results && results.length >= 2) {
+			wins = Number(results[0]);
+			offset = Number(results[1]);
+			// Calculate actual win rate
+			const actualWinRate = ticketCount > 0 ? ((wins / ticketCount) * 100).toFixed(2) : '0.00';
 
 			console.log('═══════════════════════════════════════════════════════════');
 			console.log('  ROLL RESULTS');
 			console.log('═══════════════════════════════════════════════════════════');
 			console.log(`  Tickets Rolled:       ${ticketCount}`);
 			console.log(`  Wins:                 ${wins}`);
+			console.log(`  Actual Win Rate:      ${actualWinRate}%`);
+			console.log(`  Expected Win Rate:    ${formatWinRate(effectiveWinRate)}`);
 			if (wins > 0) {
 				console.log(`  Pending Prize Index:  Starting at ${offset}`);
 			}
@@ -339,10 +344,6 @@ async function buyAndRoll() {
 				console.log('😔 No wins this time. Better luck next time!\n');
 			}
 		}
-		catch {
-			console.log('🎲 Rolls completed - check userState.js for results\n');
-		}
-
 	}
 	catch (error) {
 		console.error('\n❌ Error buying and rolling:', error.message);

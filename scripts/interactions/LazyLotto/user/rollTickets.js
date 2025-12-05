@@ -243,7 +243,7 @@ async function rollTickets() {
 		// Execute roll
 		console.log('\n🎲 Rolling tickets...');
 
-		const [receipt, , record] = await contractExecuteFunction(
+		const [receipt, results, record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
@@ -260,6 +260,30 @@ async function rollTickets() {
 		console.log('\n✅ Tickets rolled successfully!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
+		// Decode roll results - results is already decoded by contractExecuteFunction
+		let wins = 0;
+		if (results && results.length >= 1) {
+			wins = Number(results[0]);
+		}
+		else {
+			console.log('⚠️  Could not decode roll results');
+		}
+		// Calculate actual win rate
+		const actualWinRate = quantity > 0 ? ((wins / quantity) * 100).toFixed(2) : '0.00';
+
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log('  ROLL RESULTS');
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Tickets Rolled:       ${quantity}`);
+		console.log(`  Wins:                 ${wins}`);
+		console.log(`  Actual Win Rate:      ${actualWinRate}%`);
+		console.log(`  Expected Win Rate:    ${formatWinRate(boostedWinRate)}`);
+		console.log('═══════════════════════════════════════════════════════════\n');
+
+		// Wait for mirror node sync
+		console.log('⏳ Waiting 5 seconds for mirror node to sync...\n');
+		await new Promise(resolve => setTimeout(resolve, 5000));
+
 		// Get updated state
 		encodedCommand = lazyLottoIface.encodeFunctionData('getUsersEntries', [poolId, userEvmAddress]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
@@ -270,19 +294,15 @@ async function rollTickets() {
 		const countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);
 		const prizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
 
-		encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userEvmAddress, 0, Number(prizeCount)]);
-		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
-
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log('  UPDATED STATE');
 		console.log('═══════════════════════════════════════════════════════════');
 		console.log(`  Remaining entries: ${newEntries[0]}`);
-		console.log(`  Pending prizes:    ${pendingPrizes[0].length}`);
+		console.log(`  Total pending prizes: ${prizeCount}`);
 		console.log('═══════════════════════════════════════════════════════════\n');
 
-		if (pendingPrizes[0].length > 0) {
-			console.log('🎉 You have prizes to claim!');
+		if (wins > 0) {
+			console.log('🎉 Congratulations! You won prizes!');
 			console.log('💡 Use claimPrize.js or claimAllPrizes.js to claim them\n');
 		}
 		else {

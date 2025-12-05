@@ -19,6 +19,7 @@ const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 const { setHbarAllowance, associateTokensToAccount } = require('../../../../utils/hederaHelpers');
+const { sleep } = require('@directus/sdk');
 require('dotenv').config();
 
 // Environment setup
@@ -289,7 +290,8 @@ async function claimPrize() {
 		console.log('\n✅ Prize claimed successfully!');
 		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
 
-		// Get updated pending prizes
+		console.log('🔍 Waiting on sync to fetch updated pending prizes...\n');
+		await sleep(5000);
 		// Get updated pending prizes
 		countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userEvmAddress]);
 		countResult = await readOnlyEVMFromMirrorNode(env, contractId, countQuery, operatorId, false);

@@ -23,7 +23,7 @@ const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
 
-const { getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+const { getTokenDetails, getSerialsOwned, homebrewPopulateAccountEvmAddress } = require('../../../../utils/hederaMirrorHelpers');
 const { homebrewPopulateAccountNum, EntityType } = require('../../../../utils/hederaMirrorHelpers');
 
 // Environment setup
@@ -47,14 +47,6 @@ function prompt(question) {
 	});
 }
 
-// Helper: Convert address formats
-function convertToEvmAddress(hederaId) {
-	if (hederaId.startsWith('0x')) return hederaId;
-	const parts = hederaId.split('.');
-	const num = parts[parts.length - 1];
-	return '0x' + BigInt(num).toString(16).padStart(40, '0');
-}
-
 async function convertToHederaId(evmAddress, entityType = null) {
 	if (!evmAddress.startsWith('0x')) return evmAddress;
 	if (evmAddress === '0x0000000000000000000000000000000000000000') return 'HBAR';
@@ -66,6 +58,7 @@ async function convertToHederaId(evmAddress, entityType = null) {
 function formatWinRate(thousandthsOfBps) {
 	return (Number(thousandthsOfBps) / 1_000_000).toFixed(4) + '%';
 }
+
 
 async function getUserState() {
 	let client;
@@ -83,9 +76,17 @@ async function getUserState() {
 			process.exit(1);
 		}
 
+		let userEvmAddress;
+		let userHederaId;
 		// Convert to EVM format
-		const userEvmAddress = convertToEvmAddress(userAddress);
-		const userHederaId = await convertToHederaId(userEvmAddress);
+		if (!userAddress.startsWith('0x')) {
+			userHederaId = AccountId.fromString(userAddress).toString();
+			userEvmAddress = await homebrewPopulateAccountEvmAddress(env, userHederaId, EntityType.ACCOUNT);
+		}
+		else {
+			userEvmAddress = userAddress;
+			userHederaId = await homebrewPopulateAccountNum(env, userEvmAddress, EntityType.ACCOUNT);
+		}
 
 		// Normalize environment name to accept TEST/TESTNET, MAIN/MAINNET, PREVIEW/PREVIEWNET
 		const envUpper = env.toUpperCase();
@@ -160,8 +161,8 @@ async function getUserState() {
 					entryFee: Number(entryFee),
 					feeToken: feeToken === '0x0000000000000000000000000000000000000000'
 						? 'HBAR'
-						: await convertToHederaId(feeToken),
-					poolTokenId: await convertToHederaId(poolTokenId),
+						: await homebrewPopulateAccountNum(env, feeToken, EntityType.TOKEN),
+					poolTokenId: await homebrewPopulateAccountNum(env, poolTokenId, EntityType.TOKEN),
 				});
 			}
 		}
@@ -192,6 +193,130 @@ async function getUserState() {
 				console.log(`    Entry Fee:  ${formattedFee}`);
 				console.log();
 			}
+		}
+
+		console.log('═══════════════════════════════════════════════════════════\n');
+
+		// Check for pool NFTs (both tickets and prizes)
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log('  POOL NFTs (Tickets & Prize NFTs)');
+		console.log('═══════════════════════════════════════════════════════════');
+
+		let hasPoolNFTs = false;
+
+		for (let i = 0; i < Number(totalPools[0]); i++) {
+			// Get pool details to find pool token
+			encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [i]);
+			result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+			const [, , , , , , poolTokenIdEvm] = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
+			const poolTokenId = await convertToHederaId(poolTokenIdEvm, EntityType.TOKEN);
+
+			// Check if user owns any NFTs from this pool
+			const ownedSerials = await getSerialsOwned(env, userHederaId, poolTokenId);
+
+			if (ownedSerials && ownedSerials.length > 0) {
+				hasPoolNFTs = true;
+
+				// Get token details
+				let tokenSymbol = poolTokenId;
+				try {
+					const tokenDetails = await getTokenDetails(env, poolTokenId);
+					tokenSymbol = tokenDetails.symbol || poolTokenId;
+				}
+				catch {
+					// Use tokenId as fallback
+				}
+
+				console.log(`\n  Pool #${i} - ${tokenSymbol} (${poolTokenId}):`);
+
+				// Check each serial to see if it's a prize NFT or ticket NFT
+				const ticketSerials = [];
+				const prizeData = [];
+				// Store {serial, pendingPrize} for prizes
+
+				for (const serial of ownedSerials) {
+					// Query if this NFT is a prize
+					encodedCommand = lazyLottoIface.encodeFunctionData('getPendingPrizesByNFT', [poolTokenIdEvm, serial]);
+					result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+					const pendingPrize = lazyLottoIface.decodeFunctionResult('getPendingPrizesByNFT', result)[0];
+
+					if (pendingPrize.asNFT) {
+						prizeData.push({ serial, pendingPrize });
+					}
+					else {
+						ticketSerials.push(serial);
+					}
+				}
+
+				if (ticketSerials.length > 0) {
+					console.log(`    🎫 Ticket NFTs: ${ticketSerials.length} (serials: ${ticketSerials.join(', ')})`);
+				}
+
+				if (prizeData.length > 0) {
+					console.log(`    🎁 Prize NFTs:  ${prizeData.length}`);
+
+					// Display each prize's details
+					for (const { serial, pendingPrize } of prizeData) {
+						const prize = pendingPrize.prize;
+						const prizeItems = [];
+
+						// FT/HBAR amount
+						if (prize.amount > 0) {
+							const tokenId = prize.token === '0x0000000000000000000000000000000000000000'
+								? 'HBAR'
+								: await convertToHederaId(prize.token, EntityType.TOKEN);
+
+							let formattedAmount;
+							if (tokenId === 'HBAR') {
+								formattedAmount = new Hbar(Number(prize.amount), HbarUnit.Tinybar).toString();
+							}
+							else {
+								const tokenDets = await getTokenDetails(env, tokenId);
+								formattedAmount = `${Number(prize.amount) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`;
+							}
+							prizeItems.push(formattedAmount);
+						}
+
+						// NFTs
+						if (prize.nftTokens.length > 0) {
+							const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
+							if (nftTokens.length > 0) {
+								const totalSerials = prize.nftSerials.reduce((sum, arr) => sum + arr.length, 0);
+								prizeItems.push(`${totalSerials} NFT${totalSerials !== 1 ? 's' : ''}`);
+							}
+						}
+
+						console.log(`       Serial #${serial}: ${prizeItems.join(' + ')}`);
+
+						// Show NFT details if present
+						if (prize.nftTokens.length > 0) {
+							for (let j = 0; j < prize.nftTokens.length; j++) {
+								const nftAddr = prize.nftTokens[j];
+								if (nftAddr === '0x0000000000000000000000000000000000000000') continue;
+
+								const nftTokenId = await convertToHederaId(nftAddr, EntityType.TOKEN);
+								const serials = prize.nftSerials[j].map(s => Number(s));
+								const serialsStr = serials.join(', ');
+
+								try {
+									const nftDets = await getTokenDetails(env, nftTokenId);
+									console.log(`         → ${nftDets.symbol}: serials [${serialsStr}]`);
+								}
+								catch {
+									console.log(`         → ${nftTokenId}: serials [${serialsStr}]`);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (!hasPoolNFTs) {
+			console.log('  No pool NFTs found\n');
+		}
+		else {
+			console.log('');
 		}
 
 		console.log('═══════════════════════════════════════════════════════════\n');
@@ -244,11 +369,32 @@ async function getUserState() {
 				if (prize.nftTokens.length > 0) {
 					const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
 					if (nftTokens.length > 0) {
-						prizeItems.push(`${prize.nftSerials.length} NFTs from ${nftTokens.length} collection(s)`);
+						const totalSerials = prize.nftSerials.reduce((sum, arr) => sum + arr.length, 0);
+						prizeItems.push(`${totalSerials} NFT${totalSerials !== 1 ? 's' : ''}`);
 					}
 				}
 
 				console.log(`    Contents: ${prizeItems.join(' + ')}`);
+
+				// Show NFT details
+				if (prize.nftTokens.length > 0) {
+					for (let j = 0; j < prize.nftTokens.length; j++) {
+						const nftAddr = prize.nftTokens[j];
+						if (nftAddr === '0x0000000000000000000000000000000000000000') continue;
+
+						const nftTokenId = await convertToHederaId(nftAddr, EntityType.TOKEN);
+						const serials = prize.nftSerials[j].map(s => Number(s));
+						const serialsStr = serials.join(', ');
+
+						try {
+							const nftDets = await getTokenDetails(env, nftTokenId);
+							console.log(`              → ${nftDets.symbol}: serials [${serialsStr}]`);
+						}
+						catch {
+							console.log(`              → ${nftTokenId}: serials [${serialsStr}]`);
+						}
+					}
+				}
 				console.log();
 			}
 		}

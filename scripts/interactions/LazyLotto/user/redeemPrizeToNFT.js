@@ -13,6 +13,8 @@ const {
 	PrivateKey,
 	ContractId,
 	TokenId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
@@ -94,12 +96,13 @@ async function redeemPrizeToNFT() {
 		// Import helpers
 		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
+		const { getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
 
 		// Get pending prizes
-		console.log('🔍 Fetching pending prizes...');
+		console.log('🔍 Fetching pending prizes...\n');
 
 		// Get pending prizes count first
-		const userAddress = operatorId.toSolidityAddress();
+		const userAddress = `0x${operatorId.toSolidityAddress()}`;
 		const countQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesCount', [userAddress]);
 		const countResult = await readOnlyEVMFromMirrorNode(
 			env,
@@ -110,50 +113,92 @@ async function redeemPrizeToNFT() {
 		);
 		const prizeCount = lazyLottoIface.decodeFunctionResult('getPendingPrizesCount', countResult)[0];
 
+		if (Number(prizeCount) === 0) {
+			console.log('⚠️  No pending prizes found\n');
+			process.exit(0);
+		}
+
 		// Get all pending prizes
 		const encodedQuery = lazyLottoIface.encodeFunctionData('getPendingPrizesPage', [userAddress, 0, Number(prizeCount)]);
-		const result = await readOnlyEVMFromMirrorNode(
+		let result = await readOnlyEVMFromMirrorNode(
 			env,
 			contractId,
 			encodedQuery,
 			operatorId,
 			false,
 		);
-		const pendingPrizes = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
+		const pendingPrizesResult = lazyLottoIface.decodeFunctionResult('getPendingPrizesPage', result);
+		const pendingPrizes = pendingPrizesResult[0];
 
 		if (!pendingPrizes || pendingPrizes.length === 0) {
-			console.log('\n⚠️  No pending prizes found');
+			console.log('⚠️  No pending prizes found\n');
 			process.exit(0);
 		}
 
 		// Display prizes
-		console.log(`\nFound ${pendingPrizes.length} pending prize(s):\n`);
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log('  PENDING PRIZES');
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log(`  Total: ${pendingPrizes.length} prize(s)\n`);
 
 		for (let i = 0; i < pendingPrizes.length; i++) {
-			const prize = pendingPrizes[i];
+			const pendingPrize = pendingPrizes[i];
+			const poolId = pendingPrize.poolId;
+			const prize = pendingPrize.prize;
 
-			console.log(`${i}. Pool #${prize.poolId} (${prize.formatType === 0 ? 'Memory' : 'NFT'})`);
+			console.log(`  Prize #${i}:`);
+			console.log(`    Pool:     #${poolId}`);
+			console.log(`    As NFT:   ${pendingPrize.asNFT ? 'Yes' : 'No'}`);
 
-			// FT components
-			if (prize.ftComponents && prize.ftComponents.length > 0) {
-				console.log('   Fungible Tokens:');
-				for (const ft of prize.ftComponents) {
-					const tokenId = await convertToHederaId(ft.tokenAddress);
-					console.log(`     - ${ethers.formatUnits(ft.amount, ft.decimals)} ${tokenId}`);
+			const prizeItems = [];
+			if (prize.amount > 0) {
+				const tokenId = prize.token === '0x0000000000000000000000000000000000000000'
+					? 'HBAR'
+					: await convertToHederaId(prize.token);
+
+				let formattedAmount;
+				if (tokenId === 'HBAR') {
+					formattedAmount = new Hbar(Number(prize.amount), HbarUnit.Tinybar).toString();
+				}
+				else {
+					const tokenDets = await getTokenDetails(env, tokenId);
+					formattedAmount = `${Number(prize.amount) / (10 ** tokenDets.decimals)} ${tokenDets.symbol}`;
+				}
+				prizeItems.push(formattedAmount);
+			}
+			if (prize.nftTokens.length > 0) {
+				const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
+				if (nftTokens.length > 0) {
+					const totalSerials = prize.nftSerials.reduce((sum, arr) => sum + arr.length, 0);
+					prizeItems.push(`${totalSerials} NFT${totalSerials !== 1 ? 's' : ''}`);
 				}
 			}
 
-			// NFT components
-			if (prize.nftComponents && prize.nftComponents.length > 0) {
-				console.log('   NFTs:');
-				for (const nft of prize.nftComponents) {
-					const tokenId = await convertToHederaId(nft.tokenAddress);
-					console.log(`     - ${nft.serials.length} NFT(s) from ${tokenId}`);
+			console.log(`    Contents: ${prizeItems.join(' + ')}`);
+
+			// Show NFT details
+			if (prize.nftTokens.length > 0) {
+				for (let j = 0; j < prize.nftTokens.length; j++) {
+					const nftAddr = prize.nftTokens[j];
+					if (nftAddr === '0x0000000000000000000000000000000000000000') continue;
+
+					const nftTokenId = await convertToHederaId(nftAddr);
+					const serials = prize.nftSerials[j].map(s => Number(s));
+					const serialsStr = serials.join(', ');
+
+					try {
+						const nftDets = await getTokenDetails(env, nftTokenId);
+						console.log(`              → ${nftDets.symbol}: serials [${serialsStr}]`);
+					}
+					catch {
+						console.log(`              → ${nftTokenId}: serials [${serialsStr}]`);
+					}
 				}
 			}
-
-			console.log('');
+			console.log();
 		}
+
+		console.log('═══════════════════════════════════════════════════════════\n');
 
 		// Get indices if not provided
 		if (!indicesStr) {
@@ -174,35 +219,41 @@ async function redeemPrizeToNFT() {
 			process.exit(1);
 		}
 
-		// Associate prize NFT token if needed
-		console.log('🔍 Checking prize NFT token association...');
-		const prizeTokenCommand = lazyLottoIface.encodeFunctionData('prizeNFT');
-		const prizeTokenResult = await readOnlyEVMFromMirrorNode(env, contractId, prizeTokenCommand, operatorId, false);
-		const prizeTokenId = lazyLottoIface.decodeFunctionResult('prizeNFT', prizeTokenResult)[0];
+		// Get unique pool IDs from selected prizes
+		const poolIds = [...new Set(indices.map(i => Number(pendingPrizes[i].poolId)))];
 
-		const prizeTokenHederaId = await convertToHederaId(prizeTokenId);
+		// Check association for each pool's token
+		console.log('🔍 Checking pool token associations...\n');
 		const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
-		const userBalance = await checkMirrorBalance(env, operatorId, prizeTokenHederaId);
 
-		if (userBalance === null) {
-			console.log(`🔗 Associating prize NFT token (${prizeTokenHederaId})...`);
-			const result = await associateTokensToAccount(
-				client,
-				operatorId,
-				operatorKey,
-				[TokenId.fromString(prizeTokenHederaId)],
-			);
+		for (const poolId of poolIds) {
+			const poolInfoCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+			const poolInfoResult = await readOnlyEVMFromMirrorNode(env, contractId, poolInfoCommand, operatorId, false);
+			const [, , , , , , poolTokenIdEvm] = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', poolInfoResult);
 
-			if (result !== 'SUCCESS') {
-				console.error('❌ Failed to associate prize NFT token');
-				process.exit(1);
+			const poolTokenHederaId = await convertToHederaId(poolTokenIdEvm);
+			const userBalance = await checkMirrorBalance(env, operatorId, poolTokenHederaId);
+
+			if (userBalance === null) {
+				console.log(`🔗 Associating pool #${poolId} token (${poolTokenHederaId})...`);
+				result = await associateTokensToAccount(
+					client,
+					operatorId,
+					operatorKey,
+					[TokenId.fromString(poolTokenHederaId)],
+				);
+
+				if (result !== 'SUCCESS') {
+					console.error(`❌ Failed to associate pool #${poolId} token`);
+					process.exit(1);
+				}
+				console.log(`✅ Pool #${poolId} token associated`);
+				console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+				await new Promise(resolve => setTimeout(resolve, 5000));
 			}
-			console.log(`✅ Prize NFT token associated`);
-			console.log('⏳ Waiting 5 seconds for mirror node to sync...');
-			await new Promise(resolve => setTimeout(resolve, 5000));
-		}
-		else {
-			console.log(`✅ Prize NFT token already associated`);
+			else {
+				console.log(`✅ Pool #${poolId} token already associated (${poolTokenHederaId})`);
+			}
 		}
 		console.log('');
 
@@ -224,7 +275,7 @@ async function redeemPrizeToNFT() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,
