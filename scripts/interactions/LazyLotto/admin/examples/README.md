@@ -53,18 +53,20 @@ Each package is **ONE** of these types:
 }
 ```
 - `hbar`: String representing HBAR amount (e.g., "10" = 10 HBAR)
+- Automatically converted to tinybars
 
 ### Type B: FT Only
 ```json
 {
   "ft": {
     "token": "0.0.12345",
-    "amount": "1000000"
+    "amount": "1000"
   }
 }
 ```
 - `ft.token`: Hedera token ID
-- `ft.amount`: Smallest unit (account for decimals)
+- `ft.amount`: Human-readable amount (e.g., "1000" tokens)
+- **Script automatically converts to base units using token decimals from mirror node**
 
 ### Type C: NFT Only
 ```json
@@ -104,7 +106,7 @@ Each package is **ONE** of these types:
 {
   "ft": {
     "token": "0.0.12345",
-    "amount": "500000"
+    "amount": "500"
   },
   "nfts": [
     {
@@ -114,7 +116,7 @@ Each package is **ONE** of these types:
   ]
 }
 ```
-- Combines FT with one or more NFT collections
+- Combines FT (human-readable amount) with one or more NFT collections
 
 ## NFT Collection Variations
 
@@ -161,7 +163,8 @@ The script processes packages **sequentially**, creating one transaction per pac
 - **Comments**: Fields starting with `_` are ignored (documentation only)
 - **Decimal Handling**: 
   - HBAR amounts are in HBAR (automatically converted to tinybars)
-  - FT amounts must be in smallest unit (account for token decimals)
+  - **FT amounts are human-readable** (e.g., "1000" means 1000 tokens)
+  - Script automatically fetches token decimals from mirror node and converts to base units
 - **Validation**: Use `-dry` flag to validate all packages before submitting
 - **Error Handling**: Script continues processing even if individual packages fail
 

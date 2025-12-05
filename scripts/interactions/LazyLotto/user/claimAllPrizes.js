@@ -12,10 +12,14 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
+	Hbar,
+	HbarUnit,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
+const { associateTokensToAccount, setHbarAllowance } = require('../../../../utils/hederaHelpers');
 require('dotenv').config();
 
 // Environment setup
@@ -23,6 +27,7 @@ const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+const storageContractId = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
 
 // Helper: Prompt user
 function prompt(question) {
@@ -141,6 +146,90 @@ async function claimAllPrizes() {
 		}
 
 		console.log('═══════════════════════════════════════════════════════════\n');
+
+		// Check and associate required tokens for all prizes
+		console.log('🔍 Checking token associations...');
+		const tokensToAssociate = new Set();
+		let hasNFTs = false;
+		const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
+
+		for (const pendingPrize of pendingPrizes[0]) {
+			const prize = pendingPrize.prize;
+
+			// Check FT token
+			if (prize.amount > 0 && prize.token !== '0x0000000000000000000000000000000000000000') {
+				const ftTokenId = await convertToHederaId(prize.token);
+				const ftBalance = await checkMirrorBalance(env, operatorId, ftTokenId);
+				if (ftBalance === null) {
+					tokensToAssociate.add(ftTokenId);
+				}
+			}
+
+			// Check NFT tokens
+			const nftTokens = prize.nftTokens.filter(t => t !== '0x0000000000000000000000000000000000000000');
+			if (nftTokens.length > 0) {
+				hasNFTs = true;
+				for (const nftToken of nftTokens) {
+					const nftTokenId = await convertToHederaId(nftToken);
+					const nftBalance = await checkMirrorBalance(env, operatorId, nftTokenId);
+					if (nftBalance === null) {
+						tokensToAssociate.add(nftTokenId);
+					}
+				}
+			}
+		}
+
+		// Associate tokens if needed
+		if (tokensToAssociate.size > 0) {
+			console.log(`\n🔗 Associating ${tokensToAssociate.size} token(s)...`);
+			const tokenIds = Array.from(tokensToAssociate).map(id => TokenId.fromString(id));
+			const result = await associateTokensToAccount(
+				client,
+				operatorId,
+				operatorKey,
+				tokenIds,
+			);
+
+			if (result !== 'SUCCESS') {
+				console.error('❌ Failed to associate tokens');
+				process.exit(1);
+			}
+			console.log(`✅ Tokens associated successfully`);
+			console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+			await new Promise(resolve => setTimeout(resolve, 5000));
+		}
+		else {
+			console.log(`✅ All required tokens already associated`);
+		}
+
+		// Check HBAR allowance if any prize contains NFTs
+		if (hasNFTs) {
+			console.log('\n🔍 Checking HBAR allowance for NFT transfers...');
+			const { checkMirrorHbarAllowance } = require('../../../../utils/hederaMirrorHelpers');
+			const hbarAllowance = await checkMirrorHbarAllowance(env, operatorId, storageContractId);
+			const requiredHbar = 1; // 1 HBAR should be sufficient
+
+			if (!hbarAllowance || hbarAllowance < requiredHbar) {
+				console.log(`🔗 Setting HBAR allowance (${requiredHbar} HBAR) to storage contract...`);
+				const result = await setHbarAllowance(
+					client,
+					operatorId,
+					storageContractId,
+					new Hbar(requiredHbar, HbarUnit.Hbar),
+				);
+
+				if (result !== 'SUCCESS') {
+					console.error('❌ Failed to set HBAR allowance');
+					process.exit(1);
+				}
+				console.log(`✅ HBAR allowance set successfully`);
+			}
+			else {
+				console.log(`✅ HBAR allowance already set (${hbarAllowance} HBAR)`);
+			}
+		}
+
+		console.log('');
 
 		// Estimate gas
 		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'claimAllPrizes', [], 1000000);

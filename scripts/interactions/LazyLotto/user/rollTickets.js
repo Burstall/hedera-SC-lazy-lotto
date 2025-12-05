@@ -133,7 +133,8 @@ async function rollTickets() {
 		// Get pool details
 		encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
 		result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
-		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
+		// eslint-disable-next-line no-unused-vars
+		const [ticketCID, winCID, winRate, entryFee, newPrizeCount, outstanding, , paused, closed, feeToken] =
 			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
 		// Get user's boost
@@ -186,7 +187,7 @@ async function rollTickets() {
 			}
 
 			// Verify ownership
-			const poolTokenId = await convertToHederaId(poolDetails.poolTokenId);
+			const poolTokenId = await convertToHederaId(poolTokenId);
 			const { getSerialsOwned } = require('../../../../utils/hederaMirrorHelpers');
 			const ownedSerials = await getSerialsOwned(env, operatorId.toString(), poolTokenId);
 
@@ -242,7 +243,7 @@ async function rollTickets() {
 		// Execute roll
 		console.log('\n🎲 Rolling tickets...');
 
-		const [receipt, results, record] = await contractExecuteFunction(
+		const [receipt, , record] = await contractExecuteFunction(
 			contractId,
 			lazyLottoIface,
 			client,

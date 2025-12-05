@@ -1,5 +1,6 @@
 {
   "_description": "Mixed Types: Multiple packages of different types (A, B, C, D, E)",
+  "_note": "FT amounts are in human-readable units (script will convert using token decimals)",
   "poolId": 0,
   "packages": [
     {
@@ -14,14 +15,14 @@
       "_comment": "Type B",
       "ft": {
         "token": "0.0.12345",
-        "amount": "1000000"
+        "amount": "1000"
       }
     },
     {
       "_comment": "Type B",
       "ft": {
         "token": "0.0.67890",
-        "amount": "500000"
+        "amount": "500"
       }
     },
     {
@@ -60,7 +61,7 @@
       "_comment": "Type E",
       "ft": {
         "token": "0.0.12345",
-        "amount": "250000"
+        "amount": "250"
       },
       "nfts": [
         {

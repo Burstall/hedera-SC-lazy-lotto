@@ -268,7 +268,7 @@ async function getMasterInfo() {
 				console.log(`\n  Bonus #${i}:`);
 				console.log(`    Token:    ${tokenId} (${tokenSymbol})`);
 				console.log(`    Name:     ${tokenName}`);
-				console.log(`    Boost:    +${(bps / 100).toFixed(2)}% (per NFT held)`);
+				console.log(`    Boost:    +${(bps / 100).toFixed(2)}% (if any NFT held)`);
 			}
 		}
 

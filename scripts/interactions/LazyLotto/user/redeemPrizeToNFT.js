@@ -12,10 +12,12 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
+const { associateTokensToAccount } = require('../../../../utils/hederaHelpers');
 require('dotenv').config();
 
 // Environment setup
@@ -172,10 +174,42 @@ async function redeemPrizeToNFT() {
 			process.exit(1);
 		}
 
-		console.log(`\nConverting ${indices.length} prize(s) to NFT format...\n`);
+		// Associate prize NFT token if needed
+		console.log('🔍 Checking prize NFT token association...');
+		const prizeTokenCommand = lazyLottoIface.encodeFunctionData('prizeNFT');
+		const prizeTokenResult = await readOnlyEVMFromMirrorNode(env, contractId, prizeTokenCommand, operatorId, false);
+		const prizeTokenId = lazyLottoIface.decodeFunctionResult('prizeNFT', prizeTokenResult)[0];
+
+		const prizeTokenHederaId = await convertToHederaId(prizeTokenId);
+		const { checkMirrorBalance } = require('../../../../utils/hederaMirrorHelpers');
+		const userBalance = await checkMirrorBalance(env, operatorId, prizeTokenHederaId);
+
+		if (userBalance === null) {
+			console.log(`🔗 Associating prize NFT token (${prizeTokenHederaId})...`);
+			const result = await associateTokensToAccount(
+				client,
+				operatorId,
+				operatorKey,
+				[TokenId.fromString(prizeTokenHederaId)],
+			);
+
+			if (result !== 'SUCCESS') {
+				console.error('❌ Failed to associate prize NFT token');
+				process.exit(1);
+			}
+			console.log(`✅ Prize NFT token associated`);
+			console.log('⏳ Waiting 5 seconds for mirror node to sync...');
+			await new Promise(resolve => setTimeout(resolve, 5000));
+		}
+		else {
+			console.log(`✅ Prize NFT token already associated`);
+		}
+		console.log('');
+
+		console.log(`Converting ${indices.length} prize(s) to NFT format...\n`);
 
 		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'redeemPrizeToNFT', [indices], 500000);
+		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'redeemPrizeToNFT', [indices], 800000);
 		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
