@@ -31,6 +31,7 @@ const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
 const storageContractId = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
+const poolManagerId = process.env.LAZY_LOTTO_POOL_MANAGER_ID ? ContractId.fromString(process.env.LAZY_LOTTO_POOL_MANAGER_ID) : null;
 
 // Helper: Convert Hedera ID to EVM address
 
@@ -449,6 +450,50 @@ async function getMasterInfo() {
 			}
 
 			console.log('└────────────────────────────────────────────────────────\n');
+		}
+
+		// Pool Manager Configuration
+		if (poolManagerId) {
+			try {
+				const poolManagerJson = JSON.parse(
+					fs.readFileSync('./artifacts/contracts/LazyLottoPoolManager.sol/LazyLottoPoolManager.json'),
+				);
+				const poolManagerIface = new ethers.Interface(poolManagerJson.abi);
+
+				console.log('═══════════════════════════════════════════════════════════');
+				console.log('  POOL MANAGER CONFIGURATION');
+				console.log('═══════════════════════════════════════════════════════════');
+
+				// Get creation fees
+				encodedCommand = poolManagerIface.encodeFunctionData('getCreationFees');
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const creationFees = poolManagerIface.decodeFunctionResult('getCreationFees', result);
+
+				// Get platform fee percentage
+				encodedCommand = poolManagerIface.encodeFunctionData('platformProceedsPercentage');
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const platformPercent = poolManagerIface.decodeFunctionResult('platformProceedsPercentage', result);
+
+				// Get pool counts
+				encodedCommand = poolManagerIface.encodeFunctionData('totalGlobalPools');
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const totalGlobal = poolManagerIface.decodeFunctionResult('totalGlobalPools', result);
+
+				encodedCommand = poolManagerIface.encodeFunctionData('totalCommunityPools');
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const totalCommunity = poolManagerIface.decodeFunctionResult('totalCommunityPools', result);
+
+				console.log('  Creation Fees:');
+				console.log(`    - HBAR: ${new Hbar(creationFees[0], HbarUnit.Tinybar).toString()}`);
+				console.log(`    - LAZY: ${(Number(creationFees[1]) / (10 ** 8)).toFixed(8)} LAZY`);
+				console.log(`  Platform Fee:           ${platformPercent[0]}% (Pool Owner: ${100 - Number(platformPercent[0])}%)`);
+				console.log(`  Global Pools:           ${totalGlobal[0]}`);
+				console.log(`  Community Pools:        ${totalCommunity[0]}`);
+				console.log('═══════════════════════════════════════════════════════════\n');
+			}
+			catch (error) {
+				console.log('⚠️  Pool Manager info unavailable\n', error.message);
+			}
 		}
 
 		// Summary statistics
