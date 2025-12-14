@@ -29,6 +29,7 @@ const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+const poolManagerId = process.env.LAZY_LOTTO_POOL_MANAGER_ID ? ContractId.fromString(process.env.LAZY_LOTTO_POOL_MANAGER_ID) : null;
 
 let tokenDets = null;
 
@@ -120,8 +121,8 @@ async function getPoolInfo() {
 		console.log('🔍 Fetching pool data...\n');
 
 		// Get pool basic info (new API - no prizes array)
-		const encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
-		const result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
+		let encodedCommand = lazyLottoIface.encodeFunctionData('getPoolBasicInfo', [poolId]);
+		let result = await readOnlyEVMFromMirrorNode(env, contractId, encodedCommand, operatorId, false);
 		const poolBasicInfo = lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', result);
 
 		// Destructure the tuple: (ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken)
@@ -222,6 +223,57 @@ async function getPoolInfo() {
 		}
 
 		console.log('═══════════════════════════════════════════════════════════\n');
+
+		// Pool Manager Details
+		if (poolManagerId) {
+			try {
+				const poolManagerJson = JSON.parse(
+					fs.readFileSync('./artifacts/contracts/LazyLottoPoolManager.sol/LazyLottoPoolManager.json'),
+				);
+				const poolManagerIface = new ethers.Interface(poolManagerJson.abi);
+
+				console.log('═══════════════════════════════════════════════════════════');
+				console.log('  POOL MANAGER DETAILS');
+				console.log('═══════════════════════════════════════════════════════════');
+
+				// Get pool owner
+				encodedCommand = poolManagerIface.encodeFunctionData('getPoolOwner', [poolId]);
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const owner = poolManagerIface.decodeFunctionResult('getPoolOwner', result);
+				const ownerHederaId = await convertToHederaId(owner[0], EntityType.ACCOUNT);
+
+				// Check if global
+				encodedCommand = poolManagerIface.encodeFunctionData('isGlobalPool', [poolId]);
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const isGlobal = poolManagerIface.decodeFunctionResult('isGlobalPool', result);
+
+				// Get platform fee %
+				encodedCommand = poolManagerIface.encodeFunctionData('getPoolPlatformFeePercentage', [poolId]);
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const feePercent = poolManagerIface.decodeFunctionResult('getPoolPlatformFeePercentage', result);
+
+				// Get proceeds
+				encodedCommand = poolManagerIface.encodeFunctionData('getPoolProceeds', [poolId]);
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const proceeds = poolManagerIface.decodeFunctionResult('getPoolProceeds', result);
+
+				const totalProceeds = proceeds[0];
+				const withdrawn = proceeds[1];
+				const available = totalProceeds - withdrawn;
+
+				console.log(`  Pool Type:          ${isGlobal[0] ? 'Global (Admin)' : 'Community (User)'}`);
+				console.log(`  Owner:              ${ownerHederaId}`);
+				console.log(`  Platform Fee:       ${feePercent[0]}% (Owner: ${100 - Number(feePercent[0])}%)`);
+				console.log('  Proceeds:');
+				console.log(`    - Total Earned:   ${new Hbar(totalProceeds, HbarUnit.Tinybar).toString()}`);
+				console.log(`    - Withdrawn:      ${new Hbar(withdrawn, HbarUnit.Tinybar).toString()}`);
+				console.log(`    - Available:      ${new Hbar(available, HbarUnit.Tinybar).toString()}`);
+				console.log('═══════════════════════════════════════════════════════════\n');
+			}
+			catch (error) {
+				console.log('⚠️  Pool Manager details unavailable\n', error.message);
+			}
+		}
 
 		// Summary
 		console.log('═══════════════════════════════════════════════════════════');

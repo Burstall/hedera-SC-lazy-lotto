@@ -137,6 +137,78 @@ hedera-SC-lazy-lotto/
 - **Secure random number generation** via Hedera PRNG
 - **Trade fingerprinting** to prevent duplicate claims
 
+## 🔐 Admin Powers & Governance
+
+### Transparency First
+
+LazyLotto v3 uses a **centralized admin model** for operational efficiency while maintaining strong **user protections**. We believe in transparency - here's exactly what admins can and cannot do.
+
+### What Admins CAN Do
+
+**System Operations:**
+- ✅ Pause/unpause the system for emergency maintenance
+- ✅ Create global (team) pools with no creation fees
+- ✅ Set creation fees for community pools (HBAR + LAZY)
+- ✅ Configure bonus systems (time windows, NFT holdings, LAZY balance)
+- ✅ Add/remove global prize managers (for sponsored prizes)
+- ✅ Close malicious or abandoned pools (only if no outstanding entries)
+
+**Financial Operations:**
+- ✅ Set platform fee percentage (capped at maximum 25%)
+- ✅ Withdraw platform fees (5% default from pool proceeds)
+- ✅ Withdraw surplus tokens (beyond prize obligations)
+- ✅ Emergency actions via pause (user prizes remain safe)
+
+### What Admins CANNOT Do
+
+**User Protections Built Into Smart Contracts:**
+- ❌ **Cannot steal prizes** - Prize accounting enforced by contract math
+- ❌ **Cannot change fees retroactively** - Each pool locks its fee % at creation
+- ❌ **Cannot withdraw prize-obligated tokens** - Safety checks prevent this
+- ❌ **Cannot modify existing pools** - Fee structures are immutable per pool
+- ❌ **Cannot access user's NFT tickets** - Users maintain full custody
+- ❌ **Cannot prevent prize claims** - Claimable even when paused
+
+### Security Guarantees
+
+1. **Prize Obligations Protected**: Contract enforces `storageBalance - withdrawal >= prizesOwed`
+2. **Fee Lock-In**: Platform fee frozen at pool creation (no bait-and-switch)
+3. **Platform Fee Cap**: Maximum 25% (prevents confiscatory fees)
+4. **Rounding Favors Users**: Pool owners get dust from integer division
+5. **Multi-Admin Support**: Multiple admins reduce single point of failure
+6. **Reentrancy Protection**: Double guards on LazyLotto + PoolManager
+
+### Current Admin Configuration
+
+**Testnet**: Multi-signature Gnosis Safe recommended  
+**Mainnet**: Multi-signature wallet required (2-of-3 or 3-of-5)
+
+### Governance Roadmap
+
+**Phase 1 (Current)**: Centralized admin for rapid iteration and support  
+**Phase 2 (6-12 months)**: Community oversight via governance token  
+**Phase 3 (Future)**: Full DAO governance for major decisions
+
+**Why Centralized Now?**
+- Quick response to bugs or exploits
+- Flexibility for feature additions
+- Community support and moderation
+- Platform sustainability (5% fee for development)
+
+**Community Protection:**
+- Transparent documentation (this section!)
+- On-chain verification of all admin actions
+- Regular security audits
+- Open-source contracts for review
+
+### Questions About Admin Powers?
+
+See our comprehensive security analysis: [LazyLotto-SECURITY_ANALYSIS.md](./LazyLotto-SECURITY_ANALYSIS.md)
+
+**TL;DR**: Admins have operational control but **cannot harm users financially**. Your prizes and pool terms are protected by immutable smart contract logic.
+
+---
+
 ## 🛠️ Technical Implementation
 
 ### Smart Contract Details

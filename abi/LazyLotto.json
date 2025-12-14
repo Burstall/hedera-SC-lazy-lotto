@@ -219,6 +219,11 @@
     },
     {
         "inputs": [],
+        "name": "PoolManagerAlreadySet",
+        "type": "error"
+    },
+    {
+        "inputs": [],
         "name": "PoolNotClosed",
         "type": "error"
     },
@@ -301,44 +306,6 @@
             }
         ],
         "name": "EntryPurchased",
-        "type": "event"
-    },
-    {
-        "anonymous": false,
-        "inputs": [
-            {
-                "indexed": false,
-                "internalType": "uint256",
-                "name": "threshold",
-                "type": "uint256"
-            },
-            {
-                "indexed": false,
-                "internalType": "uint16",
-                "name": "bonusBps",
-                "type": "uint16"
-            }
-        ],
-        "name": "LazyBalanceBonusSet",
-        "type": "event"
-    },
-    {
-        "anonymous": false,
-        "inputs": [
-            {
-                "indexed": true,
-                "internalType": "address",
-                "name": "token",
-                "type": "address"
-            },
-            {
-                "indexed": false,
-                "internalType": "uint16",
-                "name": "bonusBps",
-                "type": "uint16"
-            }
-        ],
-        "name": "NFTBonusSet",
         "type": "event"
     },
     {
@@ -505,32 +472,6 @@
         "inputs": [
             {
                 "indexed": true,
-                "internalType": "address",
-                "name": "prizeManager",
-                "type": "address"
-            }
-        ],
-        "name": "PrizeManagerAdded",
-        "type": "event"
-    },
-    {
-        "anonymous": false,
-        "inputs": [
-            {
-                "indexed": true,
-                "internalType": "address",
-                "name": "prizeManager",
-                "type": "address"
-            }
-        ],
-        "name": "PrizeManagerRemoved",
-        "type": "event"
-    },
-    {
-        "anonymous": false,
-        "inputs": [
-            {
-                "indexed": true,
                 "internalType": "uint256",
                 "name": "poolId",
                 "type": "uint256"
@@ -652,31 +593,6 @@
         "inputs": [
             {
                 "indexed": false,
-                "internalType": "uint256",
-                "name": "start",
-                "type": "uint256"
-            },
-            {
-                "indexed": false,
-                "internalType": "uint256",
-                "name": "end",
-                "type": "uint256"
-            },
-            {
-                "indexed": false,
-                "internalType": "uint16",
-                "name": "bonusBps",
-                "type": "uint16"
-            }
-        ],
-        "name": "TimeBonusAdded",
-        "type": "event"
-    },
-    {
-        "anonymous": false,
-        "inputs": [
-            {
-                "indexed": false,
                 "internalType": "address",
                 "name": "account",
                 "type": "address"
@@ -749,19 +665,6 @@
         "name": "addMultipleFungiblePrizes",
         "outputs": [],
         "stateMutability": "payable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "address",
-                "name": "a",
-                "type": "address"
-            }
-        ],
-        "name": "addPrizeManager",
-        "outputs": [],
-        "stateMutability": "nonpayable",
         "type": "function"
     },
     {
@@ -940,7 +843,7 @@
         "outputs": [
             {
                 "internalType": "uint32",
-                "name": "",
+                "name": "boost",
                 "type": "uint32"
             }
         ],
@@ -1077,6 +980,25 @@
             }
         ],
         "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            }
+        ],
+        "name": "getFungiblesNeededForPrizes",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
         "type": "function"
     },
     {
@@ -1475,51 +1397,6 @@
         "type": "function"
     },
     {
-        "inputs": [
-            {
-                "internalType": "address",
-                "name": "a",
-                "type": "address"
-            }
-        ],
-        "name": "isPrizeManager",
-        "outputs": [
-            {
-                "internalType": "bool",
-                "name": "",
-                "type": "bool"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "lazyBalanceBonusBps",
-        "outputs": [
-            {
-                "internalType": "uint16",
-                "name": "",
-                "type": "uint16"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "lazyBalanceThreshold",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
         "inputs": [],
         "name": "lazyDelegateRegistry",
         "outputs": [
@@ -1559,44 +1436,6 @@
         "type": "function"
     },
     {
-        "inputs": [
-            {
-                "internalType": "address",
-                "name": "",
-                "type": "address"
-            }
-        ],
-        "name": "nftBonusBps",
-        "outputs": [
-            {
-                "internalType": "uint16",
-                "name": "",
-                "type": "uint16"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "uint256",
-                "name": "",
-                "type": "uint256"
-            }
-        ],
-        "name": "nftBonusTokens",
-        "outputs": [
-            {
-                "internalType": "address",
-                "name": "",
-                "type": "address"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
         "inputs": [],
         "name": "pause",
         "outputs": [],
@@ -1624,6 +1463,19 @@
                 "internalType": "bool",
                 "name": "",
                 "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "poolManager",
+        "outputs": [
+            {
+                "internalType": "contract LazyLottoPoolManager",
+                "name": "",
+                "type": "address"
             }
         ],
         "stateMutability": "view",
@@ -1702,32 +1554,6 @@
         "inputs": [
             {
                 "internalType": "uint256",
-                "name": "index",
-                "type": "uint256"
-            }
-        ],
-        "name": "removeNFTBonus",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "address",
-                "name": "a",
-                "type": "address"
-            }
-        ],
-        "name": "removePrizeManager",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "uint256",
                 "name": "poolId",
                 "type": "uint256"
             },
@@ -1738,19 +1564,6 @@
             }
         ],
         "name": "removePrizes",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "uint256",
-                "name": "index",
-                "type": "uint256"
-            }
-        ],
-        "name": "removeTimeBonus",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -1853,35 +1666,12 @@
     {
         "inputs": [
             {
-                "internalType": "uint256",
-                "name": "_threshold",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint16",
-                "name": "_bonusBps",
-                "type": "uint16"
-            }
-        ],
-        "name": "setLazyBalanceBonus",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
-                "internalType": "address",
-                "name": "_token",
+                "internalType": "address payable",
+                "name": "_poolManager",
                 "type": "address"
-            },
-            {
-                "internalType": "uint16",
-                "name": "_bonusBps",
-                "type": "uint16"
             }
         ],
-        "name": "setNFTBonus",
+        "name": "setPoolManager",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -1900,29 +1690,6 @@
         "type": "function"
     },
     {
-        "inputs": [
-            {
-                "internalType": "uint256",
-                "name": "_start",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint256",
-                "name": "_end",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint16",
-                "name": "_bonusBps",
-                "type": "uint16"
-            }
-        ],
-        "name": "setTimeBonus",
-        "outputs": [],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
         "inputs": [],
         "name": "storageContract",
         "outputs": [
@@ -1936,63 +1703,8 @@
         "type": "function"
     },
     {
-        "inputs": [
-            {
-                "internalType": "uint256",
-                "name": "",
-                "type": "uint256"
-            }
-        ],
-        "name": "timeBonuses",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "start",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint256",
-                "name": "end",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint16",
-                "name": "bonusBps",
-                "type": "uint16"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "totalNFTBonusTokens",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
         "inputs": [],
         "name": "totalPools",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "totalTimeBonuses",
         "outputs": [
             {
                 "internalType": "uint256",
@@ -2104,6 +1816,37 @@
             }
         ],
         "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            }
+        ],
+        "name": "withdrawPlatformFees",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "poolId",
+                "type": "uint256"
+            },
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            }
+        ],
+        "name": "withdrawPoolProceeds",
+        "outputs": [],
+        "stateMutability": "nonpayable",
         "type": "function"
     },
     {

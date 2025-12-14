@@ -31,6 +31,7 @@ const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'testnet';
 const contractId = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+const poolManagerId = process.env.LAZY_LOTTO_POOL_MANAGER_ID ? ContractId.fromString(process.env.LAZY_LOTTO_POOL_MANAGER_ID) : null;
 
 // Helper: Prompt user
 function prompt(question) {
@@ -400,6 +401,71 @@ async function getUserState() {
 		}
 
 		console.log('═══════════════════════════════════════════════════════════\n');
+
+		// Owned Pools
+		if (poolManagerId) {
+			try {
+				const poolManagerJson = JSON.parse(
+					fs.readFileSync('./artifacts/contracts/LazyLottoPoolManager.sol/LazyLottoPoolManager.json'),
+				);
+				const poolManagerIface = new ethers.Interface(poolManagerJson.abi);
+
+				// Get user's pools
+				encodedCommand = poolManagerIface.encodeFunctionData('getUserPools', [userEvmAddress, 0, 100]);
+				result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+				const userPools = poolManagerIface.decodeFunctionResult('getUserPools', result);
+				const ownedPoolIds = userPools[0].map(id => Number(id));
+
+				if (ownedPoolIds.length > 0) {
+					console.log('═══════════════════════════════════════════════════════════');
+					console.log('  OWNED POOLS');
+					console.log('═══════════════════════════════════════════════════════════');
+					console.log(`  Total Owned: ${ownedPoolIds.length}\n`);
+
+					let totalWithdrawable = 0n;
+
+					for (const poolId of ownedPoolIds) {
+						// Get pool proceeds
+						encodedCommand = poolManagerIface.encodeFunctionData('getPoolProceeds', [poolId]);
+						result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+						const proceeds = poolManagerIface.decodeFunctionResult('getPoolProceeds', result);
+
+						// Get platform fee %
+						encodedCommand = poolManagerIface.encodeFunctionData('getPoolPlatformFeePercentage', [poolId]);
+						result = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
+						const feePercent = poolManagerIface.decodeFunctionResult('getPoolPlatformFeePercentage', result);
+
+						const totalProceeds = proceeds[0];
+						const withdrawn = proceeds[1];
+						const available = totalProceeds - withdrawn;
+						const ownerShare = (Number(available) * (100 - Number(feePercent[0]))) / 100;
+
+						totalWithdrawable += BigInt(ownerShare);
+
+						console.log(`  Pool #${poolId}:`);
+						console.log(`    - Available:      ${new Hbar(available, HbarUnit.Tinybar).toString()}`);
+						console.log(`    - Your Share:     ${new Hbar(ownerShare, HbarUnit.Tinybar).toString()} (${100 - Number(feePercent[0])}%)`);
+					}
+
+					console.log();
+					console.log(`  Total Withdrawable:     ${new Hbar(totalWithdrawable, HbarUnit.Tinybar).toString()}`);
+					console.log('═══════════════════════════════════════════════════════════\n');
+
+					if (totalWithdrawable > 0n) {
+						console.log('💡 Use: node scripts/interactions/LazyLotto/user/withdrawPoolProceeds.js\n');
+					}
+				}
+			}
+			catch (error) {
+				// Pool manager info unavailable or user has no pools
+				console.log('═══════════════════════════════════════════════════════════');
+				console.log('  OWNED POOLS');
+				console.log('═══════════════════════════════════════════════════════════');
+				console.log('  No owned pools found or unable to fetch owned pools.\n');
+				console.log('═══════════════════════════════════════════════════════════\n');
+				console.error('⚠️  Warning: Unable to fetch owned pools:', error.message, '\n');
+			}
+		}
 
 		// Summary
 		const totalMemoryEntries = userEntries.reduce((sum, e) => sum + e.entryCount, 0);

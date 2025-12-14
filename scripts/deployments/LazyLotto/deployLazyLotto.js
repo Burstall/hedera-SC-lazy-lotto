@@ -1,7 +1,8 @@
 /**
  * Interactive LazyLotto Deployment Script
  *
- * This script handles deployment of LazyLotto and all its dependencies to Hedera.
+ * This script handles deployment of LazyLotto and all its dependencies to Hedera,
+ * including the LazyLottoPoolManager for community-driven pool functionality.
  * It checks for existing deployments and allows reuse, making it safe for partial deployments.
  *
  * Required Environment Variables (.env):
@@ -17,6 +18,7 @@
  * - PRNG_CONTRACT_ID=0.0.xxxxx
  * - LAZY_LOTTO_STORAGE=0.0.xxxxx
  * - LAZY_LOTTO_CONTRACT_ID=0.0.xxxxx
+ * - LAZY_LOTTO_POOL_MANAGER_ID=0.0.xxxxx
  *
  * For verification-only mode:
  * - VERIFY_ONLY=true (skips deployment, only runs verification)
@@ -25,13 +27,14 @@
  * npm run deploy:lazylotto
  *
  * Or directly:
- * node scripts/deployments/deployLazyLotto.js
+ * node scripts/deployments/LazyLotto/deployLazyLotto.js
  *
  * Verification only:
- * VERIFY_ONLY=true node scripts/deployments/deployLazyLotto.js
+ * VERIFY_ONLY=true node scripts/deployments/LazyLotto/deployLazyLotto.js
  */
 
 const fs = require('fs');
+const readline = require('readline');
 const {
 	Client,
 	AccountId,
@@ -39,9 +42,11 @@ const {
 	ContractId,
 	TokenId,
 	ContractFunctionParameters,
+	TransferTransaction,
 } = require('@hashgraph/sdk');
-const { contractDeployFunction, contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
-const { estimateGas } = require('../../utils/gasHelpers');
+const { contractDeployFunction, contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
+const { estimateGas } = require('../../../utils/gasHelpers');
+const { parseTransactionRecord } = require('../../../utils/transactionHelpers');
 const { ethers } = require('ethers');
 
 // Load environment variables
@@ -50,6 +55,7 @@ require('dotenv').config();
 // Configuration
 const contractName = process.env.CONTRACT_NAME ?? 'LazyLotto';
 const storageContractName = process.env.STORAGE_CONTRACT_NAME ?? 'LazyLottoStorage';
+const poolManagerContractName = 'LazyLottoPoolManager';
 const lazyGasStationName = 'LazyGasStation';
 const lazyDelegateRegistryName = 'LazyDelegateRegistry';
 const prngContractName = 'PrngSystemContract';
@@ -60,15 +66,6 @@ const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const env = process.env.ENVIRONMENT ?? 'TEST';
 const verifyOnly = process.env.VERIFY_ONLY === 'true';
 
-// Deployment configuration
-// 0% burn for standard LAZY token
-const LAZY_BURN_PERCENT = 0;
-// 1 billion LAZY tokens
-const LAZY_MAX_SUPPLY = 1_000_000_000;
-const LAZY_DECIMAL = 8;
-// 20 HBAR for token creation
-const MINT_PAYMENT = 20;
-
 // Track deployed contracts
 const deployedContracts = {
 	lazyToken: null,
@@ -78,10 +75,11 @@ const deployedContracts = {
 	prng: null,
 	lazyLottoStorage: null,
 	lazyLotto: null,
+	poolManager: null,
 };
 
 // Interfaces
-let lazyIface, lazyGasStationIface, lazyLottoStorageIface, lazyLottoIface;
+let lazyIface, lazyGasStationIface, lazyLottoStorageIface, lazyLottoIface, poolManagerIface;
 let client;
 
 // Utility: Sleep function
@@ -106,14 +104,14 @@ function saveDeploymentAddresses() {
 
 // Utility: Prompt user for input
 function prompt(question) {
-	const readline = require('readline').createInterface({
+	const rl = readline.createInterface({
 		input: process.stdin,
 		output: process.stdout,
 	});
 
 	return new Promise(resolve => {
-		readline.question(question, answer => {
-			readline.close();
+		rl.question(question, answer => {
+			rl.close();
 			resolve(answer);
 		});
 	});
@@ -131,11 +129,11 @@ async function initializeClient() {
 
 	console.log(`📍 Environment: ${env.toUpperCase()}`);
 
-	if (env.toUpperCase() === 'TEST') {
+	if (env.toUpperCase() === 'TEST' || env.toUpperCase() === 'TESTNET') {
 		client = Client.forTestnet();
 		console.log('   Network: TESTNET');
 	}
-	else if (env.toUpperCase() === 'MAIN') {
+	else if (env.toUpperCase() === 'MAIN' || env.toUpperCase() === 'MAINNET') {
 		client = Client.forMainnet();
 		console.log('   Network: MAINNET');
 		const confirm = await prompt('⚠️  WARNING: You are deploying to MAINNET. Type "MAINNET" to confirm: ');
@@ -144,9 +142,14 @@ async function initializeClient() {
 			process.exit(0);
 		}
 	}
-	else if (env.toUpperCase() === 'PREVIEW') {
+	else if (env.toUpperCase() === 'PREVIEW' || env.toUpperCase() === 'PREVIEWNET') {
 		client = Client.forPreviewnet();
 		console.log('   Network: PREVIEWNET');
+	}
+	else if (env.toUpperCase() === 'LOCAL') {
+		const node = { '127.0.0.1:50211': new AccountId(3) };
+		client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
+		console.log('   Network: LOCAL');
 	}
 	else {
 		console.error(`❌ Unknown environment: ${env}`);
@@ -165,6 +168,7 @@ async function initializeClient() {
 	console.log('   PRNG_CONTRACT_ID:', process.env.PRNG_CONTRACT_ID || '(not set - will deploy new)');
 	console.log('   LAZY_LOTTO_STORAGE:', process.env.LAZY_LOTTO_STORAGE || '(not set - will deploy new)');
 	console.log('   LAZY_LOTTO_CONTRACT_ID:', process.env.LAZY_LOTTO_CONTRACT_ID || '(not set - will deploy new)');
+	console.log('   LAZY_LOTTO_POOL_MANAGER_ID:', process.env.LAZY_LOTTO_POOL_MANAGER_ID || '(not set - will deploy new)');
 	console.log('');
 
 	const proceed = await prompt('❓ Review the above configuration. Proceed with deployment? (yes/no): ');
@@ -180,28 +184,118 @@ async function deployLazyToken() {
 	console.log('\n📦 Step 1: LAZY Token & SCT');
 	console.log('----------------------------');
 
-	if (process.env.LAZY_SCT_CONTRACT_ID && process.env.LAZY_TOKEN_ID) {
-		deployedContracts.lazySCT = ContractId.fromString(process.env.LAZY_SCT_CONTRACT_ID);
+	if (process.env.LAZY_TOKEN_ID) {
 		deployedContracts.lazyToken = TokenId.fromString(process.env.LAZY_TOKEN_ID);
 		console.log(`✅ Found existing LAZY Token: ${deployedContracts.lazyToken.toString()}`);
-		console.log(`✅ Found existing LAZY SCT: ${deployedContracts.lazySCT.toString()}`);
 
-		const useExisting = await prompt('❓ Use existing LAZY Token and SCT? (yes/no): ');
+		// Query token info from mirror node to display to user
+		try {
+			const { checkMirrorTokenInfo } = require('../../../utils/hederaMirrorHelpers');
+			const tokenInfo = await checkMirrorTokenInfo(env, deployedContracts.lazyToken);
+			if (tokenInfo) {
+				console.log(`   Name: ${tokenInfo.name}`);
+				console.log(`   Symbol: ${tokenInfo.symbol}`);
+				console.log(`   Decimals: ${tokenInfo.decimals}`);
+				console.log(`   Max Supply: ${tokenInfo.max_supply ? (tokenInfo.max_supply / Math.pow(10, tokenInfo.decimals)).toLocaleString() : 'unlimited'}`);
+			}
+		}
+		catch (error) {
+			console.log('   (Unable to fetch token info from mirror node)', error.message);
+		}
+
+		if (process.env.LAZY_SCT_CONTRACT_ID) {
+			deployedContracts.lazySCT = ContractId.fromString(process.env.LAZY_SCT_CONTRACT_ID);
+			console.log(`✅ Found existing LAZY SCT: ${deployedContracts.lazySCT.toString()}`);
+		}
+
+		const useExisting = await prompt('❓ Use existing LAZY Token? (yes/no): ');
 		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
-			console.log('🛑 Please update your .env file to remove LAZY_TOKEN_ID and LAZY_SCT_CONTRACT_ID, or deploy a new LAZY token manually.');
+			console.log('🛑 Please update your .env file to remove LAZY_TOKEN_ID, or specify a different token.');
 			process.exit(0);
 		}
-		console.log('✅ Using existing contracts');
+		console.log('✅ Using existing LAZY token');
 	}
 	else {
-		console.log('⚠️  No existing LAZY Token or SCT found in .env');
+		console.log('⚠️  No existing LAZY Token found in .env');
 		const deployNew = await prompt('❓ Deploy new LAZY Token and SCT? (yes/no): ');
 		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
-			console.log('🛑 Deployment cancelled. Please set LAZY_TOKEN_ID and LAZY_SCT_CONTRACT_ID in .env to use existing contracts.');
+			console.log('🛑 Deployment cancelled. Please set LAZY_TOKEN_ID in .env to use an existing token.');
 			process.exit(0);
 		}
 
-		console.log('🔨 Deploying LAZY Token Creator (SCT)...');
+		// Interactive prompts for all token parameters
+		console.log('\n📝 Token Configuration');
+		console.log('----------------------');
+
+		const tokenSymbol = await prompt('Token symbol (e.g., LAZY): ');
+		if (!tokenSymbol || tokenSymbol.trim().length === 0) {
+			console.error('❌ Token symbol is required');
+			process.exit(1);
+		}
+
+		const tokenName = await prompt('Token name (e.g., Lazy Superheroes Token): ');
+		if (!tokenName || tokenName.trim().length === 0) {
+			console.error('❌ Token name is required');
+			process.exit(1);
+		}
+
+		const tokenMemo = await prompt('Token memo/description: ');
+
+		const maxSupplyInput = await prompt('Max supply (total tokens, e.g., 1000000000): ');
+		const maxSupply = parseInt(maxSupplyInput);
+		if (isNaN(maxSupply) || maxSupply <= 0) {
+			console.error('❌ Invalid max supply. Must be a positive number.');
+			process.exit(1);
+		}
+
+		const decimalsInput = await prompt('Decimals (0-8, e.g., 8): ');
+		const decimals = parseInt(decimalsInput);
+		if (isNaN(decimals) || decimals < 0 || decimals > 8) {
+			console.error('❌ Invalid decimals. Must be between 0 and 8.');
+			process.exit(1);
+		}
+
+		const initialSupplyInput = await prompt(`Initial supply (0-${maxSupply}, e.g., ${maxSupply}): `);
+		const initialSupply = parseInt(initialSupplyInput);
+		if (isNaN(initialSupply) || initialSupply < 0 || initialSupply > maxSupply) {
+			console.error(`❌ Invalid initial supply. Must be between 0 and ${maxSupply}.`);
+			process.exit(1);
+		}
+
+		const burnPercentInput = await prompt('Burn percentage for SCT (0-100, typically 0): ');
+		const burnPercent = parseInt(burnPercentInput);
+		if (isNaN(burnPercent) || burnPercent < 0 || burnPercent > 100) {
+			console.error('❌ Invalid burn percentage. Must be between 0 and 100.');
+			process.exit(1);
+		}
+
+		const mintPaymentInput = await prompt('HBAR payment for token creation (e.g., 20): ');
+		const mintPayment = parseFloat(mintPaymentInput);
+		if (isNaN(mintPayment) || mintPayment < 0) {
+			console.error('❌ Invalid HBAR amount. Must be a non-negative number.');
+			process.exit(1);
+		}
+
+		// Display summary for confirmation
+		console.log('\n📋 Token Configuration Summary:');
+		console.log('--------------------------------');
+		console.log(`   Symbol:          ${tokenSymbol}`);
+		console.log(`   Name:            ${tokenName}`);
+		console.log(`   Memo:            ${tokenMemo}`);
+		console.log(`   Max Supply:      ${maxSupply.toLocaleString()}`);
+		console.log(`   Initial Supply:  ${initialSupply.toLocaleString()}`);
+		console.log(`   Decimals:        ${decimals}`);
+		console.log(`   Burn %:          ${burnPercent}%`);
+		console.log(`   Creation Fee:    ${mintPayment} HBAR`);
+		console.log('');
+
+		const confirmDeploy = await prompt('❓ Proceed with deployment using these parameters? (yes/no): ');
+		if (confirmDeploy.toLowerCase() !== 'yes' && confirmDeploy.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled.');
+			process.exit(0);
+		}
+
+		console.log('\n🔨 Deploying LAZY Token Creator (SCT)...');
 
 		const lazyJson = JSON.parse(
 			fs.readFileSync(
@@ -211,9 +305,9 @@ async function deployLazyToken() {
 		lazyIface = new ethers.Interface(lazyJson.abi);
 
 		const lazyConstructorParams = new ContractFunctionParameters()
-			.addUint256(LAZY_BURN_PERCENT);
+			.addUint256(burnPercent);
 
-		const [lazySCT] = await contractDeployFunction(
+		const [lazySCT, lazySCTAddress, deploySCTRecord] = await contractDeployFunction(
 			client,
 			lazyJson.bytecode,
 			3_500_000,
@@ -222,10 +316,14 @@ async function deployLazyToken() {
 
 		deployedContracts.lazySCT = lazySCT;
 		console.log(`✅ LAZY SCT deployed: ${lazySCT.toString()}`);
+		console.log(`   Address: ${lazySCTAddress}`);
+		if (deploySCTRecord) {
+			console.log(parseTransactionRecord(deploySCTRecord));
+		}
 
 		await sleep(3000);
 
-		console.log('🔨 Creating LAZY fungible token...');
+		console.log('\n🔨 Creating LAZY fungible token...');
 		const mintLazyResult = await contractExecuteFunction(
 			lazySCT,
 			lazyIface,
@@ -233,23 +331,34 @@ async function deployLazyToken() {
 			800_000,
 			'createFungibleWithBurn',
 			[
-				'LAZY',
-				'$LAZY',
-				'Lazy Superheroes Token',
-				LAZY_MAX_SUPPLY,
-				LAZY_DECIMAL,
-				LAZY_MAX_SUPPLY,
+				tokenSymbol,
+				`$${tokenSymbol}`,
+				tokenMemo || tokenName,
+				maxSupply,
+				decimals,
+				initialSupply,
 			],
-			MINT_PAYMENT,
+			mintPayment,
 		);
 
 		if (mintLazyResult[0]?.status?.toString() !== 'SUCCESS') {
 			console.error('❌ LAZY token creation failed:', mintLazyResult[0]?.status?.toString());
+			if (mintLazyResult[2]) {
+				console.log(parseTransactionRecord(mintLazyResult[2]));
+			}
 			process.exit(1);
 		}
 
 		deployedContracts.lazyToken = TokenId.fromSolidityAddress(mintLazyResult[1][0]);
 		console.log(`✅ LAZY Token created: ${deployedContracts.lazyToken.toString()}`);
+		if (mintLazyResult[2]) {
+			console.log(parseTransactionRecord(mintLazyResult[2]));
+		}
+
+		// Suggest updating .env
+		console.log('\n💡 Add these to your .env file:');
+		console.log(`   LAZY_TOKEN_ID=${deployedContracts.lazyToken.toString()}`);
+		console.log(`   LAZY_SCT_CONTRACT_ID=${deployedContracts.lazySCT.toString()}`);
 	}
 
 	// Load interface if not already loaded
@@ -299,7 +408,7 @@ async function deployLazyGasStation() {
 			.addAddress(deployedContracts.lazyToken.toSolidityAddress())
 			.addAddress(deployedContracts.lazySCT.toSolidityAddress());
 
-		const [lazyGasStationId] = await contractDeployFunction(
+		const [lazyGasStationId, lazyGasStationAddress, deployGSRecord] = await contractDeployFunction(
 			client,
 			lazyGasStationJson.bytecode,
 			4_000_000,
@@ -308,6 +417,10 @@ async function deployLazyGasStation() {
 
 		deployedContracts.lazyGasStation = lazyGasStationId;
 		console.log(`✅ LazyGasStation deployed: ${lazyGasStationId.toString()}`);
+		console.log(`   Address: ${lazyGasStationAddress}`);
+		if (deployGSRecord) {
+			console.log(parseTransactionRecord(deployGSRecord));
+		}
 	}
 
 	// Load interface
@@ -351,7 +464,7 @@ async function deployLazyDelegateRegistry() {
 			),
 		);
 
-		const [lazyDelegateRegistryId] = await contractDeployFunction(
+		const [lazyDelegateRegistryId, lazyDelegateRegistryAddress, deployDRRecord] = await contractDeployFunction(
 			client,
 			lazyDelegateRegistryJson.bytecode,
 			2_100_000,
@@ -359,6 +472,10 @@ async function deployLazyDelegateRegistry() {
 
 		deployedContracts.lazyDelegateRegistry = lazyDelegateRegistryId;
 		console.log(`✅ LazyDelegateRegistry deployed: ${lazyDelegateRegistryId.toString()}`);
+		console.log(`   Address: ${lazyDelegateRegistryAddress}`);
+		if (deployDRRecord) {
+			console.log(parseTransactionRecord(deployDRRecord));
+		}
 	}
 }
 
@@ -394,7 +511,7 @@ async function deployPRNG() {
 			),
 		);
 
-		const [prngId] = await contractDeployFunction(
+		const [prngId, prngAddress, deployPRNGRecord] = await contractDeployFunction(
 			client,
 			prngJson.bytecode,
 			1_800_000,
@@ -402,6 +519,10 @@ async function deployPRNG() {
 
 		deployedContracts.prng = prngId;
 		console.log(`✅ PRNG deployed: ${prngId.toString()}`);
+		console.log(`   Address: ${prngAddress}`);
+		if (deployPRNGRecord) {
+			console.log(parseTransactionRecord(deployPRNGRecord));
+		}
 	}
 }
 
@@ -439,7 +560,7 @@ async function deployLazyLottoStorage() {
 			.addAddress(deployedContracts.lazyGasStation.toSolidityAddress())
 			.addAddress(deployedContracts.lazyToken.toSolidityAddress());
 
-		const [storageContractId] = await contractDeployFunction(
+		const [storageContractId, storageContractAddress, deployStorageRecord] = await contractDeployFunction(
 			client,
 			storageBytecode,
 			3_500_000,
@@ -448,6 +569,10 @@ async function deployLazyLottoStorage() {
 
 		deployedContracts.lazyLottoStorage = storageContractId;
 		console.log(`✅ LazyLottoStorage deployed: ${storageContractId.toString()}`);
+		console.log(`   Address: ${storageContractAddress}`);
+		if (deployStorageRecord) {
+			console.log(parseTransactionRecord(deployStorageRecord));
+		}
 	}
 
 	// Load interface
@@ -481,7 +606,28 @@ async function deployLazyLotto() {
 		process.exit(0);
 	}
 
-	console.log('🔨 Deploying LazyLotto main contract...');
+	// Prompt for LazyLotto burn percentage configuration
+	console.log('\n📝 LazyLotto Configuration');
+	console.log('--------------------------');
+	const lazyBurnPercentInput = await prompt('LAZY burn percentage for LazyLotto (0-100, typically 0-50): ');
+	const lazyBurnPercent = parseInt(lazyBurnPercentInput);
+	if (isNaN(lazyBurnPercent) || lazyBurnPercent < 0 || lazyBurnPercent > 100) {
+		console.error('❌ Invalid burn percentage. Must be between 0 and 100.');
+		process.exit(1);
+	}
+
+	console.log('\n📋 LazyLotto Configuration Summary:');
+	console.log('-----------------------------------');
+	console.log(`   LAZY Burn %: ${lazyBurnPercent}%`);
+	console.log('');
+
+	const confirmDeploy = await prompt('❓ Proceed with LazyLotto deployment? (yes/no): ');
+	if (confirmDeploy.toLowerCase() !== 'yes' && confirmDeploy.toLowerCase() !== 'y') {
+		console.log('🛑 Deployment cancelled.');
+		process.exit(0);
+	}
+
+	console.log('\n🔨 Deploying LazyLotto main contract...');
 
 	const json = JSON.parse(
 		fs.readFileSync(`./artifacts/contracts/${contractName}.sol/${contractName}.json`),
@@ -498,10 +644,10 @@ async function deployLazyLotto() {
 		.addAddress(deployedContracts.lazyGasStation.toSolidityAddress())
 		.addAddress(deployedContracts.lazyDelegateRegistry.toSolidityAddress())
 		.addAddress(deployedContracts.prng.toSolidityAddress())
-		.addUint256(LAZY_BURN_PERCENT)
+		.addUint256(lazyBurnPercent)
 		.addAddress(deployedContracts.lazyLottoStorage.toSolidityAddress());
 
-	const [contractId] = await contractDeployFunction(
+	const [contractId, contractAddress, deployLottoRecord] = await contractDeployFunction(
 		client,
 		contractBytecode,
 		gasLimit,
@@ -510,6 +656,10 @@ async function deployLazyLotto() {
 
 	deployedContracts.lazyLotto = contractId;
 	console.log(`✅ LazyLotto deployed: ${contractId.toString()}`);
+	console.log(`   Address: ${contractAddress}`);
+	if (deployLottoRecord) {
+		console.log(parseTransactionRecord(deployLottoRecord));
+	}
 }
 
 // Step 8: Set LazyLotto as contract user on storage
@@ -557,11 +707,17 @@ async function setContractUser() {
 	);
 
 	if (setContractUserResult[0]?.status?.toString() !== 'SUCCESS') {
-		console.error('❌ setContractUser failed:', setContractUserResult);
+		console.error('❌ setContractUser failed');
+		if (setContractUserResult[2]) {
+			console.log(parseTransactionRecord(setContractUserResult[2]));
+		}
 		process.exit(1);
 	}
 
 	console.log('✅ LazyLotto set as contract user on storage');
+	if (setContractUserResult[2]) {
+		console.log(parseTransactionRecord(setContractUserResult[2]));
+	}
 }
 
 // Step 9: Add storage and LazyLotto to LazyGasStation
@@ -593,11 +749,17 @@ async function addContractUsersToGasStation() {
 	);
 
 	if (addStorageResult[0]?.status?.toString() !== 'SUCCESS') {
-		console.error('❌ Adding storage to LazyGasStation failed:', addStorageResult);
+		console.error('❌ Adding storage to LazyGasStation failed');
+		if (addStorageResult[2]) {
+			console.log(parseTransactionRecord(addStorageResult[2]));
+		}
 		process.exit(1);
 	}
 
 	console.log('✅ LazyLottoStorage added to LazyGasStation');
+	if (addStorageResult[2]) {
+		console.log(parseTransactionRecord(addStorageResult[2]));
+	}
 
 	await sleep(3000);
 
@@ -623,11 +785,17 @@ async function addContractUsersToGasStation() {
 	);
 
 	if (addLottoResult[0]?.status?.toString() !== 'SUCCESS') {
-		console.error('❌ Adding LazyLotto to LazyGasStation failed:', addLottoResult);
+		console.error('❌ Adding LazyLotto to LazyGasStation failed');
+		if (addLottoResult[2]) {
+			console.log(parseTransactionRecord(addLottoResult[2]));
+		}
 		process.exit(1);
 	}
 
 	console.log('✅ LazyLotto added to LazyGasStation');
+	if (addLottoResult[2]) {
+		console.log(parseTransactionRecord(addLottoResult[2]));
+	}
 }
 
 // Step 10: Fund LazyGasStation (optional)
@@ -644,8 +812,6 @@ async function fundLazyGasStation() {
 
 	console.log(`🔨 Sending ${fundAmount} HBAR to LazyGasStation...`);
 
-	const { TransferTransaction } = require('@hashgraph/sdk');
-
 	const transferTx = await new TransferTransaction()
 		.addHbarTransfer(operatorId, -parseFloat(fundAmount))
 		.addHbarTransfer(AccountId.fromString(deployedContracts.lazyGasStation.toString()), parseFloat(fundAmount))
@@ -661,7 +827,162 @@ async function fundLazyGasStation() {
 	console.log(`✅ Sent ${fundAmount} HBAR to LazyGasStation`);
 }
 
-// Step 11: Verification
+// Step 10: Deploy LazyLottoPoolManager
+async function deployPoolManager() {
+	console.log('\n📦 Step 10: LazyLottoPoolManager');
+	console.log('---------------------------------');
+
+	if (process.env.LAZY_LOTTO_POOL_MANAGER_ID) {
+		deployedContracts.poolManager = ContractId.fromString(process.env.LAZY_LOTTO_POOL_MANAGER_ID);
+		console.log(`✅ Found existing LazyLottoPoolManager: ${deployedContracts.poolManager.toString()}`);
+
+		const useExisting = await prompt('❓ Use existing LazyLottoPoolManager? (yes/no): ');
+		if (useExisting.toLowerCase() !== 'yes' && useExisting.toLowerCase() !== 'y') {
+			console.log('🛑 Please update your .env file to remove LAZY_LOTTO_POOL_MANAGER_ID or deploy a new one manually.');
+			process.exit(0);
+		}
+		console.log('✅ Using existing contract');
+	}
+	else {
+		console.log('⚠️  No existing LazyLottoPoolManager found in .env');
+		const deployNew = await prompt('❓ Deploy new LazyLottoPoolManager? (yes/no): ');
+		if (deployNew.toLowerCase() !== 'yes' && deployNew.toLowerCase() !== 'y') {
+			console.log('🛑 Deployment cancelled. Please set LAZY_LOTTO_POOL_MANAGER_ID in .env to use an existing contract.');
+			process.exit(0);
+		}
+
+		console.log('🔨 Deploying LazyLottoPoolManager...');
+
+		const poolManagerJson = JSON.parse(
+			fs.readFileSync(
+				`./artifacts/contracts/${poolManagerContractName}.sol/${poolManagerContractName}.json`,
+			),
+		);
+
+		const sizeKB = (poolManagerJson.bytecode.length / 2 / 1024);
+		console.log(`   Contract size: ${sizeKB.toFixed(3)} KB (limit: 24 KB)`);
+
+		if (sizeKB > 24) {
+			console.warn('⚠️  WARNING: Contract exceeds 24 KB Hedera limit!');
+			process.exit(1);
+		}
+
+		const constructorParams = new ContractFunctionParameters()
+			.addAddress(deployedContracts.lazyToken.toSolidityAddress())
+			.addAddress(deployedContracts.lazyGasStation.toSolidityAddress())
+			.addAddress(deployedContracts.lazyDelegateRegistry.toSolidityAddress());
+
+		const [poolManagerId, poolManagerAddress, deployPMRecord] = await contractDeployFunction(
+			client,
+			poolManagerJson.bytecode,
+			2_500_000,
+			constructorParams,
+		);
+
+		deployedContracts.poolManager = poolManagerId;
+		console.log(`✅ LazyLottoPoolManager deployed: ${poolManagerId.toString()}`);
+		console.log(`   Address: ${poolManagerAddress}`);
+		if (deployPMRecord) {
+			console.log(parseTransactionRecord(deployPMRecord));
+		}
+	}
+
+	// Load interface
+	const poolManagerJson = JSON.parse(
+		fs.readFileSync(
+			`./artifacts/contracts/${poolManagerContractName}.sol/${poolManagerContractName}.json`,
+		),
+	);
+	poolManagerIface = new ethers.Interface(poolManagerJson.abi);
+}
+
+// Step 11: Link LazyLotto and LazyLottoPoolManager (bidirectional)
+async function linkPoolManager() {
+	console.log('\n⚙️  Step 11: Link LazyLotto ↔ LazyLottoPoolManager');
+	console.log('--------------------------------------------------');
+
+	await sleep(5000);
+
+	// Set LazyLotto in PoolManager
+	console.log('🔨 Setting LazyLotto address in PoolManager...');
+
+	const setLazyLottoResult = await contractExecuteFunction(
+		deployedContracts.poolManager,
+		poolManagerIface,
+		client,
+		150_000,
+		'setLazyLotto',
+		[deployedContracts.lazyLotto.toSolidityAddress()],
+	);
+
+	if (setLazyLottoResult[0]?.status?.toString() !== 'SUCCESS') {
+		console.error('❌ setLazyLotto failed');
+		if (setLazyLottoResult[2]) {
+			console.log(parseTransactionRecord(setLazyLottoResult[2]));
+		}
+		process.exit(1);
+	}
+
+	console.log('✅ LazyLotto address set in PoolManager');
+	if (setLazyLottoResult[2]) {
+		console.log(parseTransactionRecord(setLazyLottoResult[2]));
+	}
+
+	await sleep(3000);
+
+	// Set PoolManager in LazyLotto
+	console.log('🔨 Setting PoolManager address in LazyLotto...');
+
+	const setPoolManagerResult = await contractExecuteFunction(
+		deployedContracts.lazyLotto,
+		lazyLottoIface,
+		client,
+		150_000,
+		'setPoolManager',
+		[deployedContracts.poolManager.toSolidityAddress()],
+	);
+
+	if (setPoolManagerResult[0]?.status?.toString() !== 'SUCCESS') {
+		console.error('❌ setPoolManager failed');
+		if (setPoolManagerResult[2]) {
+			console.log(parseTransactionRecord(setPoolManagerResult[2]));
+		}
+		process.exit(1);
+	}
+
+	console.log('✅ PoolManager address set in LazyLotto');
+	if (setPoolManagerResult[2]) {
+		console.log(parseTransactionRecord(setPoolManagerResult[2]));
+	}
+
+	await sleep(5000);
+
+	// Verify bidirectional linkage
+	console.log('\n🔍 Verifying bidirectional linkage...');
+
+	let encodedCommand = lazyLottoIface.encodeFunctionData('poolManager');
+	let result = await readOnlyEVMFromMirrorNode(env, deployedContracts.lazyLotto, encodedCommand, operatorId, false);
+	const poolManagerFromLazyLotto = lazyLottoIface.decodeFunctionResult('poolManager', result);
+
+	encodedCommand = poolManagerIface.encodeFunctionData('lazyLotto');
+	result = await readOnlyEVMFromMirrorNode(env, deployedContracts.poolManager, encodedCommand, operatorId, false);
+	const lazyLottoFromPoolManager = poolManagerIface.decodeFunctionResult('lazyLotto', result);
+
+	const poolManagerMatch = poolManagerFromLazyLotto[0].slice(2).toLowerCase() === deployedContracts.poolManager.toSolidityAddress();
+	const lazyLottoMatch = lazyLottoFromPoolManager[0].slice(2).toLowerCase() === deployedContracts.lazyLotto.toSolidityAddress();
+
+	console.log(`   LazyLotto → PoolManager: ${poolManagerMatch ? '✅' : '❌'}`);
+	console.log(`   PoolManager → LazyLotto: ${lazyLottoMatch ? '✅' : '❌'}`);
+
+	if (!poolManagerMatch || !lazyLottoMatch) {
+		console.error('\n❌ Bidirectional linkage verification failed!');
+		process.exit(1);
+	}
+
+	console.log('✅ Bidirectional linkage verified');
+}
+
+// Step 12: Verification
 async function verifyDeployment() {
 	console.log('\n✅ Deployment Verification');
 	console.log('===========================\n');
@@ -697,7 +1018,29 @@ async function verifyDeployment() {
 
 	console.log(`   Deployer is admin: ${isAdmin[0] ? '✅' : '❌'}`);
 
-	if (!lazyTokenMatch || !lazyGasStationMatch || !storageMatch || !isAdmin[0]) {
+	// Verify pool manager linkage (if pool manager is deployed)
+	if (deployedContracts.poolManager) {
+		console.log('\n🔍 Verifying LazyLottoPoolManager linkage...');
+
+		encodedCommand = lazyLottoIface.encodeFunctionData('poolManager');
+		result = await readOnlyEVMFromMirrorNode(env, deployedContracts.lazyLotto, encodedCommand, operatorId, false);
+		const poolManagerFromLazyLotto = lazyLottoIface.decodeFunctionResult('poolManager', result);
+		const poolManagerFromLazyLottoMatch = poolManagerFromLazyLotto[0].slice(2).toLowerCase() === deployedContracts.poolManager.toSolidityAddress();
+
+		encodedCommand = poolManagerIface.encodeFunctionData('lazyLotto');
+		result = await readOnlyEVMFromMirrorNode(env, deployedContracts.poolManager, encodedCommand, operatorId, false);
+		const lazyLottoFromPoolManager = poolManagerIface.decodeFunctionResult('lazyLotto', result);
+		const lazyLottoFromPoolManagerMatch = lazyLottoFromPoolManager[0].slice(2).toLowerCase() === deployedContracts.lazyLotto.toSolidityAddress();
+
+		console.log(`   LazyLotto → PoolManager: ${poolManagerFromLazyLottoMatch ? '✅' : '❌'} ${deployedContracts.poolManager.toString()}`);
+		console.log(`   PoolManager → LazyLotto: ${lazyLottoFromPoolManagerMatch ? '✅' : '❌'} ${deployedContracts.lazyLotto.toString()}`);
+
+		if (!lazyTokenMatch || !lazyGasStationMatch || !storageMatch || !isAdmin[0] || !poolManagerFromLazyLottoMatch || !lazyLottoFromPoolManagerMatch) {
+			console.error('\n❌ Verification failed! Check configuration.');
+			process.exit(1);
+		}
+	}
+	else if (!lazyTokenMatch || !lazyGasStationMatch || !storageMatch || !isAdmin[0]) {
 		console.error('\n❌ Verification failed! Check configuration.');
 		process.exit(1);
 	}
@@ -723,6 +1066,7 @@ async function main() {
 			if (!process.env.PRNG_CONTRACT_ID) throw new Error('PRNG_CONTRACT_ID required for verification');
 			if (!process.env.LAZY_LOTTO_STORAGE) throw new Error('LAZY_LOTTO_STORAGE required for verification');
 			if (!process.env.LAZY_LOTTO_CONTRACT_ID) throw new Error('LAZY_LOTTO_CONTRACT_ID required for verification');
+			if (!process.env.LAZY_LOTTO_POOL_MANAGER_ID) throw new Error('LAZY_LOTTO_POOL_MANAGER_ID required for verification');
 
 			deployedContracts.lazyToken = TokenId.fromString(process.env.LAZY_TOKEN_ID);
 			deployedContracts.lazySCT = process.env.LAZY_SCT_CONTRACT_ID ? ContractId.fromString(process.env.LAZY_SCT_CONTRACT_ID) : null;
@@ -731,6 +1075,7 @@ async function main() {
 			deployedContracts.prng = ContractId.fromString(process.env.PRNG_CONTRACT_ID);
 			deployedContracts.lazyLottoStorage = ContractId.fromString(process.env.LAZY_LOTTO_STORAGE);
 			deployedContracts.lazyLotto = ContractId.fromString(process.env.LAZY_LOTTO_CONTRACT_ID);
+			deployedContracts.poolManager = ContractId.fromString(process.env.LAZY_LOTTO_POOL_MANAGER_ID);
 
 			// Load interfaces for verification
 			const lazyLottoJson = JSON.parse(fs.readFileSync(`./abi/${contractName}.json`));
@@ -738,6 +1083,9 @@ async function main() {
 
 			const lazyLottoStorageJson = JSON.parse(fs.readFileSync(`./abi/${storageContractName}.json`));
 			lazyLottoStorageIface = new ethers.Interface(lazyLottoStorageJson);
+
+			const poolManagerJson = JSON.parse(fs.readFileSync(`./abi/${poolManagerContractName}.json`));
+			poolManagerIface = new ethers.Interface(poolManagerJson);
 
 			await verifyDeployment();
 
@@ -755,6 +1103,8 @@ async function main() {
 		await setContractUser();
 		await addContractUsersToGasStation();
 		await fundLazyGasStation();
+		await deployPoolManager();
+		await linkPoolManager();
 		await verifyDeployment();
 
 		// Save deployment addresses
@@ -763,20 +1113,20 @@ async function main() {
 		console.log('\n🎉 LazyLotto Deployment Complete!');
 		console.log('===================================\n');
 		console.log('📝 Deployed Contracts:');
-		console.log(`   LAZY Token:          ${deployedContracts.lazyToken.toString()}`);
-		console.log(`   LAZY SCT:            ${deployedContracts.lazySCT.toString()}`);
-		console.log(`   LazyGasStation:      ${deployedContracts.lazyGasStation.toString()}`);
+		console.log(`   LAZY Token:           ${deployedContracts.lazyToken.toString()}`);
+		console.log(`   LAZY SCT:             ${deployedContracts.lazySCT.toString()}`);
+		console.log(`   LazyGasStation:       ${deployedContracts.lazyGasStation.toString()}`);
 		console.log(`   LazyDelegateRegistry: ${deployedContracts.lazyDelegateRegistry.toString()}`);
-		console.log(`   PRNG:                ${deployedContracts.prng.toString()}`);
-		console.log(`   LazyLottoStorage:    ${deployedContracts.lazyLottoStorage.toString()}`);
-		console.log(`   LazyLotto:           ${deployedContracts.lazyLotto.toString()}`);
+		console.log(`   PRNG:                 ${deployedContracts.prng.toString()}`);
+		console.log(`   LazyLottoStorage:     ${deployedContracts.lazyLottoStorage.toString()}`);
+		console.log(`   LazyLotto:            ${deployedContracts.lazyLotto.toString()}`);
+		console.log(`   LazyLottoPoolManager: ${deployedContracts.poolManager.toString()}`);
 
 		console.log('\n📋 Next Steps:');
 		console.log('   1. Update .env with deployed contract IDs');
 		console.log('   2. Create lottery pools using admin functions');
 		console.log('   3. Add prize packages to pools');
 		console.log('   4. Test with small amounts before production use');
-		console.log('   5. Consider setting up monitoring for contract events');
 
 		process.exit(0);
 	}
@@ -787,4 +1137,8 @@ async function main() {
 }
 
 // Run deployment
-main();
+if (require.main === module) {
+	main();
+}
+
+module.exports = main;
