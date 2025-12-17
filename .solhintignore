@@ -1,2 +1,17 @@
 node_modules
 smart-contracts\node_modules
+
+# Legacy and vendored contracts (not maintained by this project)
+contracts/legacy/**/*.sol
+
+# Hedera precompile wrappers (low-level calls are unavoidable)
+contracts/HederaTokenService.sol
+contracts/HederaTokenServiceLite.sol
+contracts/HederaAccountService.sol
+
+# Interface definitions (external standards, not our code)
+contracts/interfaces/IHederaTokenService.sol
+contracts/interfaces/IHederaTokenServiceLite.sol
+
+# Mock contracts (test utilities)
+contracts/mocks/**/*.sol

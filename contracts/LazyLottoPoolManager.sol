@@ -57,6 +57,12 @@ contract LazyLottoPoolManager is ReentrancyGuard {
     error CannotSetManagerForGlobalPools();
     error CannotWithdrawFromGlobalPools();
     error LazyLottoAlreadySet();
+    error TooManyTimeBonuses();
+    error TooManyNFTBonuses();
+
+    // --- CONSTANTS ---
+    uint256 public constant MAX_TIME_BONUSES = 10; // Maximum time-based bonus windows
+    uint256 public constant MAX_NFT_BONUS_TOKENS = 25; // Maximum NFT tokens with bonuses
 
     // --- EVENTS ---
 
@@ -505,6 +511,12 @@ contract LazyLottoPoolManager is ReentrancyGuard {
         return globalPrizeManagers[a];
     }
 
+    /// @notice Get total number of global prize managers
+    /// @return count Number of global prize managers
+    function getGlobalPrizeManagerCount() external view returns (uint256 count) {
+        return _prizeManagerCount;
+    }
+
     // --- POOL ENUMERATION HELPERS ---
 
     /// @notice Check if a pool is a global (team-created) pool
@@ -600,11 +612,12 @@ contract LazyLottoPoolManager is ReentrancyGuard {
         address _user
     ) external view returns (uint32 boost) {
         uint256 ts = block.timestamp;
+        uint256 boostAccumulator = 0; // Use uint256 for safe accumulation
 
         // Time bonuses
         for (uint256 i; i < timeBonuses.length; ) {
             if (ts >= timeBonuses[i].start && ts <= timeBonuses[i].end) {
-                boost += timeBonuses[i].bonusBps;
+                boostAccumulator += timeBonuses[i].bonusBps;
             }
             unchecked {
                 i++;
@@ -621,7 +634,7 @@ contract LazyLottoPoolManager is ReentrancyGuard {
                     .length >
                 0
             ) {
-                boost += nftBonusBps[tkn];
+                boostAccumulator += nftBonusBps[tkn];
             }
             unchecked {
                 i++;
@@ -630,13 +643,18 @@ contract LazyLottoPoolManager is ReentrancyGuard {
 
         // LAZY balance bonus
         if (IERC20(lazyToken).balanceOf(_user) >= lazyBalanceThreshold) {
-            boost += lazyBalanceBonusBps;
+            boostAccumulator += lazyBalanceBonusBps;
         }
 
-        // Scale bps to tens of thousands of bps
-        boost *= 10_000;
+        // Scale bps to tens of thousands of bps (safely)
+        uint256 scaledBoost = boostAccumulator * 10_000;
 
-        return boost;
+        // Cap at uint32 max to prevent overflow
+        if (scaledBoost > type(uint32).max) {
+            scaledBoost = type(uint32).max;
+        }
+
+        return uint32(scaledBoost);
     }
 
     /// @notice Admin sets time-based bonus window
@@ -650,6 +668,7 @@ contract LazyLottoPoolManager is ReentrancyGuard {
     ) external {
         if (!ILazyLotto(lazyLotto).isAdmin(msg.sender)) revert NotAuthorized();
         if (_start >= _end || _bonusBps > 10000) revert BadParameters();
+        if (timeBonuses.length >= MAX_TIME_BONUSES) revert TooManyTimeBonuses();
 
         timeBonuses.push(
             TimeWindow({start: _start, end: _end, bonusBps: _bonusBps})
@@ -688,6 +707,7 @@ contract LazyLottoPoolManager is ReentrancyGuard {
         }
 
         if (!exists) {
+            if (nftBonusTokens.length >= MAX_NFT_BONUS_TOKENS) revert TooManyNFTBonuses();
             nftBonusTokens.push(_token);
             nftBonusBps[_token] = _bonusBps;
         }

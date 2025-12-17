@@ -84,12 +84,12 @@ interface ILazyLottoStorage {
         address token,
         address from,
         uint256 amount
-    ) external;
+    ) external returns (uint256 actualAmount);
     function ensureFungibleBalance(
         address token,
         address from,
         uint256 amountToPull
-    ) external;
+    ) external returns (uint256 actualAmount);
     function transferFungible(
         address token,
         address to,

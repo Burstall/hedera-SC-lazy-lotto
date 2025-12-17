@@ -3,8 +3,22 @@
   "rules": {
     "compiler-version": ["error", "^0.8.0"],
     "func-visibility": ["warn", { "ignoreConstructors": true }],
-	"not-rely-on-time": "off",
-	"max-states-count": "off",
-	"custom-error": "off"
+    "not-rely-on-time": "off",
+    "max-states-count": "off",
+    "function-max-lines": ["warn", 200],
+    "gas-calldata-parameters": "off",
+    "gas-increment-by-one": "off",
+    "gas-strict-inequalities": "off",
+    "gas-indexed-events": "off",
+    "use-natspec": [
+      "warn",
+      {
+        "requireForContract": true,
+        "requireForPublicFunctions": true,
+        "requireForExternalFunctions": true,
+        "requireForInternalFunctions": false,
+        "requireForPrivateFunctions": false
+      }
+    ]
   }
 }

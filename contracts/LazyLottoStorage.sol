@@ -78,7 +78,14 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
     error FailedNFTMintAndSend();
     error FailedNFTWipe();
     error AssociationFailed(address tokenAddress);
-    error TransferFailed(string operation);
+    error InsufficientTokenBalance(address token, uint256 required, uint256 available);
+    error FungibleWithdrawalFailed(address token);
+    error InsufficientHbarBalance(uint256 required, uint256 available);
+    error PullFungibleFailed(address token, address from);
+    error FungibleTransferFailed(address token);
+    error CryptoTransferFailed(int32 responseCode);
+    error NFTCollectionTransferFailed(address token, int32 responseCode);
+    error NFTBulkTransferFailed(int32 responseCode);
 
     // --- EVENTS ---
     event AdminAdded(address indexed admin);
@@ -88,10 +95,17 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
     event TokenCreated(address indexed tokenAddress, address indexed creator);
     event TokenAssociated(address indexed tokenAddress);
     event HbarTransferred(address indexed to, uint256 amount);
+    event HbarDeposited(uint256 amount);
     event FungibleTransferred(
         address indexed token,
         address indexed to,
         uint256 amount
+    );
+    event FungiblePulled(
+        address indexed token,
+        address indexed from,
+        uint256 requestedAmount,
+        uint256 actualAmount
     );
     event NFTCollectionTransferred(
         address indexed token,
@@ -102,7 +116,11 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
 
     // --- CONSTANTS ---
     uint32 private constant DEFAULT_AUTO_RENEW_PERIOD = 7776000; // 90 days
-    uint256 private constant MAX_NFTS_PER_TX = 8; // Maximum NFTs per HTS transaction
+    /// @dev Maximum 8 NFTs per transaction because HTS cryptoTransfer has 10-leg limit:
+    /// 8 NFT transfers + 2 HBAR legs (dust transfer for discovery) = 10 total legs
+    uint256 private constant MAX_NFTS_PER_TX = 8;
+    uint256 private constant MIN_HBAR_BALANCE = 20; // Minimum HBAR before refill (in tinybars)
+    uint256 private constant HBAR_REFILL_AMOUNT = 100; // Standard refill amount (in tinybars)
 
     // --- STATE ---
     mapping(address => bool) private _isAddressAdmin;
@@ -263,12 +281,12 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
 
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance < amount) {
-            revert TransferFailed("Insufficient token balance");
+            revert InsufficientTokenBalance(token, amount, balance);
         }
 
         bool success = IERC20(token).transfer(recipient, amount);
         if (!success) {
-            revert TransferFailed("Fungible withdrawal failed");
+            revert FungibleWithdrawalFailed(token);
         }
 
         emit FungibleTransferred(token, recipient, amount);
@@ -285,7 +303,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
             revert BadParameters();
         }
         if (address(this).balance < amount) {
-            revert TransferFailed("Insufficient HBAR balance");
+            revert InsufficientHbarBalance(amount, address(this).balance);
         }
 
         Address.sendValue(to, amount);
@@ -299,6 +317,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
             revert BadParameters();
         }
         // HBAR is now held in this contract's balance
+        emit HbarDeposited(msg.value);
     }
 
     // --- FUNGIBLE TOKEN OPERATIONS ---
@@ -306,34 +325,47 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
     /// @param token The token address
     /// @param from The address to pull tokens from
     /// @param amount The amount to pull
+    /// @return actualAmount The actual amount received (handles fee-on-transfer tokens)
     /// @dev Requires the user to have approved this storage contract for the token
     function pullFungibleFrom(
         address token,
         address from,
         uint256 amount
-    ) external onlyContractUser {
+    ) external onlyContractUser returns (uint256 actualAmount) {
         if (token == address(0) || from == address(0) || amount == 0) {
             revert BadParameters();
         }
+
+        // Check balance before transfer (for fee-on-transfer token detection)
+        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
 
         // Use standard ERC20 transferFrom - storage contract uses its allowance
         bool success = IERC20(token).transferFrom(from, address(this), amount);
 
         if (!success) {
-            revert TransferFailed("Pull fungible from user failed");
+            revert PullFungibleFailed(token, from);
         }
+
+        // Check balance after transfer to get actual received amount
+        uint256 balanceAfter = IERC20(token).balanceOf(address(this));
+        actualAmount = balanceAfter - balanceBefore;
+
+        emit FungiblePulled(token, from, amount, actualAmount);
+
+        return actualAmount;
     }
 
     /// @notice Ensure storage has sufficient balance, auto-associating and pulling if needed
     /// @param token The token address
     /// @param from The address to pull tokens from
     /// @param amountToPull The amount to pull from user
+    /// @return actualAmount The actual amount received (handles fee-on-transfer tokens)
     /// @dev Auto-associates if first time seeing token, then pulls requested amount
     function ensureFungibleBalance(
         address token,
         address from,
         uint256 amountToPull
-    ) external onlyContractUser {
+    ) external onlyContractUser returns (uint256 actualAmount) {
         if (token == address(0) || from == address(0)) {
             revert BadParameters();
         }
@@ -346,15 +378,26 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
 
         // Pull the requested amount from user (if any)
         if (amountToPull > 0) {
+            // Check balance before transfer (for fee-on-transfer token detection)
+            uint256 balanceBefore = IERC20(token).balanceOf(address(this));
+
             bool success = IERC20(token).transferFrom(
                 from,
                 address(this),
                 amountToPull
             );
             if (!success) {
-                revert TransferFailed("Pull fungible from user failed");
+                revert PullFungibleFailed(token, from);
             }
+
+            // Check balance after transfer to get actual received amount
+            uint256 balanceAfter = IERC20(token).balanceOf(address(this));
+            actualAmount = balanceAfter - balanceBefore;
+
+            emit FungiblePulled(token, from, amountToPull, actualAmount);
         }
+
+        return actualAmount;
     }
 
     /// @notice Transfer fungible tokens from contract to recipient
@@ -402,7 +445,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         );
 
         if (responseCode != HederaResponseCodes.SUCCESS) {
-            revert TransferFailed("Fungible transfer failed");
+            revert FungibleTransferFailed(token);
         }
 
         emit FungibleTransferred(token, to, amount);
@@ -418,7 +461,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         int32 responseCode = cryptoTransfer(transferList, tokenTransfers);
 
         if (responseCode != HederaResponseCodes.SUCCESS) {
-            revert TransferFailed("CryptoTransfer failed");
+            revert CryptoTransferFailed(responseCode);
         }
     }
 
@@ -600,7 +643,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         );
 
         if (responseCode != HederaResponseCodes.SUCCESS) {
-            revert TransferFailed("NFT collection transfer failed");
+            revert NFTCollectionTransferFailed(token, responseCode);
         }
 
         emit NFTCollectionTransferred(token, from, to, serialNumbers.length);
@@ -654,8 +697,8 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         address eoaAddress
     ) external onlyContractUser {
         // Check HBAR balance and refill if needed
-        if (address(this).balance < 20) {
-            lazyGasStation.refillHbar(100);
+        if (address(this).balance < MIN_HBAR_BALANCE) {
+            lazyGasStation.refillHbar(HBAR_REFILL_AMOUNT);
         }
 
         uint256 length = nftTokens.length;
@@ -780,7 +823,7 @@ contract LazyLottoStorage is HederaTokenServiceLite, KeyHelperLite {
         int32 responseCode = cryptoTransfer(hbarTransfer, transfers);
 
         if (responseCode != HederaResponseCodes.SUCCESS) {
-            revert TransferFailed("NFT bulk transfer failed");
+            revert NFTBulkTransferFailed(responseCode);
         }
     }
 
