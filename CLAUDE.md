@@ -250,6 +250,262 @@ See `LazyLotto-SECURITY_ANALYSIS.md` for comprehensive security analysis.
 **Testing Docs**:
 - `LazyLotto-CODE_COVERAGE_ANALYSIS.md` - Line-by-line coverage analysis
 
+**Multi-Signature Docs**:
+- `docs/MULTISIG_USER_GUIDE.md` - End-user guide for multi-sig operations
+- `docs/MULTISIG_DEVELOPER_GUIDE.md` - Technical implementation details
+- `docs/MULTISIG_SECURITY.md` - Security model and threat analysis
+- `docs/MULTISIG_ADMIN_INTEGRATION.md` - Admin script integration guide
+
+## Multi-Signature System
+
+### Overview
+
+LazyLotto includes a production-grade multi-signature system for enhanced security on admin operations. All 21 admin scripts support multi-sig via the `--multisig` flag with full backward compatibility.
+
+### Quick Start
+
+```bash
+# Single-signature (existing behavior)
+node scripts/interactions/LazyLotto/admin/setPlatformFee.js 10
+
+# Multi-signature (2-of-3 interactive)
+node scripts/interactions/LazyLotto/admin/setPlatformFee.js 10 --multisig --threshold=2
+
+# Multi-signature (offline/air-gapped)
+node scripts/interactions/LazyLotto/admin/withdrawTokens.js 1000 --multisig --export-only
+```
+
+### Architecture
+
+**Library Location**: `lib/multiSig/` (completely isolated, zero project dependencies)
+
+**Integration Layer**: `utils/multiSigIntegration.js` + `utils/scriptHelpers.js`
+
+**Key Components**:
+- **Workflows**: InteractiveWorkflow (real-time <110s), OfflineWorkflow (asynchronous)
+- **Key Management**: PromptKeyProvider, EncryptedFileProvider, EnvKeyProvider
+- **Core**: TransactionFreezer, SignatureCollector, SignatureVerifier, TransactionExecutor
+- **UI**: ProgressIndicator, ErrorFormatter, HelpText, TransactionDisplay
+
+### Supported Features
+
+✅ **Mixed Key Types**: Ed25519 and ECDSA in same multi-sig setup
+✅ **Threshold Signatures**: M-of-N schemes (e.g., 2-of-3, 3-of-5)
+✅ **Air-Gapped Signing**: Offline workflow with no timeout
+✅ **Encrypted Key Storage**: AES-256-GCM encrypted key files
+✅ **Audit Logging**: Complete audit trail of all operations
+✅ **Backward Compatible**: All scripts work without --multisig flag
+
+### Usage Patterns
+
+**Interactive Mode** (all signers online, <110 seconds):
+```bash
+node scripts/interactions/LazyLotto/admin/createPool.js \
+  --multisig --threshold=2 --signers=Alice,Bob,Charlie
+```
+
+**Offline Mode** (asynchronous, air-gapped):
+```bash
+# Phase 1: Freeze & export
+node scripts/interactions/LazyLotto/admin/closePool.js 5 --multisig --export-only
+
+# Phase 2: Signers sign offline (each signer)
+node lib/multiSig/cli/sign.js multisig-transactions/tx-file.tx
+
+# Phase 3: Execute with collected signatures
+node scripts/interactions/LazyLotto/admin/closePool.js 5 \
+  --multisig --offline --signatures=sig1.json,sig2.json
+```
+
+**Using Encrypted Key Files**:
+```bash
+# One-time: Create encrypted key file
+node lib/multiSig/cli/createKeyFile.js
+# Creates alice.enc with AES-256-GCM encryption
+
+# Use in scripts
+node scripts/interactions/LazyLotto/admin/setBonuses.js \
+  --multisig --keyfiles=alice.enc,bob.enc
+```
+
+### Integration Pattern
+
+**All admin scripts follow this pattern**:
+
+1. **Import scriptHelpers**:
+```javascript
+const {
+  executeContractFunction,
+  checkMultiSigHelp,
+  displayMultiSigBanner
+} = require('../../../../utils/scriptHelpers');
+```
+
+2. **Check for help**:
+```javascript
+async function main() {
+  if (checkMultiSigHelp()) {
+    process.exit(0);
+  }
+  // ... rest of script
+}
+```
+
+3. **Display multi-sig banner**:
+```javascript
+console.log('Script Banner...');
+displayMultiSigBanner(); // Shows multi-sig status if enabled
+```
+
+4. **Execute with multi-sig support**:
+```javascript
+// Before (single-sig only)
+const tx = await new ContractExecuteTransaction()
+  .setContractId(contractId)
+  .setGas(300000)
+  .setFunction('myFunction', encoded)
+  .execute(client);
+
+// After (single-sig + multi-sig)
+const result = await executeContractFunction({
+  contractId,
+  iface: contractInterface,
+  client,
+  functionName: 'myFunction',
+  params: [param1, param2],
+  gas: 300000,
+  payableAmount: 0
+});
+
+if (!result.success) {
+  throw new Error(result.error);
+}
+```
+
+### Key Management
+
+**Security Tiers** (highest to lowest):
+
+1. **Prompt Input** 🔒🔒🔒: Interactive password prompts (no storage)
+   - Use for: Critical operations, one-time use
+   - Command: No special flags needed
+
+2. **Encrypted Files** 🔒🔒: AES-256-GCM encrypted files
+   - Use for: Regular operations, repeated use
+   - Command: `--keyfiles=alice.enc,bob.enc`
+   - Create: `node lib/multiSig/cli/createKeyFile.js`
+
+3. **Environment Variables** 🔒: Process environment (dev/test only)
+   - Use for: Development, testing only
+   - NOT recommended for production
+
+### CLI Tools
+
+Located in `lib/multiSig/cli/`:
+
+- **sign.js**: Standalone offline signing tool
+- **createKeyFile.js**: Create encrypted key files
+- **testKeyFile.js**: Validate encrypted key files
+- **securityAudit.js**: Scan codebase for security issues
+
+### Configuration
+
+**Environment Variables** (optional, see `.env.example`):
+```bash
+MULTISIG_SIGNERS=0.0.123456,0.0.234567,0.0.345678  # Reference only
+MULTISIG_THRESHOLD=2                                # M of N
+MULTISIG_WORKFLOW=interactive                       # or offline
+MULTISIG_EXPORT_DIR=./multisig-transactions
+MULTISIG_AUDIT_LOG=./logs/audit.log
+```
+
+**Command-Line Flags**:
+- `--multisig`: Enable multi-signature mode
+- `--workflow=interactive|offline`: Choose workflow (default: interactive)
+- `--threshold=N`: Require N signatures (default: all)
+- `--signers=Alice,Bob,Charlie`: Label signers
+- `--export-only`: Freeze and export (offline phase 1)
+- `--signatures=s1.json,s2.json`: Execute with signatures (offline phase 3)
+- `--keyfiles=k1.enc,k2.enc`: Use encrypted key files
+- `--multisig-help`: Display multi-sig help
+
+### Audit Logging
+
+All multi-sig operations logged to `logs/audit.log`:
+
+```json
+{
+  "timestamp": "2025-12-19T10:30:00.000Z",
+  "transactionId": "0.0.98765@1701234567.890",
+  "operation": "setPlatformFee",
+  "contract": "0.0.123456",
+  "parameters": {"percentage": 12},
+  "signers": [
+    {"account": "0.0.111111", "algorithm": "Ed25519"},
+    {"account": "0.0.222222", "algorithm": "ECDSA"}
+  ],
+  "threshold": "2 of 3",
+  "workflow": "interactive",
+  "status": "success"
+}
+```
+
+### Security Considerations
+
+**Best Practices**:
+- ✅ Use threshold signatures (M-of-N) for critical operations
+- ✅ Use offline workflow for high-value transactions
+- ✅ Store keys in encrypted files or prompt for them
+- ✅ Never commit private keys or .enc files to version control
+- ✅ Use different keys for testnet vs mainnet
+- ✅ Review audit logs regularly
+- ✅ Rotate keys periodically
+
+**Security Features**:
+- 110-second timeout (not 119s) for network latency buffer
+- Cryptographic signature verification (Ed25519, ECDSA secp256k1)
+- Transaction freezing prevents tampering
+- Audit logging for accountability
+- AES-256-GCM encryption for key storage
+- PBKDF2 key derivation (100k iterations)
+
+### Testing
+
+**Test Files**:
+- `test/keyProviders.test.js`: 28 tests for key provider functionality
+- `test/multiKeyType.test.js`: 35 tests for mixed key types
+- `test/workflows.test.js`: Workflow integration tests
+
+**Run Tests**:
+```bash
+npm test -- test/keyProviders.test.js
+npm test -- test/multiKeyType.test.js
+```
+
+### Documentation
+
+**For Users**: `docs/MULTISIG_USER_GUIDE.md`
+- Quick start examples
+- Workflow explanations
+- Troubleshooting guide
+
+**For Developers**: `docs/MULTISIG_DEVELOPER_GUIDE.md`
+- Architecture overview
+- API reference
+- Integration patterns
+- Extension points
+
+**For Security**: `docs/MULTISIG_SECURITY.md`
+- Security model
+- Threat analysis
+- Best practices
+- Incident response
+
+**For Integration**: `docs/MULTISIG_ADMIN_INTEGRATION.md`
+- Step-by-step integration guide
+- Complete examples
+- Testing checklist
+
 ## Common Pitfalls
 
 1. **Allowances**: Users must approve LazyLottoStorage address (NOT LazyLotto address) for token spending

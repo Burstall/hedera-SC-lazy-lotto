@@ -1,3 +1,23 @@
+/**
+ * LazyTradeLotto - Transfer HBAR from Contract (Admin)
+ *
+ * Withdraws HBAR from the LazyTradeLotto contract to a specified receiver.
+ * Only the contract owner can perform this operation.
+ *
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyTradeLotto/admin/transferHbarFromLotto.js 0.0.LTL <receiver> <amount>
+ *   Multi-sig:  node scripts/interactions/LazyTradeLotto/admin/transferHbarFromLotto.js 0.0.LTL <receiver> <amount> --multisig
+ *   Help:       node scripts/interactions/LazyTradeLotto/admin/transferHbarFromLotto.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
+ */
+
 const {
 	Client,
 	AccountId,
@@ -10,9 +30,13 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
 const { getArgFlag } = require('../../../../utils/nodeHelpers');
 const { checkMirrorHbarBalance } = require('../../../../utils/hederaMirrorHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Get operator from .env file
 let operatorKey;
@@ -31,6 +55,11 @@ const env = process.env.ENVIRONMENT ?? null;
 let client;
 
 const main = async () => {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	// configure the client object
 	if (
 		operatorKey === undefined ||
@@ -46,38 +75,43 @@ const main = async () => {
 
 	console.log('\n-Using ENVIRONMENT:', env);
 
-	if (env.toUpperCase() == 'TEST') {
+	// Normalize environment name
+	const envUpper = env.toUpperCase();
+
+	if (envUpper === 'TEST' || envUpper === 'TESTNET') {
 		client = Client.forTestnet();
 		console.log('Using *TESTNET*');
 	}
-	else if (env.toUpperCase() == 'MAIN') {
+	else if (envUpper === 'MAIN' || envUpper === 'MAINNET') {
 		client = Client.forMainnet();
 		console.log('Using *MAINNET*');
 	}
-	else if (env.toUpperCase() == 'PREVIEW') {
+	else if (envUpper === 'PREVIEW' || envUpper === 'PREVIEWNET') {
 		client = Client.forPreviewnet();
 		console.log('Using *PREVIEWNET*');
 	}
-	else if (env.toUpperCase() == 'LOCAL') {
+	else if (envUpper === 'LOCAL') {
 		const node = { '127.0.0.1:50211': new AccountId(3) };
 		client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
 		console.log('Using *LOCAL*');
 	}
 	else {
 		console.log(
-			'ERROR: Must specify either MAIN or TEST or PREVIEW or LOCAL as environment in .env file',
+			'ERROR: Must specify either MAIN/MAINNET, TEST/TESTNET, PREVIEW/PREVIEWNET, or LOCAL as environment in .env file',
 		);
 		return;
 	}
 
 	client.setOperator(operatorId, operatorKey);
 
-	const args = process.argv.slice(2);
+	const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'));
 	if (args.length !== 3 || getArgFlag('h')) {
 		console.log('Usage: transferHbarFromLotto.js 0.0.LTL <receiver> <amount>');
 		console.log('       LTL is the LazyTradeLotto contract address');
 		console.log('       <receiver> is the Hedera account ID to receive the HBAR');
 		console.log('       <amount> is the amount of HBAR to transfer');
+		console.log('\nMulti-sig: Add --multisig flag for multi-signature mode');
+		console.log('           Use --multisig-help for multi-sig options');
 		return;
 	}
 
@@ -107,6 +141,10 @@ const main = async () => {
 
 	console.log('\n-Using Operator:', operatorId.toString());
 	console.log('\n-Using Contract:', contractId.toString());
+
+	// Display multi-sig status if enabled
+	displayMultiSigBanner();
+
 	console.log('\n-Receiver:', receiverAccount.toString());
 	console.log('\n-Amount to transfer:', amount, 'HBAR');
 
@@ -142,23 +180,25 @@ const main = async () => {
 	// Convert amount to tinybars
 	const amountInTinybars = new Hbar(amount, HbarUnit.Hbar).toTinybars().toNumber();
 
-	// Transfer HBAR
-	const result = await contractExecuteFunction(
+	// Transfer HBAR using multi-sig aware function
+	const result = await executeContractFunction({
 		contractId,
-		ltlIface,
+		iface: ltlIface,
 		client,
-		400_000,
-		'transferHbar',
-		[receiverAccount.toSolidityAddress(), amountInTinybars],
-	);
+		functionName: 'transferHbar',
+		params: [receiverAccount.toSolidityAddress(), amountInTinybars],
+		gas: 400_000,
+		payableAmount: 0,
+	});
 
-	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error transferring HBAR:', result);
+	if (!result.success) {
+		console.log('Error transferring HBAR:', result.error);
 		return;
 	}
 
 	console.log('\nHBAR transferred successfully!');
-	console.log('Transaction ID:', result[2]?.transactionId?.toString());
+	const txId = result.receipt?.transactionId?.toString() || result.record?.transactionId?.toString() || 'N/A';
+	console.log('Transaction ID:', txId);
 };
 
 

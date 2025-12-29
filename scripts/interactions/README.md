@@ -212,6 +212,58 @@ require('../../../../utils/solidityHelpers')
 
 ---
 
+## 🔐 Multi-Signature Support
+
+All admin scripts in **LazyLotto** and **LazyTradeLotto** support multi-signature transactions for enhanced security.
+
+### Quick Start
+
+```bash
+# Single-signature (default behavior)
+node LazyLotto/admin/setPlatformFee.js 10
+
+# Multi-signature (2-of-3 interactive)
+node LazyLotto/admin/setPlatformFee.js 10 --multisig --threshold=2
+
+# LazyTradeLotto with multi-sig
+node LazyTradeLotto/admin/boostJackpot.js 0.0.123456 1000 --multisig --threshold=2
+```
+
+### Command-Line Flags
+
+| Flag | Description |
+|------|-------------|
+| `--multisig` | Enable multi-signature mode |
+| `--multisig-help` | Display multi-sig help |
+| `--threshold=N` | Require N signatures (default: all) |
+| `--signers=A,B,C` | Label signers for clarity |
+| `--workflow=interactive\|offline` | Choose workflow (default: interactive) |
+| `--export-only` | Freeze and export (offline phase 1) |
+| `--signatures=s1.json,s2.json` | Execute with collected signatures (offline phase 3) |
+| `--keyfiles=k1.enc,k2.enc` | Use encrypted key files |
+
+### Supported Scripts
+
+**LazyLotto (9 admin scripts):**
+- `createPool.js`, `closePool.js`, `pauseContract.js`, `unpausePool.js`
+- `setPlatformFee.js`, `setBonuses.js`, `setCreationFees.js`
+- `addGlobalPrizeManager.js`, `withdrawTokens.js`
+
+**LazyTradeLotto (8 admin scripts):**
+- `boostJackpot.js`, `pauseLottoContract.js`, `unpauseLottoContract.js`
+- `updateLottoBurnPercentage.js`, `updateLottoJackpotIncrement.js`
+- `updateMaxJackpotThreshold.js`, `updateLottoSystemWallet.js`
+- `transferHbarFromLotto.js`
+
+### Documentation
+
+For complete multi-sig documentation, see:
+- **User Guide**: `docs/MULTISIG_USER_GUIDE.md`
+- **Security Guide**: `docs/MULTISIG_SECURITY.md`
+- **Developer Guide**: `docs/MULTISIG_DEVELOPER_GUIDE.md`
+
+---
+
 ## 📚 Contract ABIs
 
 ABIs are located in `abi/` folder at project root:

@@ -5,7 +5,18 @@
  * Useful for testing, promotions, or creating example tickets.
  * Requires ADMIN role.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/buyAndRedeemEntry.js
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/buyAndRedeemEntry.js
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/buyAndRedeemEntry.js --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/buyAndRedeemEntry.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -20,6 +31,12 @@ const fs = require('fs');
 const readline = require('readline');
 const { associateTokensToAccount } = require('../../../../utils/hederaHelpers');
 require('dotenv').config();
+
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -48,6 +65,11 @@ function formatWinRate(thousandthsOfBps) {
 }
 
 async function buyAndRedeemEntry() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
@@ -77,6 +99,9 @@ async function buyAndRedeemEntry() {
 		console.log(`📄 Contract: ${contractId.toString()}`);
 		console.log(`👤 Admin: ${operatorId.toString()}\n`);
 
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
+
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
@@ -84,7 +109,7 @@ async function buyAndRedeemEntry() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Get total pools
@@ -220,24 +245,27 @@ async function buyAndRedeemEntry() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, , record] = await contractExecuteFunction(
-			contractId,
-			lazyLottoIface,
-			client,
-			gasLimit,
-			'adminBuyAndRedeemEntry',
-			[poolId, ticketCount],
-		);
+		const executionResult = await executeContractFunction({
+			contractId: contractId,
+			iface: lazyLottoIface,
+			client: client,
+			functionName: 'adminBuyAndRedeemEntry',
+			params: [poolId, ticketCount],
+			gas: gasLimit,
+			payableAmount: 0,
+		});
 
-		if (receipt.status.toString() !== 'SUCCESS') {
-			console.error('\n❌ Transaction failed');
-			process.exit(1);
+		if (!executionResult.success) {
+			throw new Error(executionResult.error || 'Transaction execution failed');
 		}
+
+		const { receipt, record } = executionResult;
 
 		console.log('\n✅ NFT tickets created successfully!');
 		console.log(`🎫 ${ticketCount} tickets minted to ${operatorId.toString()}`);
 		console.log(`   Pool: ${poolId}`);
-		console.log(`📋 Transaction: ${record.transactionId.toString()}`);
+		const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+		console.log(`📋 Transaction: ${txId}`);
 
 		// Try to decode serial numbers from record
 		try {

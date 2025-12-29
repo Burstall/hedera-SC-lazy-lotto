@@ -1,3 +1,23 @@
+/**
+ * Link LazyLotto and LazyLottoPoolManager
+ *
+ * Sets up bidirectional linkage between the two contracts.
+ * Only the contract owner can perform these operations.
+ *
+ * Usage:
+ *   Single-sig: node scripts/deployments/LazyLotto/linkPoolManager.js
+ *   Multi-sig:  node scripts/deployments/LazyLotto/linkPoolManager.js --multisig
+ *   Help:       node scripts/deployments/LazyLotto/linkPoolManager.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
+ */
+
 const {
 	Client,
 	AccountId,
@@ -7,9 +27,13 @@ const {
 const fs = require('fs');
 const readline = require('readline');
 const { ethers } = require('ethers');
-const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
-const { sleep } = require('../../utils/nodeHelpers');
-const { parseTransactionRecord } = require('../../utils/transactionHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../../utils/solidityHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../utils/scriptHelpers');
+const { sleep } = require('../../../utils/nodeHelpers');
 
 require('dotenv').config();
 
@@ -31,6 +55,11 @@ function prompt(question) {
 }
 
 async function main() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	console.log('\n=== Linking LazyLotto and LazyLottoPoolManager ===\n');
 	console.log('Environment:', env.toUpperCase());
 
@@ -39,22 +68,31 @@ async function main() {
 	const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 
 	let client;
-	if (env.toUpperCase() == 'TEST' || env.toUpperCase() == 'TESTNET') {
+	const envUpper = env.toUpperCase();
+
+	if (envUpper === 'TEST' || envUpper === 'TESTNET') {
 		client = Client.forTestnet();
 	}
-	else if (env.toUpperCase() == 'MAIN' || env.toUpperCase() == 'MAINNET') {
+	else if (envUpper === 'MAIN' || envUpper === 'MAINNET') {
 		client = Client.forMainnet();
 	}
-	else if (env.toUpperCase() == 'PREVIEW' || env.toUpperCase() == 'PREVIEWNET') {
+	else if (envUpper === 'PREVIEW' || envUpper === 'PREVIEWNET') {
 		client = Client.forPreviewnet();
 	}
-	else if (env.toUpperCase() == 'LOCAL') {
+	else if (envUpper === 'LOCAL') {
 		const node = { '127.0.0.1:50211': new AccountId(3) };
 		client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
+	}
+	else {
+		console.log('ERROR: Must specify either MAIN/MAINNET, TEST/TESTNET, PREVIEW/PREVIEWNET, or LOCAL as environment');
+		return;
 	}
 
 	client.setOperator(operatorId, operatorKey);
 	console.log('Using Operator:', operatorId.toString());
+
+	// Display multi-sig status if enabled
+	displayMultiSigBanner();
 
 	// Verify required environment variables
 	if (!process.env.LAZY_LOTTO_CONTRACT_ID || !process.env.LAZY_LOTTO_POOL_MANAGER_ID) {
@@ -100,26 +138,23 @@ async function main() {
 	);
 
 	if (currentLazyLotto === '0x0000000000000000000000000000000000000000') {
-		const setLazyLottoResult = await contractExecuteFunction(
-			poolManagerId,
-			poolManagerIface,
+		const setLazyLottoResult = await executeContractFunction({
+			contractId: poolManagerId,
+			iface: poolManagerIface,
 			client,
-			150_000,
-			'setLazyLotto',
-			[lazyLottoId.toSolidityAddress()],
-		);
+			functionName: 'setLazyLotto',
+			params: [lazyLottoId.toSolidityAddress()],
+			gas: 150_000,
+			payableAmount: 0,
+		});
 
-		if (setLazyLottoResult[0]?.status?.toString() !== 'SUCCESS') {
-			console.error('❌ Failed to set LazyLotto in PoolManager');
-			if (setLazyLottoResult[2]) {
-				console.log(parseTransactionRecord(setLazyLottoResult[2]));
-			}
+		if (!setLazyLottoResult.success) {
+			console.error('❌ Failed to set LazyLotto in PoolManager:', setLazyLottoResult.error);
 			throw new Error('Failed to set LazyLotto in PoolManager');
 		}
 		console.log('✅ LazyLotto address set in PoolManager');
-		if (setLazyLottoResult[2]) {
-			console.log(parseTransactionRecord(setLazyLottoResult[2]));
-		}
+		const txId1 = setLazyLottoResult.receipt?.transactionId?.toString() || 'N/A';
+		console.log('Transaction ID:', txId1);
 	}
 	else {
 		console.log('ℹ️  LazyLotto already set in PoolManager');
@@ -140,26 +175,23 @@ async function main() {
 	);
 
 	if (currentPoolManager === '0x0000000000000000000000000000000000000000') {
-		const setPoolManagerResult = await contractExecuteFunction(
-			lazyLottoId,
-			lazyLottoIface,
+		const setPoolManagerResult = await executeContractFunction({
+			contractId: lazyLottoId,
+			iface: lazyLottoIface,
 			client,
-			150_000,
-			'setPoolManager',
-			[poolManagerId.toSolidityAddress()],
-		);
+			functionName: 'setPoolManager',
+			params: [poolManagerId.toSolidityAddress()],
+			gas: 150_000,
+			payableAmount: 0,
+		});
 
-		if (setPoolManagerResult[0]?.status?.toString() !== 'SUCCESS') {
-			console.error('❌ Failed to set PoolManager in LazyLotto');
-			if (setPoolManagerResult[2]) {
-				console.log(parseTransactionRecord(setPoolManagerResult[2]));
-			}
+		if (!setPoolManagerResult.success) {
+			console.error('❌ Failed to set PoolManager in LazyLotto:', setPoolManagerResult.error);
 			throw new Error('Failed to set PoolManager in LazyLotto');
 		}
 		console.log('✅ PoolManager address set in LazyLotto');
-		if (setPoolManagerResult[2]) {
-			console.log(parseTransactionRecord(setPoolManagerResult[2]));
-		}
+		const txId2 = setPoolManagerResult.receipt?.transactionId?.toString() || 'N/A';
+		console.log('Transaction ID:', txId2);
 	}
 	else {
 		console.log('ℹ️  PoolManager already set in LazyLotto');

@@ -7,7 +7,18 @@
  *
  * Requires ADMIN or PRIZE_MANAGER role.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/addPrizePackage.js [poolId]
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/addPrizePackage.js [poolId]
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/addPrizePackage.js [poolId] --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/addPrizePackage.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -28,6 +39,11 @@ const { getTokenDetails, checkMirrorBalance, checkMirrorHbarBalance, getSerialsO
 const { homebrewPopulateAccountNum, EntityType } = require('../../../../utils/hederaMirrorHelpers');
 const { setFTAllowance, setNFTAllowanceAll } = require('../../../../utils/hederaHelpers');
 const { sleep } = require('../../../../utils/nodeHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -70,11 +86,21 @@ function formatHbar(tinybars) {
 }
 
 async function addPrizePackage() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
 		// Get pool ID
 		let poolIdStr = process.argv[2];
+
+		// Filter out flag arguments
+		if (poolIdStr && poolIdStr.startsWith('--')) {
+			poolIdStr = null;
+		}
 
 		if (!poolIdStr) {
 			poolIdStr = await prompt('Enter pool ID: ');
@@ -111,6 +137,9 @@ async function addPrizePackage() {
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
 		console.log(`📄 Contract: ${contractId.toString()}`);
 		console.log(`🎰 Pool: #${poolId}\n`);
+
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
 
 		// Load contract ABI
 		const contractJson = JSON.parse(
@@ -211,7 +240,6 @@ async function addPrizePackage() {
 }
 
 async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId, lazyGasStationId, storageId) {
-	const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
 	const { estimateGas } = require('../../../../utils/gasHelpers');
 
 	console.log('\n═══════════════════════════════════════════════════════════');
@@ -502,27 +530,28 @@ async function addSinglePrizePackage(client, lazyLottoIface, poolId, lazyTokenId
 
 	const gasLimit = Math.floor(gasEstimate * 1.2);
 
-	const [receipt, , record] = await contractExecuteFunction(
-		contractId,
-		lazyLottoIface,
-		client,
-		gasLimit,
-		'addPrizePackage',
-		[poolId, ftToken, ftAmount, nftTokens, nftSerials],
-		new Hbar(payableAmount, HbarUnit.Tinybar),
-	);
+	const executionResult = await executeContractFunction({
+		contractId: contractId,
+		iface: lazyLottoIface,
+		client: client,
+		functionName: 'addPrizePackage',
+		params: [poolId, ftToken, ftAmount, nftTokens, nftSerials],
+		gas: gasLimit,
+		payableAmount: new Hbar(payableAmount, HbarUnit.Tinybar).toTinybars().toString(),
+	});
 
-	if (receipt.status.toString() !== 'SUCCESS') {
-		console.error('\n❌ Transaction failed');
-		process.exit(1);
+	if (!executionResult.success) {
+		throw new Error(executionResult.error || 'Transaction execution failed');
 	}
 
+	const { receipt, record } = executionResult;
+
 	console.log('\n✅ Prize package added successfully!');
-	console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+	const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+	console.log(`📋 Transaction: ${txId}\n`);
 }
 
 async function addMultipleFungiblePrizes(client, lazyLottoIface, poolId, lazyTokenId, lazyGasStationId, storageId) {
-	const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
 	const { estimateGas } = require('../../../../utils/gasHelpers');
 
 	console.log('\n═══════════════════════════════════════════════════════════');
@@ -681,23 +710,25 @@ async function addMultipleFungiblePrizes(client, lazyLottoIface, poolId, lazyTok
 
 	const gasLimit = Math.floor(gasEstimate * 1.2);
 
-	const [receipt, , record] = await contractExecuteFunction(
-		contractId,
-		lazyLottoIface,
-		client,
-		gasLimit,
-		'addMultipleFungiblePrizes',
-		[poolId, token, amounts],
-		new Hbar(payableAmount, HbarUnit.Tinybar),
-	);
+	const executionResult = await executeContractFunction({
+		contractId: contractId,
+		iface: lazyLottoIface,
+		client: client,
+		functionName: 'addMultipleFungiblePrizes',
+		params: [poolId, token, amounts],
+		gas: gasLimit,
+		payableAmount: new Hbar(payableAmount, HbarUnit.Tinybar).toTinybars().toString(),
+	});
 
-	if (receipt.status.toString() !== 'SUCCESS') {
-		console.error('\n❌ Transaction failed');
-		process.exit(1);
+	if (!executionResult.success) {
+		throw new Error(executionResult.error || 'Transaction execution failed');
 	}
 
+	const { receipt, record } = executionResult;
+
 	console.log('\n✅ Prizes added successfully!');
-	console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+	const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+	console.log(`📋 Transaction: ${txId}\n`);
 }
 
 // Run the script

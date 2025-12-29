@@ -61,16 +61,30 @@ Information retrieval - no transactions, no gas costs
 ### Admin Scripts (`admin/`)
 Configuration and management - requires contract owner
 
-| Script | Description | Usage | Status |
-|--------|-------------|-------|--------|
-| `boostJackpot.js` | Add funds to jackpot pool | `node admin/boostJackpot.js <contractId> <amount>` | ✅ Complete |
-| `updateLottoBurnPercentage.js` | Change burn rate | `node admin/updateLottoBurnPercentage.js <contractId> <percentage>` | ✅ Migrated |
-| `updateLottoJackpotIncrement.js` | Set per-roll increment | `node admin/updateLottoJackpotIncrement.js <contractId> <amount>` | ✅ Migrated |
-| `updateMaxJackpotThreshold.js` | Set jackpot cap | `node admin/updateMaxJackpotThreshold.js <contractId> <amount>` | ✅ Migrated |
-| `updateLottoSystemWallet.js` | Change signature wallet | `node admin/updateLottoSystemWallet.js <contractId> <newWallet>` | ✅ Migrated |
-| `pauseLottoContract.js` | Emergency pause | `node admin/pauseLottoContract.js <contractId>` | ✅ Migrated |
-| `unpauseLottoContract.js` | Resume operations | `node admin/unpauseLottoContract.js <contractId>` | ✅ Migrated |
-| `transferHbarFromLotto.js` | Emergency withdrawal | `node admin/transferHbarFromLotto.js <contractId> <receiver> <amount>` | ✅ Migrated |
+All admin scripts support multi-signature mode with `--multisig` flag.
+
+| Script | Description | Usage | Multi-Sig |
+|--------|-------------|-------|-----------|
+| `boostJackpot.js` | Add funds to jackpot pool | `node admin/boostJackpot.js <contractId> <amount>` | ✅ |
+| `updateLottoBurnPercentage.js` | Change burn rate | `node admin/updateLottoBurnPercentage.js <contractId> <percentage>` | ✅ |
+| `updateLottoJackpotIncrement.js` | Set per-roll increment | `node admin/updateLottoJackpotIncrement.js <contractId> <amount>` | ✅ |
+| `updateMaxJackpotThreshold.js` | Set jackpot cap | `node admin/updateMaxJackpotThreshold.js <contractId> <amount>` | ✅ |
+| `updateLottoSystemWallet.js` | Change signature wallet | `node admin/updateLottoSystemWallet.js <contractId> <newWallet>` | ✅ |
+| `pauseLottoContract.js` | Emergency pause | `node admin/pauseLottoContract.js <contractId>` | ✅ |
+| `unpauseLottoContract.js` | Resume operations | `node admin/unpauseLottoContract.js <contractId>` | ✅ |
+| `transferHbarFromLotto.js` | Emergency withdrawal | `node admin/transferHbarFromLotto.js <contractId> <receiver> <amount>` | ✅ |
+
+**Multi-sig examples:**
+```bash
+# Single-sig (default)
+node admin/boostJackpot.js 0.0.123456 1000
+
+# Multi-sig with 2-of-3 threshold
+node admin/boostJackpot.js 0.0.123456 1000 --multisig --threshold=2
+
+# Multi-sig help
+node admin/boostJackpot.js --multisig-help
+```
 
 ### Testing Scripts (`testing/`)
 TestNet development tools - requires systemWallet private key
@@ -334,6 +348,48 @@ node testing/rollLottoTest.js 0.0.123456 \\
 
 ---
 
+## 🔐 Multi-Signature Support
+
+All 8 admin scripts support multi-signature transactions for enhanced security.
+
+### Quick Start
+
+```bash
+# Enable multi-sig with interactive workflow (2-of-3 threshold)
+node admin/boostJackpot.js 0.0.123456 1000 --multisig --threshold=2
+
+# View multi-sig help
+node admin/boostJackpot.js --multisig-help
+
+# Offline workflow (air-gapped signing)
+node admin/updateLottoSystemWallet.js 0.0.123456 0.0.789012 --multisig --export-only
+# ... signers sign offline ...
+node admin/updateLottoSystemWallet.js 0.0.123456 0.0.789012 \
+  --multisig --offline --signatures=sig1.json,sig2.json
+```
+
+### Recommended Multi-Sig Configurations
+
+| Operation | Risk | Recommended Setup |
+|-----------|------|-------------------|
+| `transferHbarFromLotto` | Critical | 2-of-3 offline |
+| `updateLottoSystemWallet` | Critical | 2-of-3 offline |
+| `pauseLottoContract` | High | 2-of-2 interactive |
+| `unpauseLottoContract` | High | 2-of-2 interactive |
+| `boostJackpot` | Medium | 2-of-3 interactive |
+| `updateMaxJackpotThreshold` | Medium | 2-of-3 interactive |
+| `updateLottoJackpotIncrement` | Medium | 2-of-3 interactive |
+| `updateLottoBurnPercentage` | Medium | 2-of-3 interactive |
+
+### Documentation
+
+For complete multi-sig documentation, see:
+- **User Guide**: `docs/MULTISIG_USER_GUIDE.md`
+- **Developer Guide**: `docs/MULTISIG_DEVELOPER_GUIDE.md`
+- **Security Guide**: `docs/MULTISIG_SECURITY.md`
+
+---
+
 ## 🔒 Security Features
 
 ### Signature Validation
@@ -418,18 +474,51 @@ All query scripts use mirror node for:
 
 ## 📝 Script Templates
 
-### Creating New Admin Scripts
+### Creating New Admin Scripts (with Multi-Sig Support)
 ```javascript
-const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+const {
+    executeContractFunction,
+    checkMultiSigHelp,
+    displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 const readlineSync = require('readline-sync');
 
-// 1. Load ABI
-// 2. Parse arguments
-// 3. Get current state
-// 4. Display changes
-// 5. Confirm with user
-// 6. Execute transaction
-// 7. Display result
+const main = async () => {
+    // 1. Check for multi-sig help request
+    if (checkMultiSigHelp()) {
+        process.exit(0);
+    }
+
+    // 2. Load ABI and parse arguments
+    // 3. Initialize client
+    // 4. Display multi-sig banner
+    displayMultiSigBanner();
+
+    // 5. Get current state via mirror node
+    // 6. Display changes and confirm with user
+
+    // 7. Execute with multi-sig support
+    const result = await executeContractFunction({
+        contractId,
+        iface: ltlIface,
+        client,
+        functionName: 'myFunction',
+        params: [param1, param2],
+        gas: 300_000,
+        payableAmount: 0,
+    });
+
+    if (!result.success) {
+        console.log('Error:', result.error);
+        return;
+    }
+
+    // 8. Display result
+    const txId = result.receipt?.transactionId?.toString() ||
+                 result.record?.transactionId?.toString() || 'N/A';
+    console.log('Transaction ID:', txId);
+};
 ```
 
 ### Creating New Query Scripts
@@ -440,6 +529,17 @@ const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers
 // 2. Parse arguments
 // 3. Query contract via mirror node
 // 4. Format and display results
+```
+
+### Multi-Sig Command-Line Options
+```bash
+--multisig                      # Enable multi-signature mode
+--multisig-help                 # Display multi-sig help
+--workflow=interactive|offline  # Choose workflow (default: interactive)
+--export-only                   # Freeze and export (offline phase 1)
+--signatures=f1.json,f2.json    # Execute with signatures (offline phase 3)
+--threshold=N                   # Require N signatures
+--signers=Alice,Bob,Charlie     # Label signers for clarity
 ```
 
 ---
