@@ -1,3 +1,26 @@
+/**
+ * LazyTradeLotto - Update System Wallet (Admin)
+ *
+ * Updates the system wallet address used to sign lotto roll transactions.
+ * Only the contract owner can perform this operation.
+ *
+ * WARNING: This is a critical operation! Make sure you have the private key
+ * for the new wallet address, otherwise you won't be able to sign any lotto rolls!
+ *
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyTradeLotto/admin/updateLottoSystemWallet.js 0.0.LTL 0.0.WALLET
+ *   Multi-sig:  node scripts/interactions/LazyTradeLotto/admin/updateLottoSystemWallet.js 0.0.LTL 0.0.WALLET --multisig
+ *   Help:       node scripts/interactions/LazyTradeLotto/admin/updateLottoSystemWallet.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
+ */
+
 const {
 	Client,
 	AccountId,
@@ -8,8 +31,13 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 const { getArgFlag } = require('../../../../utils/nodeHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Get operator from .env file
 let operatorKey;
@@ -28,6 +56,11 @@ const env = process.env.ENVIRONMENT ?? null;
 let client;
 
 const main = async () => {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	// configure the client object
 	if (
 		operatorKey === undefined ||
@@ -43,37 +76,42 @@ const main = async () => {
 
 	console.log('\n-Using ENVIRONMENT:', env);
 
-	if (env.toUpperCase() == 'TEST') {
+	// Normalize environment name
+	const envUpper = env.toUpperCase();
+
+	if (envUpper === 'TEST' || envUpper === 'TESTNET') {
 		client = Client.forTestnet();
 		console.log('Using *TESTNET*');
 	}
-	else if (env.toUpperCase() == 'MAIN') {
+	else if (envUpper === 'MAIN' || envUpper === 'MAINNET') {
 		client = Client.forMainnet();
 		console.log('Using *MAINNET*');
 	}
-	else if (env.toUpperCase() == 'PREVIEW') {
+	else if (envUpper === 'PREVIEW' || envUpper === 'PREVIEWNET') {
 		client = Client.forPreviewnet();
 		console.log('Using *PREVIEWNET*');
 	}
-	else if (env.toUpperCase() == 'LOCAL') {
+	else if (envUpper === 'LOCAL') {
 		const node = { '127.0.0.1:50211': new AccountId(3) };
 		client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
 		console.log('Using *LOCAL*');
 	}
 	else {
 		console.log(
-			'ERROR: Must specify either MAIN or TEST or PREVIEW or LOCAL as environment in .env file',
+			'ERROR: Must specify either MAIN/MAINNET, TEST/TESTNET, PREVIEW/PREVIEWNET, or LOCAL as environment in .env file',
 		);
 		return;
 	}
 
 	client.setOperator(operatorId, operatorKey);
 
-	const args = process.argv.slice(2);
+	const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'));
 	if (args.length !== 2 || getArgFlag('h')) {
 		console.log('Usage: updateLottoSystemWallet.js 0.0.LTL 0.0.WALLET');
 		console.log('       LTL is the LazyTradeLotto contract address');
 		console.log('       WALLET is the Hedera account ID or EVM address of the new system wallet');
+		console.log('\nMulti-sig: Add --multisig flag for multi-signature mode');
+		console.log('           Use --multisig-help for multi-sig options');
 		return;
 	}
 
@@ -109,6 +147,9 @@ const main = async () => {
 	console.log('\n-Using Operator:', operatorId.toString());
 	console.log('\n-Using Contract:', contractId.toString());
 
+	// Display multi-sig status if enabled
+	displayMultiSigBanner();
+
 	// Get current system wallet
 	const systemWalletCommand = ltlIface.encodeFunctionData('systemWallet');
 	const systemWalletResponse = await readOnlyEVMFromMirrorNode(
@@ -139,23 +180,25 @@ const main = async () => {
 		return;
 	}
 
-	// Update system wallet
-	const result = await contractExecuteFunction(
+	// Update system wallet using multi-sig aware function
+	const result = await executeContractFunction({
 		contractId,
-		ltlIface,
+		iface: ltlIface,
 		client,
-		300_000,
-		'updateSystemWallet',
-		[newWalletAddress],
-	);
+		functionName: 'updateSystemWallet',
+		params: [newWalletAddress],
+		gas: 300_000,
+		payableAmount: 0,
+	});
 
-	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error updating system wallet:', result);
+	if (!result.success) {
+		console.log('Error updating system wallet:', result.error);
 		return;
 	}
 
 	console.log('\nSystem wallet updated successfully!');
-	console.log('Transaction ID:', result[2]?.transactionId?.toString());
+	const txId = result.receipt?.transactionId?.toString() || result.record?.transactionId?.toString() || 'N/A';
+	console.log('Transaction ID:', txId);
 };
 
 

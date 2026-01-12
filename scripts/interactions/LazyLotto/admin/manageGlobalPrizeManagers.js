@@ -6,7 +6,19 @@
  * - Add a new global prize manager
  * - Remove an existing global prize manager
  * - Check if an account is a global prize manager
- * Usage: node scripts/interactions/LazyLotto/admin/manageGlobalPrizeManagers.js
+ *
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/manageGlobalPrizeManagers.js
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/manageGlobalPrizeManagers.js --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/manageGlobalPrizeManagers.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -14,7 +26,6 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
-	ContractExecuteTransaction,
 } = require('@hashgraph/sdk');
 const { ethers } = require('ethers');
 const fs = require('fs');
@@ -22,6 +33,11 @@ const readline = require('readline');
 require('dotenv').config();
 
 const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -52,6 +68,11 @@ async function convertToEvmAddress(accountId) {
 }
 
 async function manageGlobalPrizeManagers() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
@@ -80,6 +101,9 @@ async function manageGlobalPrizeManagers() {
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
 		console.log(`📄 Pool Manager: ${poolManagerId.toString()}`);
 		console.log(`👤 Admin: ${operatorId.toString()}\n`);
+
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
 
 		// Load interface
 		const poolManagerJson = JSON.parse(
@@ -157,23 +181,26 @@ async function manageGlobalPrizeManagers() {
 
 			console.log('\n⏳ Adding global prize manager...\n');
 
-			const encodedFunction = poolManagerIface.encodeFunctionData('addGlobalPrizeManager', [evmAddress]);
+			const executionResult = await executeContractFunction({
+				contractId: poolManagerId,
+				iface: poolManagerIface,
+				client: client,
+				functionName: 'addGlobalPrizeManager',
+				params: [evmAddress],
+				gas: 300000,
+				payableAmount: 0,
+			});
 
-			const tx = await new ContractExecuteTransaction()
-				.setContractId(poolManagerId)
-				.setGas(300000)
-				.setFunction('addGlobalPrizeManager', Buffer.from(encodedFunction.slice(2), 'hex'))
-				.execute(client);
-
-			const receipt = await tx.getReceipt(client);
-
-			if (receipt.status.toString() !== 'SUCCESS') {
-				throw new Error(`Transaction failed with status: ${receipt.status.toString()}`);
+			if (!executionResult.success) {
+				throw new Error(executionResult.error || 'Transaction execution failed');
 			}
+
+			const { receipt, record } = executionResult;
 
 			console.log('✅ Global prize manager added successfully!\n');
 			console.log(`   Account: ${accountId.toString()}`);
-			console.log(`   Transaction: ${tx.transactionId.toString()}`);
+			const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+			console.log(`   Transaction: ${txId}`);
 			console.log(`   Status: ${receipt.status.toString()}\n`);
 		}
 		else if (choice === '3') {
@@ -209,23 +236,26 @@ async function manageGlobalPrizeManagers() {
 
 			console.log('\n⏳ Removing global prize manager...\n');
 
-			const encodedFunction = poolManagerIface.encodeFunctionData('removeGlobalPrizeManager', [evmAddress]);
+			const executionResult = await executeContractFunction({
+				contractId: poolManagerId,
+				iface: poolManagerIface,
+				client: client,
+				functionName: 'removeGlobalPrizeManager',
+				params: [evmAddress],
+				gas: 300000,
+				payableAmount: 0,
+			});
 
-			const tx = await new ContractExecuteTransaction()
-				.setContractId(poolManagerId)
-				.setGas(300000)
-				.setFunction('removeGlobalPrizeManager', Buffer.from(encodedFunction.slice(2), 'hex'))
-				.execute(client);
-
-			const receipt = await tx.getReceipt(client);
-
-			if (receipt.status.toString() !== 'SUCCESS') {
-				throw new Error(`Transaction failed with status: ${receipt.status.toString()}`);
+			if (!executionResult.success) {
+				throw new Error(executionResult.error || 'Transaction execution failed');
 			}
+
+			const { receipt, record } = executionResult;
 
 			console.log('✅ Global prize manager removed successfully!\n');
 			console.log(`   Account: ${accountId.toString()}`);
-			console.log(`   Transaction: ${tx.transactionId.toString()}`);
+			const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+			console.log(`   Transaction: ${txId}`);
 			console.log(`   Status: ${receipt.status.toString()}\n`);
 		}
 		else if (choice === '4') {

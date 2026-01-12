@@ -4,7 +4,18 @@
  * Add or remove admin and prize manager roles.
  * Requires ADMIN role to execute.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/manageRoles.js
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/manageRoles.js
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/manageRoles.js --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/manageRoles.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -17,6 +28,12 @@ const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -40,6 +57,11 @@ function prompt(question) {
 }
 
 async function manageRoles() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
@@ -68,15 +90,14 @@ async function manageRoles() {
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
 		console.log(`📄 Contract: ${contractId.toString()}\n`);
 
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
+
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
 		);
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
-
-		// Import helpers
-		const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Menu
 		console.log('Select action:');
@@ -137,10 +158,6 @@ async function manageRoles() {
 
 		console.log(`\nTarget address: ${targetAddress}`);
 
-		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, functionName, [targetAddress], 100000);
-		const gasEstimate = gasInfo.gasLimit;
-
 		// Confirm
 		const roleType = functionName.includes('Admin') ? 'Admin' : 'Prize Manager';
 		const confirm = await prompt(`${operation === 'add' ? 'Add' : 'Remove'} ${roleType} role ${operation === 'add' ? 'to' : 'from'} ${addressInput}? (yes/no): `);
@@ -152,24 +169,25 @@ async function manageRoles() {
 		// Execute
 		console.log(`\n🔄 ${operation === 'add' ? 'Adding' : 'Removing'} ${roleType.toLowerCase()}...`);
 
-		const gasLimit = Math.floor(gasEstimate * 1.2);
+		const executionResult = await executeContractFunction({
+			contractId: contractId,
+			iface: lazyLottoIface,
+			client: client,
+			functionName: functionName,
+			params: [targetAddress],
+			gas: 100000,
+			payableAmount: 0,
+		});
 
-		const [receipt, , record] = await contractExecuteFunction(
-			contractId,
-			lazyLottoIface,
-			client,
-			gasLimit,
-			functionName,
-			[targetAddress],
-		);
-
-		if (receipt.status.toString() !== 'SUCCESS') {
-			console.error('\n❌ Transaction failed');
-			process.exit(1);
+		if (!executionResult.success) {
+			throw new Error(executionResult.error || 'Transaction execution failed');
 		}
 
+		const { receipt, record } = executionResult;
+
 		console.log(`\n✅ ${roleType} role ${operation === 'add' ? 'added' : 'removed'} successfully!`);
-		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+		const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+		console.log(`📋 Transaction: ${txId}\n`);
 
 	}
 	catch (error) {

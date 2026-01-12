@@ -425,6 +425,247 @@ async function getTokenDetails(env, _tokenId) {
 	return rtnVal;
 }
 
+/**
+ * Convert a transaction ID string to mirror node format
+ * Handles formats: "0.0.1234@1234567890.123456789" -> "0.0.1234-1234567890-123456789"
+ * @param {string} transactionIdStr - Transaction ID string
+ * @returns {string} Mirror node formatted transaction ID
+ */
+function formatTransactionIdForMirror(transactionIdStr) {
+	if (!transactionIdStr) return transactionIdStr;
+
+	// Already in mirror format (contains hyphen after account)
+	if (!transactionIdStr.includes('@')) {
+		return transactionIdStr;
+	}
+
+	// Convert from SDK format: 0.0.1234@1234567890.123456789
+	// To mirror format: 0.0.1234-1234567890-123456789
+	const parts = transactionIdStr.split('@');
+	if (parts.length !== 2) return transactionIdStr;
+
+	const timeParts = parts[1].split('.');
+	if (timeParts.length !== 2) return transactionIdStr;
+
+	return `${parts[0]}-${timeParts[0]}-${timeParts[1]}`;
+}
+
+/**
+ * Get basic transaction status from mirror node (HAPI-style receipt)
+ * Uses /api/v1/transactions/ endpoint - lighter weight than contract results
+ *
+ * @param {string} env - Environment (testnet, mainnet, etc.)
+ * @param {string|object} transactionIdOrHash - Transaction ID or hash
+ * @returns {Promise<{success: boolean, result?: string, name?: string, error?: string}>}
+ */
+async function getTransactionStatus(env, transactionIdOrHash) {
+	let idOrHashStr;
+
+	if (typeof transactionIdOrHash === 'object') {
+		idOrHashStr = constructTransactionIdString(transactionIdOrHash);
+	}
+	else if (/\d+\.\d+\.\d+@\d+\.\d+/.test(transactionIdOrHash)) {
+		idOrHashStr = formatTransactionIdForMirror(transactionIdOrHash);
+	}
+	else {
+		idOrHashStr = transactionIdOrHash;
+	}
+
+	const baseUrl = getBaseURL(env);
+	const url = `${baseUrl}/api/v1/transactions/${idOrHashStr}`;
+
+	try {
+		const response = await axios.get(url);
+
+		if (response?.data?.transactions?.[0]) {
+			const txData = response.data.transactions[0];
+
+			if (txData.result === 'SUCCESS') {
+				return {
+					success: true,
+					result: 'SUCCESS',
+					name: txData.name,
+					transactionId: txData.transaction_id,
+					consensusTimestamp: txData.consensus_timestamp,
+				};
+			}
+			else {
+				return {
+					success: false,
+					result: txData.result,
+					name: txData.name,
+					error: txData.result,
+				};
+			}
+		}
+		else {
+			return { success: false, error: 'No transaction found' };
+		}
+	}
+	catch (error) {
+		if (axios.isAxiosError(error) && error?.response?.status >= 400) {
+			throw new Error(`Transaction not found (HTTP ${error.response.status})`);
+		}
+		return { success: false, error: 'Failed to query the mirror node' };
+	}
+}
+
+/**
+ * Get transaction status with retry logic
+ * Useful for waiting for transaction finality on mirror node
+ *
+ * @param {string} env - Environment
+ * @param {string|object} transactionIdOrHash - Transaction ID
+ * @param {object} options - Retry options
+ * @returns {Promise<{success: boolean, result?: string, error?: string}>}
+ */
+async function getTransactionStatusWithRetry(env, transactionIdOrHash, options = {}) {
+	const {
+		maxRetries = 10,
+		initialDelay = 5000,
+		retryDelay = 3000,
+		verbose = true,
+	} = options;
+
+	if (verbose) {
+		console.log(`⏳ Waiting ${initialDelay / 1000}s for mirror node propagation...`);
+	}
+	await new Promise(resolve => setTimeout(resolve, initialDelay));
+
+	let lastError = null;
+
+	for (let attempt = 1; attempt <= maxRetries; attempt++) {
+		try {
+			if (verbose && attempt > 1) {
+				console.log(`   Retry ${attempt}/${maxRetries}...`);
+			}
+
+			const result = await getTransactionStatus(env, transactionIdOrHash);
+
+			if (result.success || (result.result && result.result !== 'No transaction found')) {
+				if (verbose && result.success) {
+					console.log('✅ Transaction status retrieved from mirror node');
+				}
+				return result;
+			}
+
+			lastError = result.error || 'Transaction not yet available';
+		}
+		catch (error) {
+			lastError = error.message || 'Unknown error';
+		}
+
+		if (attempt < maxRetries) {
+			await new Promise(resolve => setTimeout(resolve, retryDelay));
+		}
+	}
+
+	return {
+		success: false,
+		error: lastError || 'Max retries reached',
+	};
+}
+
+/**
+ * Get full transaction record from mirror node
+ * Returns complete transaction data including transfers, logs, etc.
+ *
+ * @param {string} env - Environment
+ * @param {string|object} transactionIdOrHash - Transaction ID
+ * @returns {Promise<{success: boolean, record?: object, error?: string}>}
+ */
+async function getTransactionRecord(env, transactionIdOrHash) {
+	let idOrHashStr;
+
+	if (typeof transactionIdOrHash === 'object') {
+		idOrHashStr = constructTransactionIdString(transactionIdOrHash);
+	}
+	else if (/\d+\.\d+\.\d+@\d+\.\d+/.test(transactionIdOrHash)) {
+		idOrHashStr = formatTransactionIdForMirror(transactionIdOrHash);
+	}
+	else {
+		idOrHashStr = transactionIdOrHash;
+	}
+
+	const baseUrl = getBaseURL(env);
+	const url = `${baseUrl}/api/v1/transactions/${idOrHashStr}`;
+
+	try {
+		const response = await axios.get(url);
+
+		if (response?.data?.transactions?.[0]) {
+			return {
+				success: true,
+				record: response.data.transactions[0],
+			};
+		}
+		else {
+			return { success: false, error: 'No transaction found' };
+		}
+	}
+	catch (error) {
+		if (axios.isAxiosError(error) && error?.response?.status >= 400) {
+			return { success: false, error: `Transaction not found (HTTP ${error.response.status})` };
+		}
+		return { success: false, error: 'Failed to query the mirror node' };
+	}
+}
+
+/**
+ * Get full transaction record with retry logic
+ *
+ * @param {string} env - Environment
+ * @param {string|object} transactionIdOrHash - Transaction ID
+ * @param {object} options - Retry options
+ * @returns {Promise<{success: boolean, record?: object, error?: string}>}
+ */
+async function getTransactionRecordWithRetry(env, transactionIdOrHash, options = {}) {
+	const {
+		maxRetries = 10,
+		initialDelay = 5000,
+		retryDelay = 3000,
+		verbose = true,
+	} = options;
+
+	if (verbose) {
+		console.log(`⏳ Waiting ${initialDelay / 1000}s for mirror node propagation...`);
+	}
+	await new Promise(resolve => setTimeout(resolve, initialDelay));
+
+	let lastError = null;
+
+	for (let attempt = 1; attempt <= maxRetries; attempt++) {
+		try {
+			if (verbose && attempt > 1) {
+				console.log(`   Retry ${attempt}/${maxRetries}...`);
+			}
+
+			const result = await getTransactionRecord(env, transactionIdOrHash);
+
+			if (result.success) {
+				if (verbose) {
+					console.log('✅ Transaction record retrieved from mirror node');
+				}
+				return result;
+			}
+
+			lastError = result.error || 'Transaction not yet available';
+		}
+		catch (error) {
+			lastError = error.message || 'Unknown error';
+		}
+
+		if (attempt < maxRetries) {
+			await new Promise(resolve => setTimeout(resolve, retryDelay));
+		}
+	}
+
+	return {
+		success: false,
+		error: lastError || 'Max retries reached',
+	};
+}
+
 async function getContractResult(env, transactionIdOrHash, iface) {
 
 	const isTransactionIdObject = typeof transactionIdOrHash === 'object';
@@ -486,6 +727,94 @@ const translateTransactionForWebCall = (transactionHash) => {
 
 	return `${transactionHashParts[0]}-${transactionTime[0]}-${transactionTime[1]}`;
 };
+
+/**
+ * Get contract result from mirror node with retry logic
+ * Useful for multi-sig scenarios where we can't get a record from consensus
+ * because it would require additional signing.
+ *
+ * @param {string} env - Environment (testnet, mainnet, etc.)
+ * @param {string|object} transactionIdOrHash - Transaction ID or hash
+ * @param {ethers.Interface} iface - Contract interface for decoding
+ * @param {object} options - Options
+ * @param {number} options.maxRetries - Maximum retry attempts (default: 10)
+ * @param {number} options.initialDelay - Initial delay in ms before first attempt (default: 5000)
+ * @param {number} options.retryDelay - Delay between retries in ms (default: 3000)
+ * @param {boolean} options.verbose - Whether to log progress (default: true)
+ * @returns {Promise<{success: boolean, result?: string, call_result?: any, error?: string}>}
+ */
+async function getContractResultWithRetry(env, transactionIdOrHash, iface, options = {}) {
+	const {
+		maxRetries = 10,
+		initialDelay = 5000,
+		retryDelay = 3000,
+		verbose = true,
+	} = options;
+
+	// Wait for initial delay (mirror node propagation)
+	if (verbose) {
+		console.log(`\n⏳ Waiting ${initialDelay / 1000}s for mirror node propagation...`);
+	}
+	await new Promise(resolve => setTimeout(resolve, initialDelay));
+
+	let lastError = null;
+
+	for (let attempt = 1; attempt <= maxRetries; attempt++) {
+		try {
+			if (verbose && attempt > 1) {
+				console.log(`   Retry ${attempt}/${maxRetries}...`);
+			}
+
+			const result = await getContractResult(env, transactionIdOrHash, iface);
+
+			if (result.success) {
+				if (verbose) {
+					console.log('✅ Contract result retrieved from mirror node');
+				}
+				return result;
+			}
+
+			// Got a response but transaction failed
+			if (result.error && result.error !== 'No result found' && result.error !== 'Failed to query the mirror node') {
+				// This is a real error from the transaction, not a "not found" error
+				return result;
+			}
+
+			lastError = result.error || 'Transaction not yet available on mirror node';
+
+		}
+		catch (error) {
+			lastError = error.message || 'Unknown error';
+
+			// Check if it's a 404 (not found yet) vs other error
+			if (error.response && error.response.status === 404) {
+				// Transaction not yet on mirror node, will retry
+				lastError = 'Transaction not yet available on mirror node';
+			}
+			else if (error.response && error.response.status >= 400) {
+				// Other HTTP error, might be permanent
+				if (verbose) {
+					console.log(`   Warning: HTTP ${error.response.status} error`);
+				}
+			}
+		}
+
+		// Wait before next retry (except on last attempt)
+		if (attempt < maxRetries) {
+			await new Promise(resolve => setTimeout(resolve, retryDelay));
+		}
+	}
+
+	// All retries exhausted
+	if (verbose) {
+		console.log(`⚠️  Could not retrieve contract result after ${maxRetries} attempts`);
+	}
+
+	return {
+		success: false,
+		error: lastError || 'Max retries reached. Transaction result not available on mirror node.',
+	};
+}
 
 // Function to convert transaction ID object to string format
 const constructTransactionIdString = (transactionIdObj) => {
@@ -641,8 +970,19 @@ module.exports = {
 	checkFTAllowances,
 	getEventsFromMirror,
 	getTokenDetails,
+	// Contract result functions (for smart contract calls)
 	getContractResult,
+	getContractResultWithRetry,
+	// Transaction status/record functions
+	getTransactionStatus,
+	getTransactionStatusWithRetry,
+	getTransactionRecord,
+	getTransactionRecordWithRetry,
+	// Transaction ID formatting
+	formatTransactionIdForMirror,
 	translateTransactionForWebCall,
+	constructTransactionIdString,
+	// Address/entity helpers
 	getContractEVMAddress,
 	checkMirrorHbarBalance,
 	checkHbarAllowances,

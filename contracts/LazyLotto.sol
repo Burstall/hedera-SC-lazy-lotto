@@ -53,7 +53,6 @@ pragma solidity >=0.8.12 <0.9.0;
 /// @dev now uses hbar for royalty handling currently
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {
@@ -63,7 +62,6 @@ import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {IPrngSystemContract} from "./interfaces/IPrngSystemContract.sol";
-import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {ILazyGasStation} from "./interfaces/ILazyGasStation.sol";
 import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
 import {ILazyLottoStorage} from "./interfaces/ILazyLottoStorage.sol";
@@ -104,6 +102,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @notice Maximum possible threshold for winning (100%)
     /// @dev Expressed as integer from 0-100,000,000 where 100,000,000 represents 100%
     uint256 public constant MAX_WIN_RATE_THRESHOLD = 100_000_000;
+    /// @dev Batch size of 10 NFTs because LazyLotto is token treasury and can mint+transfer for free
     uint256 public constant NFT_BATCH_SIZE = 10;
     int32 private constant DEFAULT_AUTO_RENEW_PERIOD = 7776000; // Default auto-renew period for tokens (90 days in seconds)
 
@@ -576,7 +575,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// Admin or Pool Owner can permanently close a pool preventing any further actions
     /// Required to be able to remove prizes from the pool
     /// @param poolId The ID of the pool to close
-    function closePool(uint256 poolId) external {
+    function closePool(uint256 poolId) external nonReentrant {
         if (!poolManager.canManagePool(poolId, msg.sender)) {
             revert NotAuthorized();
         }
@@ -1172,13 +1171,14 @@ contract LazyLotto is ReentrancyGuard, Pausable {
     /// @param tokenId The token address (address(0) for HBAR)
     /// @param amount The amount to pull from msg.sender
     /// @param burnPercentageForLazy The burn percentage to apply if token is LAZY (0-100)
+    /// @return actualAmount The actual amount received (handles fee-on-transfer tokens)
     function _pullPayment(
         address tokenId,
         uint256 amount,
         uint256 burnPercentageForLazy
-    ) internal {
+    ) internal returns (uint256 actualAmount) {
         if (amount == 0) {
-            return;
+            return 0;
         }
 
         if (tokenId == address(0)) {
@@ -1192,6 +1192,7 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             }
             // Forward exact amount to storage
             storageContract.depositHbar{value: amount}();
+            return amount; // HBAR doesn't have transfer fees
         } else if (tokenId == lazyToken) {
             // Transfer $LAZY to LGS (with optional burn)
             lazyGasStation.drawLazyFrom(
@@ -1199,9 +1200,11 @@ contract LazyLotto is ReentrancyGuard, Pausable {
                 amount,
                 burnPercentageForLazy
             );
+            return amount; // LazyGasStation handles burns internally
         } else {
             // Other FT tokens - delegate to storage for associate-pull-verify
-            storageContract.ensureFungibleBalance(tokenId, msg.sender, amount);
+            // Storage returns actual amount received (handles fee-on-transfer tokens)
+            return storageContract.ensureFungibleBalance(tokenId, msg.sender, amount);
         }
     }
 
@@ -1211,8 +1214,11 @@ contract LazyLotto is ReentrancyGuard, Pausable {
             return;
         }
 
-        ftTokensForPrizes[tokenId] += amount;
-        _pullPayment(tokenId, amount, 0); // No burn for prize deposits
+        // Pull payment and get actual amount received (handles fee-on-transfer tokens)
+        uint256 actualAmount = _pullPayment(tokenId, amount, 0); // No burn for prize deposits
+
+        // Update ftTokensForPrizes with actual amount received, not requested
+        ftTokensForPrizes[tokenId] += actualAmount;
     }
 
     function _redeemEntriesFromNFT(

@@ -14,4 +14,13 @@ yarn.lock
 logs/*
 .DS_Store
 *.key
+# Auto-generated documentation (HTML/JS from hardhat-docgen)
 docs/*
+# But include hand-written markdown documentation
+!docs/*.md
+!docs/design-proposals/
+!docs/design-proposals/*.md
+
+# Claude Code frameworks (exclude all)
+.claude/
+.vscode/

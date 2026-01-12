@@ -7,16 +7,14 @@
 
 ---
 
-## ⚠️ Breaking Changes Alert - December 2025
+## API Overview
 
-**API Version 2.1 contains breaking changes** due to contract size constraints (24 KB limit). Three view functions have been removed and replaced with paginated alternatives.
+**API Version 2.1** uses paginated query functions for scalability. All large-array queries accept `offset` and `limit` parameters to handle 100+ items without gas issues.
 
-**📋 See [API Breaking Changes Guide](./LazyLotto-API_BREAKING_CHANGES.md) for complete migration instructions.**
-
-**Quick Summary:**
-- ❌ `getPoolDetails()` → ✅ `getPoolBasicInfo()` (returns prize count, not array)
-- ❌ `getPendingPrizes()` → ✅ `getPendingPrizesPage()` + `getPendingPrizesCount()`
-- ❌ `getUserEntries()` → ✅ `getUserEntriesPage()`
+**Key Query Patterns:**
+- Pool info: `getPoolBasicInfo(poolId)` returns prize count (use `getPrizePackage()` to iterate)
+- User prizes: `getPendingPrizesCount(user)` + `getPendingPrizesPage(user, offset, limit)`
+- User entries: `getUserEntriesPage(user, startPoolId, count)`
 
 ---
 

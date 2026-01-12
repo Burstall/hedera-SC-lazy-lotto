@@ -4,7 +4,19 @@
  * Adds funds to the jackpot pool to increase player excitement.
  * Only the contract owner can boost the jackpot.
  *
- * Usage: node admin/boostJackpot.js <contractId> <amount>
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyTradeLotto/admin/boostJackpot.js <contractId> <amount>
+ *   Multi-sig:  node scripts/interactions/LazyTradeLotto/admin/boostJackpot.js <contractId> <amount> --multisig
+ *   Help:       node scripts/interactions/LazyTradeLotto/admin/boostJackpot.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
+ *
  * Example: node admin/boostJackpot.js 0.0.123456 1000
  */
 
@@ -19,9 +31,14 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 const { getArgFlag } = require('../../../../utils/nodeHelpers');
 const { getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 const contractName = 'LazyTradeLotto';
 const LAZY_TOKEN_ID = process.env.LAZY_TOKEN_ID;
@@ -40,6 +57,11 @@ catch {
 }
 
 async function main() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	if (!env) {
 		console.log('ERROR: Must specify ENVIRONMENT in .env file');
 		process.exit(1);
@@ -71,12 +93,14 @@ async function main() {
 
 	client.setOperator(operatorId, operatorKey);
 
-	const args = process.argv.slice(2);
+	const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'));
 	if (args.length < 2 || getArgFlag('h')) {
 		console.log('Usage: boostJackpot.js <contractId> <amount>');
 		console.log('       contractId: LazyTradeLotto contract address (e.g., 0.0.123456)');
 		console.log('       amount: Amount to boost jackpot by (in $LAZY tokens)');
 		console.log('\nOnly contract owner can boost the jackpot.');
+		console.log('\nMulti-sig: Add --multisig flag for multi-signature mode');
+		console.log('           Use --multisig-help for multi-sig options');
 		return;
 	}
 
@@ -95,6 +119,9 @@ async function main() {
 	console.log('-Using Operator:', operatorId.toString());
 	console.log('-Using Contract:', contractId.toString());
 
+	// Display multi-sig status if enabled
+	displayMultiSigBanner();
+
 	// Get $LAZY token decimals for proper formatting
 	let lazyTokenDecimals = LAZY_DECIMAL;
 	if (LAZY_TOKEN_ID) {
@@ -105,17 +132,16 @@ async function main() {
 		}
 	}
 
-	// Get current jackpot amount
-	const lottoStats = ltlIface.decodeFunctionResult(
-		'getLottoStats',
-		await readOnlyEVMFromMirrorNode(
-			env,
-			contractId,
-			ltlIface.encodeFunctionData('getLottoStats'),
-			operatorId,
-			false,
-		),
+	// Get current jackpot amount using mirror node
+	const lottoStatsCommand = ltlIface.encodeFunctionData('getLottoStats');
+	const lottoStatsResponse = await readOnlyEVMFromMirrorNode(
+		env,
+		contractId,
+		lottoStatsCommand,
+		operatorId,
+		false,
 	);
+	const lottoStats = ltlIface.decodeFunctionResult('getLottoStats', lottoStatsResponse);
 
 	const currentJackpot = Number(lottoStats[0]) / (10 ** lazyTokenDecimals);
 	const maxJackpot = Number(lottoStats[7]) / (10 ** lazyTokenDecimals);
@@ -153,22 +179,24 @@ async function main() {
 	// Gas limit for boostJackpot transaction
 	const gasLimit = 300_000;
 
-	const result = await contractExecuteFunction(
+	const result = await executeContractFunction({
 		contractId,
-		ltlIface,
+		iface: ltlIface,
 		client,
-		gasLimit,
-		'boostJackpot',
-		[boostAmountAdjusted],
-	);
+		functionName: 'boostJackpot',
+		params: [boostAmountAdjusted],
+		gas: gasLimit,
+		payableAmount: 0,
+	});
 
-	if (result[0]?.status?.toString() !== 'SUCCESS') {
-		console.log('❌ Error boosting jackpot:', result);
+	if (!result.success) {
+		console.log('❌ Error boosting jackpot:', result.error);
 		return;
 	}
 
 	console.log('\n✅ Jackpot boosted successfully!');
-	console.log('📋 Transaction ID:', result[2]?.transactionId?.toString());
+	const txId = result.receipt?.transactionId?.toString() || result.record?.transactionId?.toString() || 'N/A';
+	console.log('📋 Transaction ID:', txId);
 	console.log(`💰 New jackpot: ~${(currentJackpot + boostAmount).toLocaleString()} $LAZY`);
 	console.log('\n💡 Tip: Use queries/getLottoInfo.js to verify the new jackpot amount.\n');
 }

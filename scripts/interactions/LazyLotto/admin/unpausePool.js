@@ -4,7 +4,18 @@
  * Unpauses a pool to allow ticket purchases.
  * Requires ADMIN role.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/unpausePool.js [poolId]
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/unpausePool.js [poolId]
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/unpausePool.js [poolId] --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/unpausePool.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -17,6 +28,12 @@ const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -40,10 +57,20 @@ function prompt(question) {
 }
 
 async function unpausePool() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
 		let poolIdStr = process.argv[2];
+
+		// Filter out flag arguments
+		if (poolIdStr && poolIdStr.startsWith('--')) {
+			poolIdStr = null;
+		}
 
 		if (!poolIdStr) {
 			poolIdStr = await prompt('Enter pool ID to unpause: ');
@@ -81,19 +108,14 @@ async function unpausePool() {
 		console.log(`📄 Contract: ${contractId.toString()}`);
 		console.log(`🎰 Pool: #${poolId}\n`);
 
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
+
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
 		);
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
-
-		// Import helpers
-		const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
-		const { estimateGas } = require('../../../../utils/gasHelpers');
-
-		// Estimate gas
-		const gasInfo = await estimateGas(env, contractId, lazyLottoIface, operatorId, 'unpausePool', [poolId], 100000);
-		const gasEstimate = gasInfo.gasLimit;
 
 		// Confirm
 		const confirm = await prompt(`Unpause pool #${poolId}? (yes/no): `);
@@ -105,24 +127,25 @@ async function unpausePool() {
 		// Execute
 		console.log('\n🔄 Unpausing pool...');
 
-		const gasLimit = Math.floor(gasEstimate * 1.2);
+		const executionResult = await executeContractFunction({
+			contractId: contractId,
+			iface: lazyLottoIface,
+			client: client,
+			functionName: 'unpausePool',
+			params: [poolId],
+			gas: 100000,
+			payableAmount: 0,
+		});
 
-		const [receipt, results, record] = await contractExecuteFunction(
-			contractId,
-			lazyLottoIface,
-			client,
-			gasLimit,
-			'unpausePool',
-			[poolId],
-		);
-
-		if (receipt.status.toString() !== 'SUCCESS') {
-			console.error('\n❌ Transaction failed');
-			process.exit(1);
+		if (!executionResult.success) {
+			throw new Error(executionResult.error || 'Transaction execution failed');
 		}
 
+		const { receipt, record } = executionResult;
+
 		console.log('\n✅ Pool unpaused successfully!');
-		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+		const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+		console.log(`📋 Transaction: ${txId}\n`);
 
 		console.log('▶️  Pool is now active. Ticket purchases allowed.\n');
 

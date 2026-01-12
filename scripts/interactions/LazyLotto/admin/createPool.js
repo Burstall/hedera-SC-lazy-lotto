@@ -4,7 +4,18 @@
  * Creates a new lottery pool with specified parameters.
  * Requires ADMIN role on the contract.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/createPool.js
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/createPool.js
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/createPool.js --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/createPool.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -21,6 +32,11 @@ const readline = require('readline');
 require('dotenv').config();
 
 const { homebrewPopulateAccountNum, getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -64,6 +80,11 @@ function formatWinRate(thousandthsOfBps) {
 }
 
 async function createPool() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
@@ -92,6 +113,9 @@ async function createPool() {
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
 		console.log(`📄 Contract: ${contractId.toString()}\n`);
 
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
+
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
@@ -99,7 +123,7 @@ async function createPool() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { readOnlyEVMFromMirrorNode, contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+		const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Check admin role
@@ -311,23 +335,25 @@ async function createPool() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
-			contractId,
-			lazyLottoIface,
-			client,
-			gasLimit,
-			functionName,
-			functionArgs,
-			new Hbar(Number(payableAmount), HbarUnit.Tinybar),
-		);
+		const executionResult = await executeContractFunction({
+			contractId: contractId,
+			iface: lazyLottoIface,
+			client: client,
+			functionName: functionName,
+			params: functionArgs,
+			gas: gasLimit,
+			payableAmount: payableAmount.toString(),
+		});
 
-		if (receipt.status.toString() !== 'SUCCESS') {
-			console.error('\n❌ Transaction failed');
-			process.exit(1);
+		if (!executionResult.success) {
+			throw new Error(executionResult.error || 'Transaction execution failed');
 		}
 
+		const { receipt, results, record } = executionResult;
+
 		console.log('\n✅ Pool created successfully!');
-		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+		const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+		console.log(`📋 Transaction: ${txId}\n`);
 
 		// Get the poolId from the contract function result
 		// Note: results is already decoded by contractExecuteFunction

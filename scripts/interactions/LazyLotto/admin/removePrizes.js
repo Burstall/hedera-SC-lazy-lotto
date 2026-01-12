@@ -4,7 +4,18 @@
  * Remove prizes from CLOSED pools and return them to caller.
  * Requires ADMIN role. Pool must be closed.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/removePrizes.js [poolId]
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/removePrizes.js [poolId]
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/removePrizes.js [poolId] --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/removePrizes.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const {
@@ -17,6 +28,12 @@ const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -51,10 +68,20 @@ async function convertToHederaId(evmAddress) {
 }
 
 async function removePrizes() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
 		let poolIdStr = process.argv[2];
+
+		// Filter out flag arguments
+		if (poolIdStr && poolIdStr.startsWith('--')) {
+			poolIdStr = null;
+		}
 
 		if (!poolIdStr) {
 			poolIdStr = await prompt('Enter pool ID to remove prizes from: ');
@@ -92,6 +119,9 @@ async function removePrizes() {
 		console.log(`📄 Contract: ${contractId.toString()}`);
 		console.log(`🎰 Pool: #${poolId}\n`);
 
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
+
 		// Load contract ABI
 		const contractJson = JSON.parse(
 			fs.readFileSync('./artifacts/contracts/LazyLotto.sol/LazyLotto.json'),
@@ -99,7 +129,7 @@ async function removePrizes() {
 		const lazyLottoIface = new ethers.Interface(contractJson.abi);
 
 		// Import helpers
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Check pool status
@@ -113,6 +143,7 @@ async function removePrizes() {
 			operatorId,
 			false,
 		);
+		// eslint-disable-next-line no-unused-vars
 		const [ticketCID, winCID, winRate, entryFee, prizeCount, outstanding, poolTokenId, paused, closed, feeToken] =
 			lazyLottoIface.decodeFunctionResult('getPoolBasicInfo', poolBasicInfo);
 
@@ -128,6 +159,17 @@ async function removePrizes() {
 			console.log('\n⚠️  No prizes to remove');
 			process.exit(0);
 		}
+
+		console.log('\n🔍 Fetching prize details...');
+		const encodedPrizesQuery = lazyLottoIface.encodeFunctionData('getPrizes', [poolId]);
+		const prizesResult = await readOnlyEVMFromMirrorNode(
+			env,
+			contractId,
+			encodedPrizesQuery,
+			operatorId,
+			false,
+		);
+		const [prizes] = lazyLottoIface.decodeFunctionResult('getPrizes', prizesResult);
 
 		console.log(`\nPrizes to remove: ${prizes.length} packages\n`);
 
@@ -173,22 +215,25 @@ async function removePrizes() {
 
 		const gasLimit = Math.floor(gasEstimate * 1.2);
 
-		const [receipt, results, record] = await contractExecuteFunction(
-			contractId,
-			lazyLottoIface,
-			client,
-			gasLimit,
-			'removePrizes',
-			[poolId],
-		);
+		const executionResult = await executeContractFunction({
+			contractId: contractId,
+			iface: lazyLottoIface,
+			client: client,
+			functionName: 'removePrizes',
+			params: [poolId],
+			gas: gasLimit,
+			payableAmount: 0,
+		});
 
-		if (receipt.status.toString() !== 'SUCCESS') {
-			console.error('\n❌ Transaction failed');
-			process.exit(1);
+		if (!executionResult.success) {
+			throw new Error(executionResult.error || 'Transaction execution failed');
 		}
 
+		const { receipt, record } = executionResult;
+
 		console.log('\n✅ Prizes removed successfully!');
-		console.log(`📋 Transaction: ${record.transactionId.toString()}\n`);
+		const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+		console.log(`📋 Transaction: ${txId}\n`);
 		console.log('💰 Prizes returned to your account\n');
 
 	}

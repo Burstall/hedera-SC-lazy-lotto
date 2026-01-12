@@ -21,8 +21,11 @@ const {
 } = require('../../../../utils/hederaMirrorHelpers');
 const { getArgFlag, getArg, sleep } = require('../../../../utils/nodeHelpers');
 const { checkMirrorHbarBalance, getSerialsOwned } = require('../../../../utils/hederaMirrorHelpers');
-// Import contract execution helper
-const { contractExecuteFunction } = require('../../../../utils/solidityHelpers');
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 require('dotenv').config();
 
 // Helper: Convert Hedera ID to EVM address (matches addPrizePackage.js)
@@ -83,11 +86,25 @@ function prompt(question) {
  *
  *
  * Usage:
- *   node addPrizesBatch.js -f prizes.json
- *   node addPrizesBatch.js -f prizes.json -dry  (dry run - validate only)
+ *   Single-sig: node addPrizesBatch.js -f prizes.json
+ *   Multi-sig:  node addPrizesBatch.js -f prizes.json --multisig
+ *   Help:       node addPrizesBatch.js --multisig-help
+ *   Dry run:    node addPrizesBatch.js -f prizes.json -dry  (validate only)
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  */
 
 const main = async () => {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
 	// Load required environment variables
 	const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 	const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
@@ -178,6 +195,9 @@ const main = async () => {
 	}
 
 	client.setOperator(operatorId, operatorKey);
+
+	// Display multi-sig status if enabled
+	displayMultiSigBanner();
 
 	// Process and validate packages
 	const processedPackages = [];
@@ -633,21 +653,24 @@ const main = async () => {
 			// Execute using the working pattern from addPrizePackage.js
 			const gasLimit = Math.floor(finalGasLimit * 1.2);
 
-			const [receipt, , record] = await contractExecuteFunction(
-				contractId,
-				iface,
-				client,
-				gasLimit,
-				'addPrizePackage',
-				[config.poolId, pkg.ftToken, pkg.ftAmount, pkg.nftTokens, pkg.nftSerials],
-				new Hbar(payableAmount, HbarUnit.Tinybar),
-			);
+			const executionResult = await executeContractFunction({
+				contractId: contractId,
+				iface: iface,
+				client: client,
+				functionName: 'addPrizePackage',
+				params: [config.poolId, pkg.ftToken, pkg.ftAmount, pkg.nftTokens, pkg.nftSerials],
+				gas: gasLimit,
+				payableAmount: new Hbar(payableAmount, HbarUnit.Tinybar).toTinybars().toString(),
+			});
 
-			if (receipt.status.toString() !== 'SUCCESS') {
-				throw new Error(`Failed: ${receipt.status.toString()}`);
+			if (!executionResult.success) {
+				throw new Error(executionResult.error || 'Transaction execution failed');
 			}
 
-			console.log(`   ✅ Success - TX: ${record.transactionId.toString()}`);
+			const { receipt, record } = executionResult;
+
+			const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+			console.log(`   ✅ Success - TX: ${txId}`);
 			successCount++;
 		}
 		catch (error) {

@@ -4,7 +4,18 @@
  * Batch migration of bonus configurations from LazyLotto Storage to PoolManager.
  * Used when setting up PoolManager with existing bonus configurations.
  *
- * Usage: node scripts/interactions/LazyLotto/admin/migrateBonuses.js [--config <path>]
+ * Usage:
+ *   Single-sig: node scripts/interactions/LazyLotto/admin/migrateBonuses.js [--config <path>]
+ *   Multi-sig:  node scripts/interactions/LazyLotto/admin/migrateBonuses.js [--config <path>] --multisig
+ *   Help:       node scripts/interactions/LazyLotto/admin/migrateBonuses.js --multisig-help
+ *
+ * Multi-sig options:
+ *   --multisig                      Enable multi-signature mode
+ *   --workflow=interactive|offline  Choose workflow (default: interactive)
+ *   --export-only                   Just freeze and export (offline mode)
+ *   --signatures=f1.json,f2.json    Execute with collected signatures
+ *   --threshold=N                   Require N signatures
+ *   --signers=Alice,Bob,Charlie     Label signers for clarity
  *
  * Config file format (JSON):
  * {
@@ -29,6 +40,12 @@ const { ethers } = require('ethers');
 const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
+
+const {
+	executeContractFunction,
+	checkMultiSigHelp,
+	displayMultiSigBanner,
+} = require('../../../../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -81,6 +98,11 @@ const DEFAULT_CONFIG = {
 };
 
 async function migrateBonuses() {
+	// Check for multi-sig help request
+	if (checkMultiSigHelp()) {
+		process.exit(0);
+	}
+
 	let client;
 
 	try {
@@ -119,6 +141,9 @@ async function migrateBonuses() {
 		console.log('╚════════════════════════════════════════════════════════════╝\n');
 		console.log(`📍 Environment: ${env.toUpperCase()}`);
 		console.log(`👤 Admin: ${operatorId.toString()}\n`);
+
+		// Display multi-sig status if enabled
+		displayMultiSigBanner();
 
 		// Load configuration
 		let config;
@@ -159,7 +184,8 @@ async function migrateBonuses() {
 		);
 		const poolManagerIface = new ethers.Interface(poolManagerJson.abi);
 
-		const { contractExecuteFunction, readOnlyEVMFromMirrorNode, estimateGas } = require('../../../../utils/solidityHelpers');
+		const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+		const { estimateGas } = require('../../../../utils/gasHelpers');
 
 		// Check if operator is admin
 		console.log('🔍 Verifying admin permissions...\n');
@@ -226,16 +252,23 @@ async function migrateBonuses() {
 
 				const gasToUse = Math.floor(gasEstimate * 1.2);
 
-				const [receipt, , record] = await contractExecuteFunction(
-					poolManagerId,
-					poolManagerIface,
-					client,
-					gasToUse,
-					'setTimeBonus',
-					[bonus.threshold, bonus.multiplier],
-				);
+				const executionResult = await executeContractFunction({
+					contractId: poolManagerId,
+					iface: poolManagerIface,
+					client: client,
+					functionName: 'setTimeBonus',
+					params: [bonus.threshold, bonus.multiplier],
+					gas: gasToUse,
+					payableAmount: 0,
+				});
 
-				console.log(`  ✅ Success! TX: ${record.transactionId.toString()}`);
+				if (!executionResult.success) {
+					throw new Error(executionResult.error || 'Transaction execution failed');
+				}
+
+				const { receipt, record } = executionResult;
+				const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+				console.log(`  ✅ Success! TX: ${txId}`);
 				successCount++;
 				// Brief delay between transactions
 				await sleep(2000);
@@ -279,14 +312,23 @@ async function migrateBonuses() {
 
 					const gasToUse = Math.floor(gasEstimate * 1.2);
 
-					const [receipt, , record] = await contractExecuteFunction(
-						poolManagerId,
-						poolManagerIface,
-						client,
-						gasToUse,
-						'setNFTBonus',
-						[nftAddress, bonus.multiplier],
-					); console.log(`  ✅ Success! TX: ${record.transactionId.toString()}`);
+					const executionResult = await executeContractFunction({
+						contractId: poolManagerId,
+						iface: poolManagerIface,
+						client: client,
+						functionName: 'setNFTBonus',
+						params: [nftAddress, bonus.multiplier],
+						gas: gasToUse,
+						payableAmount: 0,
+					});
+
+					if (!executionResult.success) {
+						throw new Error(executionResult.error || 'Transaction execution failed');
+					}
+
+					const { receipt, record } = executionResult;
+					const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+					console.log(`  ✅ Success! TX: ${txId}`);
 					successCount++;
 					await sleep(2000);
 				}
@@ -318,16 +360,23 @@ async function migrateBonuses() {
 
 			const gasToUse = Math.floor(gasEstimate * 1.2);
 
-			const [receipt, , record] = await contractExecuteFunction(
-				poolManagerId,
-				poolManagerIface,
-				client,
-				gasToUse,
-				'setLazyBalanceBonus',
-				[bonus.threshold, bonus.multiplier],
-			);
+			const executionResult = await executeContractFunction({
+				contractId: poolManagerId,
+				iface: poolManagerIface,
+				client: client,
+				functionName: 'setLazyBalanceBonus',
+				params: [bonus.threshold, bonus.multiplier],
+				gas: gasToUse,
+				payableAmount: 0,
+			});
 
-			console.log(`  ✅ Success! TX: ${record.transactionId.toString()}`);
+			if (!executionResult.success) {
+				throw new Error(executionResult.error || 'Transaction execution failed');
+			}
+
+			const { receipt, record } = executionResult;
+			const txId = receipt.transactionId?.toString() || record?.transactionId?.toString() || 'N/A';
+			console.log(`  ✅ Success! TX: ${txId}`);
 			successCount++;
 		}
 		catch (error) {

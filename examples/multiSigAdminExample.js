@@ -1,13 +1,15 @@
 /**
- * Set Platform Fee Percentage
+ * Multi-Sig Admin Script Example
  *
- * Allows admin to set the platform's percentage of pool proceeds (0-25%).
- * Pool owners receive the remaining percentage (75-100%).
+ * This example demonstrates how to integrate multi-sig support into LazyLotto admin scripts.
+ * Use this as a template for updating existing admin scripts.
+ *
+ * Based on: scripts/interactions/LazyLotto/admin/setPlatformFee.js
  *
  * Usage:
- *   Single-sig: node scripts/interactions/LazyLotto/admin/setPlatformFee.js [percentage]
- *   Multi-sig:  node scripts/interactions/LazyLotto/admin/setPlatformFee.js [percentage] --multisig
- *   Help:       node scripts/interactions/LazyLotto/admin/setPlatformFee.js --multisig-help
+ *   Single-sig: node examples/multiSigAdminExample.js [percentage]
+ *   Multi-sig:  node examples/multiSigAdminExample.js [percentage] --multisig
+ *   Help:       node examples/multiSigAdminExample.js --multisig-help
  *
  * Multi-sig options:
  *   --multisig                      Enable multi-signature mode
@@ -29,12 +31,12 @@ const fs = require('fs');
 const readline = require('readline');
 require('dotenv').config();
 
-const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../utils/solidityHelpers');
 const {
 	executeContractFunction,
 	checkMultiSigHelp,
 	displayMultiSigBanner,
-} = require('../../../../utils/scriptHelpers');
+} = require('../utils/scriptHelpers');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
@@ -130,7 +132,29 @@ async function setPlatformFee(percentage) {
 
 		console.log('\n⏳ Setting platform fee percentage...\n');
 
-		// Execute transaction (supports both single-sig and multi-sig)
+		// ============================================================================
+		// MULTI-SIG INTEGRATION POINT
+		// ============================================================================
+		// OLD CODE (single-sig only):
+		//
+		// const encodedFunction = poolManagerIface.encodeFunctionData('setPlatformProceedsPercentage', [percentage]);
+		//
+		// const tx = await new ContractExecuteTransaction()
+		// 	.setContractId(poolManagerId)
+		// 	.setGas(300000)
+		// 	.setFunction('setPlatformProceedsPercentage', Buffer.from(encodedFunction.slice(2), 'hex'))
+		// 	.execute(client);
+		//
+		// const receipt = await tx.getReceipt(client);
+		//
+		// if (receipt.status.toString() !== 'SUCCESS') {
+		// 	throw new Error(`Transaction failed with status: ${receipt.status.toString()}`);
+		// }
+		//
+		// ============================================================================
+		// NEW CODE (single-sig + multi-sig support):
+		// ============================================================================
+
 		const executionResult = await executeContractFunction({
 			contractId: poolManagerId,
 			iface: poolManagerIface,
@@ -147,6 +171,10 @@ async function setPlatformFee(percentage) {
 
 		const { receipt } = executionResult;
 
+		// ============================================================================
+		// END INTEGRATION POINT
+		// ============================================================================
+
 		console.log('✅ Platform fee updated successfully!\n');
 
 		// Handle different receipt formats (single-sig vs multi-sig)
@@ -160,6 +188,10 @@ async function setPlatformFee(percentage) {
 		console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 		console.log('✓ Verified New Fee');
 		console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+		// Wait for mirror node propagation
+		console.log('⏳ Waiting for mirror node propagation (5 seconds)...');
+		await new Promise(resolve => setTimeout(resolve, 5000));
 
 		const verifyResult = await readOnlyEVMFromMirrorNode(env, poolManagerId, encodedCommand, operatorId, false);
 		const newPercentage = poolManagerIface.decodeFunctionResult('platformProceedsPercentage', verifyResult);
@@ -198,7 +230,7 @@ async function main() {
 	// Check for command line argument
 	let percentage = process.argv[2];
 
-	// Filter out flag arguments
+	// Filter out flag arguments when getting percentage
 	if (percentage && percentage.startsWith('--')) {
 		percentage = null;
 	}
