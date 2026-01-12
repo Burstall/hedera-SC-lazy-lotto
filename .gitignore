@@ -18,6 +18,8 @@ logs/*
 docs/*
 # But include hand-written markdown documentation
 !docs/*.md
+!docs/design-proposals/
+!docs/design-proposals/*.md
 
 # Claude Code frameworks (exclude all)
 .claude/
