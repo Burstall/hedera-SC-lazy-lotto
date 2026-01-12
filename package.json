@@ -36,7 +36,6 @@
     "@lazysuperheroes/hedera-multisig": "^1.0.0",
     "@nomicfoundation/hardhat-toolbox": "^3.0.0",
     "@openzeppelin/contracts": "^4.6.0",
-    "@openzeppelin/test-helpers": "^0.5.16",
     "abi-decoder": "^2.4.0",
     "axios": "^1.5.0",
     "chai": "^4.3.6",
