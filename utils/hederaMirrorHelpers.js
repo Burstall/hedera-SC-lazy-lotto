@@ -44,7 +44,6 @@ async function checkMirrorAllowance(env, _userId, _tokenId, _spenderId) {
 
 			jsonResponse.allowances.forEach(allowance => {
 				if (allowance.spender == _spenderId.toString()) {
-					// console.log(' -Mirror Node: Found allowance for', allowance.owner, 'with allowance', allowance.amount, 'of token', allowance.token_id);
 					rtnVal = Number(allowance.amount);
 				}
 			});
@@ -103,7 +102,6 @@ async function checkMirrorNFTAllowance(env, _userId, _tokenId, _serial) {
 
 			jsonResponse.nfts.forEach(nft => {
 				if (nft.serial_number == _serial && nft.token_id == _tokenId.toString()) {
-					// console.log(' -Mirror Node: Found NFT allowance for', nft.account_id, 'serial', nft.serial_number, 'to be spent by', nft.spender, '(delegating spender =', nft.delegating_spender, ')');
 					rtnVal = nft.spender;
 				}
 			});
@@ -679,9 +677,6 @@ async function getContractResult(env, transactionIdOrHash, iface) {
 
 	try {
 		const response = await axios.get(url);
-		// console.log('Response:', response.data.result);
-		// console.log('Error:', response.data.error_message);
-		// console.log('Call Result:', response.data.call_result);
 
 		if (response?.data && response?.data?.result) {
 			if (response.data.result === 'SUCCESS') {

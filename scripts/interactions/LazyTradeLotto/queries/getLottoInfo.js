@@ -7,8 +7,11 @@
  * - Configuration (systemWallet, burnPercentage, pause status)
  * - Lottery statistics (jackpot, wins, payouts, etc.)
  *
- * Usage: node queries/getLottoInfo.js <contractId>
+ * Usage: node queries/getLottoInfo.js <contractId> [--json]
  * Example: node queries/getLottoInfo.js 0.0.123456
+ *
+ * Options:
+ *   --json    Output results as JSON (for programmatic use)
  */
 
 const {
@@ -22,6 +25,9 @@ const { ethers } = require('ethers');
 const { readOnlyEVMFromMirrorNode } = require('../../../../utils/solidityHelpers');
 const { getArgFlag } = require('../../../../utils/nodeHelpers');
 const { getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+
+// CLI options
+const outputJson = process.argv.includes('--json');
 
 const contractName = 'LazyTradeLotto';
 const LAZY_TOKEN_ID = process.env.LAZY_TOKEN_ID;
@@ -183,36 +189,7 @@ async function main() {
 		),
 	);
 
-	// Display Results
-	console.log('═══════════════════════════════════════════════════════════');
-	console.log('         LazyTradeLotto Contract Information');
-	console.log('═══════════════════════════════════════════════════════════\n');
-
-	console.log('📜 Contract Address:', contractId.toString());
-	console.log('⚙️  Status:', isPaused ? '🔴 PAUSED' : '🟢 ACTIVE');
-	console.log('🔥 Burn Percentage:', Number(burnPercentage) + '%');
-	console.log('✍️  System Wallet:', systemWallet);
-
-	console.log('\n───────────────────────────────────────────────────────────');
-	console.log('  LSH NFT Collections (0% Burn for Holders)');
-	console.log('───────────────────────────────────────────────────────────\n');
-
-	console.log('🎨 LSH Gen1:', TokenId.fromSolidityAddress(lshGen1).toString());
-	console.log('🎨 LSH Gen2:', TokenId.fromSolidityAddress(lshGen2).toString());
-	console.log('🎨 LSH Gen1 Mutant:', TokenId.fromSolidityAddress(lshMutant).toString());
-
-	console.log('\n───────────────────────────────────────────────────────────');
-	console.log('  Connected Contracts');
-	console.log('───────────────────────────────────────────────────────────\n');
-
-	console.log('🎲 PRNG System:', ContractId.fromSolidityAddress(prngContract).toString());
-	console.log('⛽ Lazy Gas Station:', ContractId.fromSolidityAddress(lgsContract).toString());
-	console.log('📋 Lazy Delegate Registry:', ContractId.fromSolidityAddress(ldrContract).toString());
-
-	console.log('\n───────────────────────────────────────────────────────────');
-	console.log('  Jackpot & Statistics');
-	console.log('───────────────────────────────────────────────────────────\n');
-
+	// Process statistics
 	const jackpotPool = Number(lottoStats[0]) / (10 ** lazyTokenDecimals);
 	const jackpotsWon = Number(lottoStats[1]);
 	const jackpotPaid = Number(lottoStats[2]) / (10 ** lazyTokenDecimals);
@@ -222,23 +199,97 @@ async function main() {
 	const lossIncrement = Number(lottoStats[6]) / (10 ** lazyTokenDecimals);
 	const maxJackpotThreshold = Number(lottoStats[7]) / (10 ** lazyTokenDecimals);
 
-	console.log('💰 Current Jackpot:', jackpotPool.toLocaleString(), '$LAZY');
-	console.log('🎰 Max Jackpot Cap:', maxJackpotThreshold.toLocaleString(), '$LAZY');
-	console.log('📈 Per-Roll Increment:', lossIncrement.toLocaleString(), '$LAZY');
+	// Build result object
+	const result = {
+		success: true,
+		data: {
+			contract: contractId.toString(),
+			status: isPaused ? 'paused' : 'active',
+			burnPercentage: Number(burnPercentage),
+			systemWallet: systemWallet,
+			lshTokens: {
+				gen1: TokenId.fromSolidityAddress(lshGen1).toString(),
+				gen2: TokenId.fromSolidityAddress(lshGen2).toString(),
+				gen1Mutant: TokenId.fromSolidityAddress(lshMutant).toString(),
+			},
+			connectedContracts: {
+				prng: ContractId.fromSolidityAddress(prngContract).toString(),
+				lazyGasStation: ContractId.fromSolidityAddress(lgsContract).toString(),
+				lazyDelegateRegistry: ContractId.fromSolidityAddress(ldrContract).toString(),
+			},
+			statistics: {
+				jackpot: jackpotPool,
+				maxJackpotCap: maxJackpotThreshold,
+				perRollIncrement: lossIncrement,
+				jackpotsWon: jackpotsWon,
+				jackpotPaid: jackpotPaid,
+				totalRolls: totalRolls,
+				totalWins: totalWins,
+				winRate: totalRolls > 0 ? ((totalWins / totalRolls) * 100).toFixed(2) : null,
+				totalPaid: totalPaid,
+				combinedPayouts: totalPaid + jackpotPaid,
+			},
+		},
+		metadata: {
+			environment: env,
+			timestamp: new Date().toISOString(),
+			lazyDecimals: lazyTokenDecimals,
+		},
+	};
 
-	console.log('\n🏆 Jackpot History:');
-	console.log('   Wins:', jackpotsWon);
-	console.log('   Total Paid:', jackpotPaid.toLocaleString(), '$LAZY');
+	// Output based on format
+	if (outputJson) {
+		console.log(JSON.stringify(result, null, 2));
+	}
+	else {
+		// Display Results
+		console.log('═══════════════════════════════════════════════════════════');
+		console.log('         LazyTradeLotto Contract Information');
+		console.log('═══════════════════════════════════════════════════════════\n');
 
-	console.log('\n🎯 Regular Wins:');
-	console.log('   Total Rolls:', totalRolls.toLocaleString());
-	console.log('   Total Wins:', totalWins.toLocaleString());
-	console.log('   Win Rate:', totalRolls > 0 ? ((totalWins / totalRolls) * 100).toFixed(2) + '%' : 'N/A');
-	console.log('   Total Paid:', totalPaid.toLocaleString(), '$LAZY');
+		console.log('📜 Contract Address:', contractId.toString());
+		console.log('⚙️  Status:', isPaused ? '🔴 PAUSED' : '🟢 ACTIVE');
+		console.log('🔥 Burn Percentage:', Number(burnPercentage) + '%');
+		console.log('✍️  System Wallet:', systemWallet);
 
-	console.log('\n💵 Combined Payouts:', (totalPaid + jackpotPaid).toLocaleString(), '$LAZY');
+		console.log('\n───────────────────────────────────────────────────────────');
+		console.log('  LSH NFT Collections (0% Burn for Holders)');
+		console.log('───────────────────────────────────────────────────────────\n');
 
-	console.log('\n═══════════════════════════════════════════════════════════\n');
+		console.log('🎨 LSH Gen1:', TokenId.fromSolidityAddress(lshGen1).toString());
+		console.log('🎨 LSH Gen2:', TokenId.fromSolidityAddress(lshGen2).toString());
+		console.log('🎨 LSH Gen1 Mutant:', TokenId.fromSolidityAddress(lshMutant).toString());
+
+		console.log('\n───────────────────────────────────────────────────────────');
+		console.log('  Connected Contracts');
+		console.log('───────────────────────────────────────────────────────────\n');
+
+		console.log('🎲 PRNG System:', ContractId.fromSolidityAddress(prngContract).toString());
+		console.log('⛽ Lazy Gas Station:', ContractId.fromSolidityAddress(lgsContract).toString());
+		console.log('📋 Lazy Delegate Registry:', ContractId.fromSolidityAddress(ldrContract).toString());
+
+		console.log('\n───────────────────────────────────────────────────────────');
+		console.log('  Jackpot & Statistics');
+		console.log('───────────────────────────────────────────────────────────\n');
+
+		console.log('💰 Current Jackpot:', jackpotPool.toLocaleString(), '$LAZY');
+		console.log('🎰 Max Jackpot Cap:', maxJackpotThreshold.toLocaleString(), '$LAZY');
+		console.log('📈 Per-Roll Increment:', lossIncrement.toLocaleString(), '$LAZY');
+
+		console.log('\n🏆 Jackpot History:');
+		console.log('   Wins:', jackpotsWon);
+		console.log('   Total Paid:', jackpotPaid.toLocaleString(), '$LAZY');
+
+		console.log('\n🎯 Regular Wins:');
+		console.log('   Total Rolls:', totalRolls.toLocaleString());
+		console.log('   Total Wins:', totalWins.toLocaleString());
+		console.log('   Win Rate:', totalRolls > 0 ? ((totalWins / totalRolls) * 100).toFixed(2) + '%' : 'N/A');
+		console.log('   Total Paid:', totalPaid.toLocaleString(), '$LAZY');
+
+		console.log('\n💵 Combined Payouts:', (totalPaid + jackpotPaid).toLocaleString(), '$LAZY');
+
+		console.log('\n═══════════════════════════════════════════════════════════\n');
+	}
 }
 
 main()

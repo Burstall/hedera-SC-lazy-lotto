@@ -103,12 +103,12 @@ async function sendFT(client, FTTokenId, amount, sender, receiver, memo) {
  * Assumes sender minted the NFT/no royalty issues
  * @param {Client} client
  * @param {AccountId} sender
- * @param {AccountId} reciever
+ * @param {AccountId} receiver
  * @param {TokenId} NFTTokenId
  * @param {Number[]} serials
  * @returns {String} status of the transaction
  */
-async function sendNFT(client, sender, reciever, NFTTokenId, serials) {
+async function sendNFT(client, sender, receiver, NFTTokenId, serials) {
 	// use inner/outer loop to maxSupply but in batches of 10
 
 	let batch = 0;
@@ -119,7 +119,7 @@ async function sendNFT(client, sender, reciever, NFTTokenId, serials) {
 		);
 		for (let i = 0; i < 10 && outer + i < serials.length; i++) {
 			const nft = new NftId(NFTTokenId, serials[outer + i]);
-			transferTx.addNftTransfer(nft, sender, reciever);
+			transferTx.addNftTransfer(nft, sender, receiver);
 		}
 
 		const txResp = await transferTx.freezeWith(client).execute(client);
@@ -289,12 +289,6 @@ async function clearNFTAllowances(client, _allowanceList) {
 			console.log('Allowance set **FAILED*', receipt);
 			return 'FAILED';
 		}
-		/* console.log(
-			'Allowance for token: ',
-			_tokenIdList,
-			receipt.status.toString(),
-		);
-		*/
 	}
 
 	return 'SUCCESS';

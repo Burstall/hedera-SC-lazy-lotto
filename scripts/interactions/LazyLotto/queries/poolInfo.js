@@ -6,7 +6,10 @@
  * - All prizes in the pool
  * - Pool statistics
  *
- * Usage: node scripts/interactions/LazyLotto/queries/poolInfo.js [poolId]
+ * Usage: node scripts/interactions/LazyLotto/queries/poolInfo.js [poolId] [--json]
+ *
+ * Options:
+ *   --json    Output results as JSON (for programmatic use)
  */
 
 const {
@@ -23,6 +26,9 @@ const readline = require('readline');
 require('dotenv').config();
 
 const { homebrewPopulateAccountNum, EntityType, getTokenDetails } = require('../../../../utils/hederaMirrorHelpers');
+
+// CLI options
+const outputJson = process.argv.includes('--json');
 
 // Environment setup
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);

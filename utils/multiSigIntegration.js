@@ -55,8 +55,11 @@ function parseMultiSigArgs(args = process.argv) {
 		config.threshold = parseInt(args[thresholdIndex].split('=')[1]);
 	}
 
-	// Check for key files
-	const keyFileIndex = args.findIndex(arg => arg.startsWith('--keyfile='));
+	// Check for key files (accept both --keyfile= and --keyfiles= for compatibility)
+	let keyFileIndex = args.findIndex(arg => arg.startsWith('--keyfiles='));
+	if (keyFileIndex === -1) {
+		keyFileIndex = args.findIndex(arg => arg.startsWith('--keyfile='));
+	}
 	if (keyFileIndex !== -1) {
 		const files = args[keyFileIndex].split('=')[1].split(',');
 		config.keyFiles = files.map(f => f.trim());
@@ -356,7 +359,7 @@ function displayMultiSigHelp() {
 	console.log('Advanced Options:');
 	console.log('  --workflow=interactive|offline   Choose workflow mode');
 	console.log('  --threshold=N                    Require N signatures');
-	console.log('  --keyfile=file1.enc,file2.enc    Use encrypted key files');
+	console.log('  --keyfiles=file1.enc,file2.enc   Use encrypted key files');
 	console.log('  --signers=Alice,Bob,Charlie      Label signers for clarity');
 	console.log();
 	console.log('For more help: node lib/multiSig/cli/help.js');

@@ -184,8 +184,6 @@ async function parseErrorTransactionId(envOrClient, transactionId, ifaceOrArray)
 	const webFormatTxId = transactionId.accountId.toString() + '-' + transactionId.validStart.toString().substring(0, 10) + '-' + transactionId.validStart.toString().substring(11, 21);
 	url += `/api/v1/contracts/results/${webFormatTxId}`;
 
-	// console.log(' -Calling mirror node for transaction:', transactionId.toString(), url);
-
 	const response = await axios.get(url);
 	if (response.status != 200) {
 		console.log(' -ERROR', response.status, ' from mirror node');
@@ -362,7 +360,6 @@ async function contractExecuteFunction(contractId, iface, client, gasLim, fcnNam
 			console.log(parseError(iface, record.contractFunctionResult.bytes));
 		}
 	}
-	// console.log('Contract Results:', contractResults);
 	return [contractExecuteRx, contractResults, record];
 }
 

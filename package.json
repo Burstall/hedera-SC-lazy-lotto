@@ -1,8 +1,41 @@
 {
-  "name": "lsh-smart-contracts",
+  "name": "@lazysuperheroes/lazy-lotto",
   "version": "1.0.0",
-  "description": "Lazy Superheroes smart contracts",
+  "description": "LazyLotto and LazyTradeLotto lottery systems on Hedera - ABIs and CLI tools",
   "main": "index.js",
+  "bin": {
+    "lazy-lotto": "./cli/index.js"
+  },
+  "files": [
+    "index.js",
+    "abi/",
+    "cli/",
+    "utils/",
+    "docs/MULTISIG_USER_GUIDE.md",
+    "docs/MULTISIG_DEVELOPER_GUIDE.md",
+    "docs/MULTISIG_SECURITY.md",
+    "LazyLotto-BUSINESS_LOGIC.md",
+    "LazyTradeLotto-BUSINESS_LOGIC.md",
+    "LazyLotto-UX_IMPLEMENTATION_GUIDE.md",
+    "LazyTradeLotto-UX_IMPLEMENTATION_GUIDE.md"
+  ],
+  "keywords": [
+    "hedera",
+    "lottery",
+    "blockchain",
+    "smart-contracts",
+    "hts",
+    "nft",
+    "web3"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lazysuperheroes/hedera-SC-lazy-lotto"
+  },
+  "homepage": "https://github.com/lazysuperheroes/hedera-SC-lazy-lotto#readme",
+  "bugs": {
+    "url": "https://github.com/lazysuperheroes/hedera-SC-lazy-lotto/issues"
+  },
   "scripts": {
     "test": "npx hardhat test",
     "test-trade-lotto": "npx hardhat test test/LazyTradeLotto.test.js",

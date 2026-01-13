@@ -183,10 +183,10 @@ LazyLotto v3 uses a **centralized admin model** for operational efficiency while
 **Testnet**: Multi-signature Gnosis Safe recommended  
 **Mainnet**: Multi-signature wallet required (2-of-3 or 3-of-5)
 
-### Governance Roadmap
+### Potential Governance Roadmap
 
 **Phase 1 (Current)**: Centralized admin for rapid iteration and support  
-**Phase 2 (6-12 months)**: Community oversight via governance token  
+**Phase 2 (6-12 months)**: Community oversight via $LAZY as a governance token  
 **Phase 3 (Future)**: Full DAO governance for major decisions
 
 **Why Centralized Now?**

@@ -957,6 +957,101 @@ function ErrorDisplay({ error, onRetry, onDismiss }) {
 }
 ```
 
+### Complete Error Reference
+
+All custom Solidity errors across the LazyLotto ecosystem with user-friendly messages:
+
+#### LazyTradeLotto Errors
+
+| Error | Parameters | User Message | Suggested Action |
+|-------|------------|--------------|------------------|
+| `AlreadyRolled` | none | "You've already rolled for this trade" | Show roll history |
+| `InvalidTeamSignature` | none | "Invalid signature - please retry" | Refresh and retry; contact support if persists |
+| `InvalidUserSignature` | none | "Invalid user signature" | Re-authenticate wallet |
+| `BadArguments` | `message: string` | "Invalid parameters: {message}" | Check trade details |
+
+#### LazyLotto Errors (for integrated dApps)
+
+| Error | Parameters | User Message | Suggested Action |
+|-------|------------|--------------|------------------|
+| `LottoPoolNotFound` | `poolId` | "Pool #{poolId} does not exist" | Verify pool ID |
+| `BalanceError` | `tokenAddress, balance, requestedAmount` | "Insufficient balance" | Show required vs available |
+| `BadParameters` | none | "Invalid parameters provided" | Validate form inputs |
+| `NotAdmin` | none | "Admin access required" | Show permission error |
+| `NotAuthorized` | none | "You don't have permission" | Show permission error |
+| `PoolManagerAlreadySet` | none | "Pool manager already configured" | Internal error - contact support |
+| `FungibleTokenTransferFailed` | none | "Token transfer failed" | Check token association |
+| `LastAdminError` | none | "Cannot remove last admin" | Add another admin first |
+| `PoolIsClosed` | none | "This pool is closed" | Browse other pools |
+| `PoolNotClosed` | none | "Pool must be closed first" | Close pool before this action |
+| `NotEnoughHbar` | `needed, presented` | "Insufficient HBAR: need {needed}, have {presented}" | Show HBAR requirement |
+| `NotEnoughFungible` | `needed, presented` | "Insufficient tokens: need {needed}, have {presented}" | Show token requirement |
+| `NotEnoughTickets` | `poolId, requested, available` | "Not enough tickets: requested {requested}, available {available}" | Adjust ticket count |
+| `NoTickets` | `poolId, user` | "You have no tickets in this pool" | Buy tickets first |
+| `NoPendingPrizes` | none | "No prizes to claim" | Show empty state |
+| `FailedNFTCreate` | none | "Failed to create NFT ticket" | Retry transaction |
+| `FailedNFTMintAndSend` | none | "Failed to mint NFT ticket" | Retry transaction |
+| `FailedNFTWipe` | none | "Failed to process NFT ticket" | Contact support |
+| `PoolOnPause` | none | "This pool is paused" | Try again later |
+| `EntriesOutstanding` | `outstanding, tokensOutstanding` | "Cannot close: {outstanding} entries still outstanding" | Wait for entries to be processed |
+| `NoPrizesAvailable` | none | "No prizes available in this pool" | Browse other pools |
+| `AlreadyWinningTicket` | none | "This ticket has already won" | Check prize claims |
+| `FailedToInitialize` | none | "Contract initialization failed" | Internal error - contact support |
+
+#### LazyLottoPoolManager Errors
+
+| Error | Parameters | User Message | Suggested Action |
+|-------|------------|--------------|------------------|
+| `NotLazyLotto` | none | "Internal authorization error" | Contact support |
+| `NotAuthorized` | none | "You don't have permission for this pool" | Check pool ownership |
+| `BadParameters` | none | "Invalid parameters" | Check form inputs |
+| `InvalidAddress` | none | "Invalid address provided" | Verify address format |
+| `InsufficientHbarFee` | `required, provided` | "Pool creation fee: {required} HBAR required, {provided} provided" | Add more HBAR |
+| `NothingToWithdraw` | none | "No funds available to withdraw" | Check pool balance |
+| `CannotTransferGlobalPools` | none | "Global pools cannot be transferred" | Only community pools can be transferred |
+| `CannotSetManagerForGlobalPools` | none | "Cannot set manager for global pools" | Only community pools support this |
+| `CannotWithdrawFromGlobalPools` | none | "Global pool withdrawals not allowed" | Platform manages global pools |
+| `LazyLottoAlreadySet` | none | "LazyLotto already configured" | Internal error - contact support |
+| `TooManyTimeBonuses` | none | "Maximum time bonuses reached" | Remove existing bonuses first |
+| `TooManyNFTBonuses` | none | "Maximum NFT bonuses reached" | Remove existing bonuses first |
+
+#### Error Handling Best Practices
+
+```javascript
+// Comprehensive error handler with user-friendly messages
+const ERROR_MESSAGES = {
+    // LazyTradeLotto
+    'AlreadyRolled': { message: "You've already rolled for this trade", recoverable: false },
+    'InvalidTeamSignature': { message: 'Invalid signature - please retry', recoverable: true },
+    'BadArguments': { message: 'Invalid parameters', recoverable: false },
+
+    // LazyLotto
+    'LottoPoolNotFound': { message: 'Pool not found', recoverable: false },
+    'NotEnoughHbar': { message: 'Insufficient HBAR balance', recoverable: true },
+    'NotEnoughFungible': { message: 'Insufficient token balance', recoverable: true },
+    'PoolIsClosed': { message: 'This pool is closed', recoverable: false },
+    'PoolOnPause': { message: 'Pool is temporarily paused', recoverable: true },
+    'NoTickets': { message: 'You have no tickets in this pool', recoverable: false },
+    'NoPendingPrizes': { message: 'No prizes available to claim', recoverable: false },
+
+    // LazyLottoPoolManager
+    'InsufficientHbarFee': { message: 'Insufficient pool creation fee', recoverable: true },
+    'NotAuthorized': { message: 'Permission denied', recoverable: false },
+};
+
+function getErrorMessage(error) {
+    const errorString = error.message || error.toString();
+
+    for (const [key, value] of Object.entries(ERROR_MESSAGES)) {
+        if (errorString.includes(key)) {
+            return value;
+        }
+    }
+
+    return { message: 'An unexpected error occurred', recoverable: true };
+}
+```
+
 ---
 
 ## Real-Time Updates
