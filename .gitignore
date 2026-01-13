@@ -24,3 +24,5 @@ docs/*
 # Claude Code frameworks (exclude all)
 .claude/
 .vscode/
+
+*-cwd
